@@ -21,7 +21,7 @@ export default function SetupPage() {
     setError('')
     try {
       await createFamily()
-      router.replace('/dashboard')
+      router.replace('/onboarding')
     } catch (e) {
       setError('Something went wrong. Check your Firebase config and try again.')
       setLoading(false)

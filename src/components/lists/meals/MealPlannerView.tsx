@@ -1,9 +1,10 @@
 'use client'
 
 import { useState } from 'react'
-import { ChevronLeft, ChevronRight, Plus, ShoppingCart } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Plus, ShoppingCart, Sparkles } from 'lucide-react'
 import { format, startOfWeek, addDays, addWeeks, subWeeks } from 'date-fns'
 import { useFirestore } from '@/hooks/useFirestore'
+import { useToast } from '@/contexts/ToastContext'
 import { Dialog } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
@@ -19,9 +20,13 @@ export function MealPlannerView() {
   const [ingredients, setIngredients] = useState('')
   const [notes, setNotes] = useState('')
   const [saving, setSaving] = useState(false)
+  const [aiOpen, setAiOpen] = useState(false)
+  const [aiPrefs, setAiPrefs] = useState('')
+  const [aiLoading, setAiLoading] = useState(false)
 
   const { data: meals, create, update, remove } = useFirestore<MealPlan>('meal_plans')
   const { create: createShoppingList } = useFirestore<ShoppingList>('shopping_lists')
+  const { toast } = useToast()
 
   const days = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i))
 
@@ -65,6 +70,44 @@ export function MealPlannerView() {
     setEditingDay(null)
   }
 
+  async function generateWeek() {
+    setAiLoading(true)
+    try {
+      const filledDays = days
+        .map((d, i) => (getMealForDay(d) ? i : -1))
+        .filter((i) => i >= 0)
+      const res = await fetch('/api/ai/meal-plan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ preferences: aiPrefs, filledDays }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error ?? 'AI error')
+
+      const planned: { day: number; mealName: string; ingredients: string[] }[] = data.meals ?? []
+      let count = 0
+      for (const p of planned) {
+        if (p.day < 0 || p.day > 6) continue
+        const day = days[p.day]
+        if (getMealForDay(day)) continue
+        await create({
+          id: generateId(),
+          date: format(day, 'yyyy-MM-dd'),
+          mealName: p.mealName,
+          ingredients: Array.isArray(p.ingredients) ? p.ingredients : [],
+        })
+        count++
+      }
+      setAiOpen(false)
+      setAiPrefs('')
+      toast(count > 0 ? `AI planned ${count} dinner${count === 1 ? '' : 's'}!` : 'Week is already full', 'success')
+    } catch (e: unknown) {
+      toast(e instanceof Error ? e.message : 'AI error', 'error')
+    } finally {
+      setAiLoading(false)
+    }
+  }
+
   async function addAllToShoppingList() {
     const allIngredients = days.flatMap((d) => getMealForDay(d)?.ingredients ?? [])
     const unique = Array.from(new Set(allIngredients))
@@ -101,14 +144,18 @@ export function MealPlannerView() {
         </div>
       </div>
 
-      {weekMeals.length > 0 && (
-        <div className="mb-4">
+      <div className="flex flex-wrap gap-2 mb-4">
+        <Button size="sm" onClick={() => setAiOpen(true)}>
+          <Sparkles size={14} className="mr-1" />
+          AI Plan Week
+        </Button>
+        {weekMeals.length > 0 && (
           <Button size="sm" variant="secondary" onClick={addAllToShoppingList}>
             <ShoppingCart size={14} className="mr-1" />
             Add All to Shopping
           </Button>
-        </div>
-      )}
+        )}
+      </div>
 
       <div className="space-y-2">
         {days.map((day) => {
@@ -143,6 +190,30 @@ export function MealPlannerView() {
           )
         })}
       </div>
+
+      {/* AI plan dialog */}
+      <Dialog open={aiOpen} onClose={() => setAiOpen(false)} title="AI Meal Plan">
+        <div className="space-y-3">
+          <p className="text-sm text-gray-500">
+            Tell the AI about your family&apos;s tastes, dietary needs, or anything to avoid.
+            Empty days this week will be filled in.
+          </p>
+          <Textarea
+            placeholder="e.g. vegetarian twice, kids love pasta, no seafood, quick weeknight meals"
+            value={aiPrefs}
+            onChange={(e) => setAiPrefs(e.target.value)}
+            rows={3}
+            autoFocus
+          />
+          <div className="flex gap-2 pt-1">
+            <div className="flex-1" />
+            <Button type="button" variant="ghost" onClick={() => setAiOpen(false)}>Cancel</Button>
+            <Button onClick={generateWeek} disabled={aiLoading}>
+              {aiLoading ? 'Planning…' : 'Generate'}
+            </Button>
+          </div>
+        </div>
+      </Dialog>
 
       <Dialog
         open={!!editingDay}

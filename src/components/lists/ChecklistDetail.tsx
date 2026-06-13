@@ -1,8 +1,9 @@
 'use client'
 
 import { useState } from 'react'
-import { Plus, Trash2, ArrowLeft } from 'lucide-react'
+import { Plus, Trash2, ArrowLeft, Sparkles } from 'lucide-react'
 import { useFirestore } from '@/hooks/useFirestore'
+import { useToast } from '@/contexts/ToastContext'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import type { Checklist, ChecklistItem, Template } from '@/lib/types'
@@ -16,7 +17,9 @@ interface ChecklistDetailProps {
 export function ChecklistDetail({ checklist, onBack }: ChecklistDetailProps) {
   const { data: checklists, update } = useFirestore<Checklist>('checklists')
   const { data: templates } = useFirestore<Template>('templates')
+  const { toast } = useToast()
   const [newItem, setNewItem] = useState('')
+  const [aiLoading, setAiLoading] = useState(false)
 
   const current = checklists.find((c) => c.id === checklist.id) ?? checklist
   const done = current.items.filter((i) => i.isCompleted).length
@@ -48,6 +51,29 @@ export function ChecklistDetail({ checklist, onBack }: ChecklistDetailProps) {
     await update({ ...current, items: [...current.items, ...newItems] })
   }
 
+  async function generateWithAI() {
+    setAiLoading(true)
+    try {
+      const res = await fetch('/api/ai/generate-list', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ goal: current.name, kind: 'checklist' }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error ?? 'AI error')
+      const titles: string[] = data.items ?? []
+      const newItems: ChecklistItem[] = titles
+        .filter((t) => typeof t === 'string')
+        .map((t) => ({ id: generateId(), title: t, isCompleted: false }))
+      await update({ ...current, items: [...current.items, ...newItems] })
+      toast(`AI added ${newItems.length} items`, 'success')
+    } catch (e: unknown) {
+      toast(e instanceof Error ? e.message : 'AI error', 'error')
+    } finally {
+      setAiLoading(false)
+    }
+  }
+
   const checklistTemplates = templates.filter((t) => t.kind === 'checklist')
 
   return (
@@ -66,16 +92,24 @@ export function ChecklistDetail({ checklist, onBack }: ChecklistDetailProps) {
         <div className="h-full rounded-full transition-all duration-500" style={{ width: `${pct}%`, backgroundColor: current.colorHex }} />
       </div>
 
-      {checklistTemplates.length > 0 && current.items.length === 0 && (
-        <div className="mb-4">
-          <p className="text-xs text-gray-500 mb-2">Start from a template:</p>
-          <div className="flex flex-wrap gap-2">
-            {checklistTemplates.map((t) => (
-              <Button key={t.id} size="sm" variant="outline" onClick={() => applyTemplate(t)}>
-                {t.name}
-              </Button>
-            ))}
-          </div>
+      {current.items.length === 0 && (
+        <div className="mb-4 space-y-3">
+          <Button size="sm" onClick={generateWithAI} disabled={aiLoading} className="w-full">
+            <Sparkles size={14} className="mr-1.5" />
+            {aiLoading ? 'Generating…' : `Generate "${current.name}" items with AI`}
+          </Button>
+          {checklistTemplates.length > 0 && (
+            <div>
+              <p className="text-xs text-gray-500 mb-2">Or start from a template:</p>
+              <div className="flex flex-wrap gap-2">
+                {checklistTemplates.map((t) => (
+                  <Button key={t.id} size="sm" variant="outline" onClick={() => applyTemplate(t)}>
+                    {t.name}
+                  </Button>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
 

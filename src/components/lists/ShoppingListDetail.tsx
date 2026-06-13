@@ -1,8 +1,9 @@
 'use client'
 
 import { useState } from 'react'
-import { Plus, Trash2, ArrowLeft } from 'lucide-react'
+import { Plus, Trash2, ArrowLeft, Sparkles } from 'lucide-react'
 import { useFirestore } from '@/hooks/useFirestore'
+import { useToast } from '@/contexts/ToastContext'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { Select } from '@/components/ui/select'
@@ -19,6 +20,8 @@ interface ShoppingListDetailProps {
 export function ShoppingListDetail({ list, onBack }: ShoppingListDetailProps) {
   const { data: shoppingLists, update } = useFirestore<ShoppingList>('shopping_lists')
   const { data: templates } = useFirestore<Template>('templates')
+  const { toast } = useToast()
+  const [aiLoading, setAiLoading] = useState(false)
   const [newName, setNewName] = useState('')
   const [newQty, setNewQty] = useState('1')
   const [newUnit, setNewUnit] = useState('')
@@ -69,6 +72,32 @@ export function ShoppingListDetail({ list, onBack }: ShoppingListDetailProps) {
     await update({ ...current, items: [...current.items, ...items] })
   }
 
+  async function generateWithAI() {
+    setAiLoading(true)
+    try {
+      const res = await fetch('/api/ai/generate-list', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ goal: current.name, kind: 'shopping' }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error ?? 'AI error')
+      const generated: { name: string; quantity?: number; category?: string }[] = data.items ?? []
+      const items: ShoppingItem[] = generated
+        .filter((g) => g && typeof g.name === 'string')
+        .map((g) => ({
+          id: generateId(), name: g.name, quantity: g.quantity ?? 1, unit: '',
+          category: g.category ?? 'Other', isPurchased: false,
+        }))
+      await update({ ...current, items: [...current.items, ...items] })
+      toast(`AI added ${items.length} items`, 'success')
+    } catch (e: unknown) {
+      toast(e instanceof Error ? e.message : 'AI error', 'error')
+    } finally {
+      setAiLoading(false)
+    }
+  }
+
   const shoppingTemplates = templates.filter((t) => t.kind === 'shopping')
 
   return (
@@ -88,14 +117,22 @@ export function ShoppingListDetail({ list, onBack }: ShoppingListDetailProps) {
         )}
       </div>
 
-      {shoppingTemplates.length > 0 && current.items.length === 0 && (
-        <div className="mb-4">
-          <p className="text-xs text-gray-500 mb-2">Use a template:</p>
-          <div className="flex flex-wrap gap-2">
-            {shoppingTemplates.map((t) => (
-              <Button key={t.id} size="sm" variant="outline" onClick={() => applyTemplate(t)}>{t.name}</Button>
-            ))}
-          </div>
+      {current.items.length === 0 && (
+        <div className="mb-4 space-y-3">
+          <Button size="sm" onClick={generateWithAI} disabled={aiLoading} className="w-full">
+            <Sparkles size={14} className="mr-1.5" />
+            {aiLoading ? 'Generating…' : `Generate "${current.name}" list with AI`}
+          </Button>
+          {shoppingTemplates.length > 0 && (
+            <div>
+              <p className="text-xs text-gray-500 mb-2">Or use a template:</p>
+              <div className="flex flex-wrap gap-2">
+                {shoppingTemplates.map((t) => (
+                  <Button key={t.id} size="sm" variant="outline" onClick={() => applyTemplate(t)}>{t.name}</Button>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
