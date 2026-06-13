@@ -1,4 +1,4 @@
-import { OAuth2Client } from 'google-auth-library'
+import { google } from 'googleapis'
 
 const SCOPES = [
   'https://www.googleapis.com/auth/calendar',
@@ -6,7 +6,7 @@ const SCOPES = [
 ]
 
 export function createOAuthClient() {
-  return new OAuth2Client(
+  return new google.auth.OAuth2(
     process.env.GOOGLE_CLIENT_ID,
     process.env.GOOGLE_CLIENT_SECRET,
     `${process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000'}/api/auth/google/callback`
