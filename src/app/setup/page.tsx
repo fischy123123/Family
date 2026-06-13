@@ -3,12 +3,14 @@
 export const dynamic = 'force-dynamic'
 
 import { useState } from 'react'
+import { useRouter } from 'next/navigation'
 import { useFamily } from '@/contexts/FamilyContext'
 import { useAuth } from '@/contexts/AuthContext'
 
 export default function SetupPage() {
   const { createFamily, joinFamily } = useFamily()
   const { signOut } = useAuth()
+  const router = useRouter()
   const [mode, setMode] = useState<'choose' | 'create' | 'join'>('choose')
   const [code, setCode] = useState('')
   const [error, setError] = useState('')
@@ -16,8 +18,14 @@ export default function SetupPage() {
 
   async function handleCreate() {
     setLoading(true)
-    try { await createFamily() }
-    finally { setLoading(false) }
+    setError('')
+    try {
+      await createFamily()
+      router.replace('/dashboard')
+    } catch (e) {
+      setError('Something went wrong. Check your Firebase config and try again.')
+      setLoading(false)
+    }
   }
 
   async function handleJoin(e: React.FormEvent) {
@@ -27,8 +35,14 @@ export default function SetupPage() {
     setError('')
     try {
       const ok = await joinFamily(code.trim())
-      if (!ok) setError('No family found with that code. Check with your family member.')
-    } finally {
+      if (!ok) {
+        setError('No family found with that code. Check with your family member.')
+        setLoading(false)
+      } else {
+        router.replace('/dashboard')
+      }
+    } catch (e) {
+      setError('Something went wrong. Check your Firebase config and try again.')
       setLoading(false)
     }
   }
@@ -67,6 +81,7 @@ export default function SetupPage() {
             <p className="text-sm text-gray-600">
               We&apos;ll create your family space and generate an invite code you can share with family members.
             </p>
+            {error && <p className="text-red-500 text-xs">{error}</p>}
             <button
               onClick={handleCreate}
               disabled={loading}
