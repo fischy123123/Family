@@ -2,7 +2,7 @@
 
 import { useMemo, useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
-import { format, addDays, startOfDay, parseISO, isAfter, isBefore } from 'date-fns'
+import { format, addDays, startOfDay, parseISO } from 'date-fns'
 import {
   Calendar,
   CheckSquare,
