@@ -1,0 +1,41 @@
+{
+  "name": "Family Command Center",
+  "short_name": "FamilyCC",
+  "description": "Your family organization hub — calendar, lists, reminders, chores, and meals",
+  "start_url": "/dashboard",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#3B82F6",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Calendar",
+      "url": "/calendar",
+      "description": "View family calendar"
+    },
+    {
+      "name": "Shopping",
+      "url": "/lists?tab=shopping",
+      "description": "Shopping lists"
+    },
+    {
+      "name": "Reminders",
+      "url": "/tasks?tab=reminders",
+      "description": "Family reminders"
+    }
+  ]
+}
