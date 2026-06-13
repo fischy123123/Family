@@ -29,6 +29,7 @@ async function getGmailToken(): Promise<string> {
 
   const provider = new GoogleAuthProvider()
   provider.addScope('https://www.googleapis.com/auth/gmail.readonly')
+  provider.setCustomParameters({ prompt: 'consent', access_type: 'online' })
   const result = await signInWithPopup(auth, provider)
   const credential = GoogleAuthProvider.credentialFromResult(result)
   const token = credential?.accessToken
