@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import { Plus, Trash2, ArrowLeft } from 'lucide-react'
-import { useSheetsData } from '@/hooks/useSheetsData'
+import { useFirestore } from '@/hooks/useFirestore'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { Select } from '@/components/ui/select'
@@ -17,8 +17,8 @@ interface ShoppingListDetailProps {
 }
 
 export function ShoppingListDetail({ list, onBack }: ShoppingListDetailProps) {
-  const { data: shoppingLists, update } = useSheetsData<ShoppingList>('shopping_lists')
-  const { data: templates } = useSheetsData<Template>('templates')
+  const { data: shoppingLists, update } = useFirestore<ShoppingList>('shopping_lists')
+  const { data: templates } = useFirestore<Template>('templates')
   const [newName, setNewName] = useState('')
   const [newQty, setNewQty] = useState('1')
   const [newUnit, setNewUnit] = useState('')
@@ -88,7 +88,6 @@ export function ShoppingListDetail({ list, onBack }: ShoppingListDetailProps) {
         )}
       </div>
 
-      {/* Template suggestions */}
       {shoppingTemplates.length > 0 && current.items.length === 0 && (
         <div className="mb-4">
           <p className="text-xs text-gray-500 mb-2">Use a template:</p>
@@ -100,7 +99,6 @@ export function ShoppingListDetail({ list, onBack }: ShoppingListDetailProps) {
         </div>
       )}
 
-      {/* Grouped items by category */}
       {Object.entries(grouped).map(([cat, items]) => (
         <div key={cat} className="mb-4">
           <h2 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">{cat}</h2>
@@ -151,7 +149,6 @@ export function ShoppingListDetail({ list, onBack }: ShoppingListDetailProps) {
         </div>
       )}
 
-      {/* Add item */}
       <div className="border-t border-gray-100 pt-4 space-y-2">
         <Input placeholder="Item name..." value={newName} onChange={(e) => setNewName(e.target.value)}
           onKeyDown={(e) => { if (e.key === 'Enter') addItem() }} />

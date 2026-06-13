@@ -1,7 +1,7 @@
 import type { Metadata, Viewport } from 'next'
 import { Inter } from 'next/font/google'
-import { SessionProvider } from 'next-auth/react'
-import { auth } from '@/lib/auth'
+import { AuthProvider } from '@/contexts/AuthContext'
+import { FamilyProvider } from '@/contexts/FamilyContext'
 import './globals.css'
 
 const inter = Inter({ subsets: ['latin'] })
@@ -25,8 +25,7 @@ export const viewport: Viewport = {
   userScalable: false,
 }
 
-export default async function RootLayout({ children }: { children: React.ReactNode }) {
-  const session = await auth()
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
       <head>
@@ -34,9 +33,11 @@ export default async function RootLayout({ children }: { children: React.ReactNo
         <meta name="mobile-web-app-capable" content="yes" />
       </head>
       <body className={inter.className}>
-        <SessionProvider session={session}>
-          {children}
-        </SessionProvider>
+        <AuthProvider>
+          <FamilyProvider>
+            {children}
+          </FamilyProvider>
+        </AuthProvider>
       </body>
     </html>
   )

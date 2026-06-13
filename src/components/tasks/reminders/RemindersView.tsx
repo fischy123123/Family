@@ -2,13 +2,13 @@
 
 import { useState } from 'react'
 import { Plus, CheckCircle2, Circle } from 'lucide-react'
-import { useSheetsData } from '@/hooks/useSheetsData'
+import { useFirestore } from '@/hooks/useFirestore'
 import { ReminderForm } from './ReminderForm'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { PRIORITY_COLORS } from '@/lib/types'
 import type { FamilyReminder, FamilyMember } from '@/lib/types'
-import { isOverdue, isToday, formatDate } from '@/lib/utils'
+import { isOverdue, formatDate } from '@/lib/utils'
 import { getReminderDueDate, recurrenceLabel } from '@/lib/recurrence'
 
 const PRIORITY_ORDER: FamilyReminder['priority'][] = ['high', 'medium', 'low', 'none']
@@ -23,8 +23,8 @@ function groupByPriority(reminders: FamilyReminder[]) {
 }
 
 export function RemindersView() {
-  const { data: reminders, create, update, remove } = useSheetsData<FamilyReminder>('reminders')
-  const { data: members } = useSheetsData<FamilyMember>('family')
+  const { data: reminders, create, update, remove } = useFirestore<FamilyReminder>('reminders')
+  const { data: members } = useFirestore<FamilyMember>('members')
   const [formOpen, setFormOpen] = useState(false)
   const [editing, setEditing] = useState<FamilyReminder>()
   const [showCompleted, setShowCompleted] = useState(false)

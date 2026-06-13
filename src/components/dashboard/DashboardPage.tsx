@@ -1,15 +1,13 @@
 'use client'
 
-import { useSession } from 'next-auth/react'
 import { format } from 'date-fns'
 import { Calendar, CheckSquare, ShoppingCart, Bell } from 'lucide-react'
-import { useCalendarEvents } from '@/hooks/useCalendarEvents'
-import { useSheetsData } from '@/hooks/useSheetsData'
-import { SuggestionsPanel } from './SuggestionsPanel'
+import { useAuth } from '@/contexts/AuthContext'
+import { useFirestore } from '@/hooks/useFirestore'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { PRIORITY_COLORS } from '@/lib/types'
-import type { FamilyReminder, Checklist, ShoppingList, Chore } from '@/lib/types'
+import type { FamilyReminder, Checklist, ShoppingList, Chore, CalendarEvent } from '@/lib/types'
 import { isOverdue, isToday, formatTime } from '@/lib/utils'
 import { isChoreDueToday } from '@/lib/recurrence'
 
@@ -21,16 +19,18 @@ function greeting(): string {
 }
 
 export function DashboardPage() {
-  const { data: session } = useSession()
-  const today = new Date()
-  const startOfToday = new Date(today.setHours(0, 0, 0, 0)).toISOString()
-  const endOfToday = new Date(new Date().setHours(23, 59, 59, 999)).toISOString()
+  const { user } = useAuth()
+  const { data: allEvents } = useFirestore<CalendarEvent>('events')
+  const { data: reminders } = useFirestore<FamilyReminder>('reminders')
+  const { data: checklists } = useFirestore<Checklist>('checklists')
+  const { data: shoppingLists } = useFirestore<ShoppingList>('shopping_lists')
+  const { data: chores } = useFirestore<Chore>('chores')
 
-  const { events } = useCalendarEvents(startOfToday, endOfToday)
-  const { data: reminders } = useSheetsData<FamilyReminder>('reminders')
-  const { data: checklists } = useSheetsData<Checklist>('checklists')
-  const { data: shoppingLists } = useSheetsData<ShoppingList>('shopping_lists')
-  const { data: chores } = useSheetsData<Chore>('chores')
+  const todayStr = format(new Date(), 'yyyy-MM-dd')
+  const events = allEvents.filter((e) => {
+    const start = e.start.split('T')[0]
+    return start === todayStr
+  })
 
   const dueReminders = reminders.filter(
     (r) => !r.isCompleted && r.dueDate && (isToday(r.dueDate) || isOverdue(r.dueDate))
@@ -38,17 +38,17 @@ export function DashboardPage() {
   const todayChores = chores.filter(isChoreDueToday)
   const activeChecklists = checklists.filter((c) => c.items.some((i) => !i.isCompleted))
 
+  const firstName = user?.displayName?.split(' ')[0] ?? ''
+
   return (
     <div className="max-w-2xl mx-auto px-4 py-6 space-y-6">
-      {/* Header */}
       <div>
         <h1 className="text-2xl font-bold text-gray-900">
-          {greeting()}{session?.user?.name ? `, ${session.user.name.split(' ')[0]}` : ''} 👋
+          {greeting()}{firstName ? `, ${firstName}` : ''} 👋
         </h1>
         <p className="text-gray-500 text-sm mt-1">{format(new Date(), 'EEEE, MMMM d')}</p>
       </div>
 
-      {/* Today's Events */}
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-sm">
@@ -84,7 +84,6 @@ export function DashboardPage() {
         </CardContent>
       </Card>
 
-      {/* Due Reminders */}
       {(dueReminders.length > 0 || todayChores.length > 0) && (
         <Card>
           <CardHeader>
@@ -120,7 +119,6 @@ export function DashboardPage() {
         </Card>
       )}
 
-      {/* Active Checklists */}
       {activeChecklists.length > 0 && (
         <Card>
           <CardHeader>
@@ -155,7 +153,6 @@ export function DashboardPage() {
         </Card>
       )}
 
-      {/* Shopping Lists */}
       {shoppingLists.some((s) => s.items.some((i) => !i.isPurchased)) && (
         <Card>
           <CardHeader>
@@ -186,9 +183,6 @@ export function DashboardPage() {
           </CardContent>
         </Card>
       )}
-
-      {/* AI Suggestions */}
-      <SuggestionsPanel />
     </div>
   )
 }

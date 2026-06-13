@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import { Plus, ListChecks, ShoppingCart, UtensilsCrossed, Trash2 } from 'lucide-react'
-import { useSheetsData } from '@/hooks/useSheetsData'
+import { useFirestore } from '@/hooks/useFirestore'
 import { ChecklistDetail } from './ChecklistDetail'
 import { ShoppingListDetail } from './ShoppingListDetail'
 import { MealPlannerView } from './meals/MealPlannerView'
@@ -61,8 +61,8 @@ export function ListsPage({ defaultTab }: { defaultTab?: Tab }) {
   const [selectedChecklist, setSelectedChecklist] = useState<Checklist>()
   const [selectedShoppingList, setSelectedShoppingList] = useState<ShoppingList>()
 
-  const checklists = useSheetsData<Checklist>('checklists')
-  const shoppingLists = useSheetsData<ShoppingList>('shopping_lists')
+  const checklists = useFirestore<Checklist>('checklists')
+  const shoppingLists = useFirestore<ShoppingList>('shopping_lists')
 
   if (selectedChecklist) {
     return <ChecklistDetail checklist={selectedChecklist} onBack={() => setSelectedChecklist(undefined)} />
@@ -82,7 +82,6 @@ export function ListsPage({ defaultTab }: { defaultTab?: Tab }) {
         )}
       </div>
 
-      {/* Tabs */}
       <div className="flex gap-1 mb-6 bg-gray-100 p-1 rounded-xl">
         {([['checklists', 'Checklists', ListChecks], ['shopping', 'Shopping', ShoppingCart], ['meals', 'Meals', UtensilsCrossed]] as const).map(([t, label, Icon]) => (
           <button

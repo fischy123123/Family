@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import { Plus, Trash2, ArrowLeft } from 'lucide-react'
-import { useSheetsData } from '@/hooks/useSheetsData'
+import { useFirestore } from '@/hooks/useFirestore'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import type { Checklist, ChecklistItem, Template } from '@/lib/types'
@@ -14,8 +14,8 @@ interface ChecklistDetailProps {
 }
 
 export function ChecklistDetail({ checklist, onBack }: ChecklistDetailProps) {
-  const { data: checklists, update } = useSheetsData<Checklist>('checklists')
-  const { data: templates } = useSheetsData<Template>('templates')
+  const { data: checklists, update } = useFirestore<Checklist>('checklists')
+  const { data: templates } = useFirestore<Template>('templates')
   const [newItem, setNewItem] = useState('')
 
   const current = checklists.find((c) => c.id === checklist.id) ?? checklist
@@ -62,12 +62,10 @@ export function ChecklistDetail({ checklist, onBack }: ChecklistDetailProps) {
         </div>
       </div>
 
-      {/* Progress bar */}
       <div className="h-2 bg-gray-100 rounded-full mb-4 overflow-hidden">
         <div className="h-full rounded-full transition-all duration-500" style={{ width: `${pct}%`, backgroundColor: current.colorHex }} />
       </div>
 
-      {/* Apply template */}
       {checklistTemplates.length > 0 && current.items.length === 0 && (
         <div className="mb-4">
           <p className="text-xs text-gray-500 mb-2">Start from a template:</p>
@@ -81,7 +79,6 @@ export function ChecklistDetail({ checklist, onBack }: ChecklistDetailProps) {
         </div>
       )}
 
-      {/* Items */}
       <div className="space-y-1 mb-4">
         {current.items.map((item) => (
           <div key={item.id} className="flex items-center gap-3 p-3 bg-white rounded-xl border border-gray-100 shadow-sm group">
@@ -106,7 +103,6 @@ export function ChecklistDetail({ checklist, onBack }: ChecklistDetailProps) {
         ))}
       </div>
 
-      {/* Add item */}
       <div className="flex gap-2">
         <Input
           placeholder="Add item..."

@@ -1,9 +1,9 @@
 'use client'
 
 import { useState } from 'react'
-import { ChevronLeft, ChevronRight, Plus, Sparkles, ShoppingCart } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Plus, ShoppingCart } from 'lucide-react'
 import { format, startOfWeek, addDays, addWeeks, subWeeks } from 'date-fns'
-import { useSheetsData } from '@/hooks/useSheetsData'
+import { useFirestore } from '@/hooks/useFirestore'
 import { Dialog } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
@@ -18,11 +18,10 @@ export function MealPlannerView() {
   const [mealName, setMealName] = useState('')
   const [ingredients, setIngredients] = useState('')
   const [notes, setNotes] = useState('')
-  const [aiLoading, setAiLoading] = useState(false)
   const [saving, setSaving] = useState(false)
 
-  const { data: meals, create, update, remove } = useSheetsData<MealPlan>('meal_plans')
-  const { create: createShoppingList } = useSheetsData<ShoppingList>('shopping_lists')
+  const { data: meals, create, update, remove } = useFirestore<MealPlan>('meal_plans')
+  const { create: createShoppingList } = useFirestore<ShoppingList>('shopping_lists')
 
   const days = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i))
 
@@ -66,29 +65,6 @@ export function MealPlannerView() {
     setEditingDay(null)
   }
 
-  async function suggestMeals() {
-    setAiLoading(true)
-    try {
-      const res = await fetch('/api/gmail-suggestions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode: 'meals' }),
-      })
-      const { meals: suggestions } = await res.json()
-      if (Array.isArray(suggestions)) {
-        for (let i = 0; i < Math.min(suggestions.length, 7); i++) {
-          const day = days[i]
-          const existing = getMealForDay(day)
-          if (!existing && suggestions[i]) {
-            await create({ id: generateId(), date: format(day, 'yyyy-MM-dd'), mealName: suggestions[i], ingredients: [] })
-          }
-        }
-      }
-    } finally {
-      setAiLoading(false)
-    }
-  }
-
   async function addAllToShoppingList() {
     const allIngredients = days.flatMap((d) => getMealForDay(d)?.ingredients ?? [])
     const unique = Array.from(new Set(allIngredients))
@@ -110,7 +86,6 @@ export function MealPlannerView() {
 
   return (
     <div className="max-w-2xl mx-auto px-4 py-6">
-      {/* Week navigation */}
       <div className="flex items-center justify-between mb-4">
         <h2 className="text-lg font-bold text-gray-900">Meal Planner</h2>
         <div className="flex items-center gap-2">
@@ -126,21 +101,15 @@ export function MealPlannerView() {
         </div>
       </div>
 
-      {/* Action buttons */}
-      <div className="flex gap-2 mb-4">
-        <Button size="sm" variant="secondary" onClick={suggestMeals} disabled={aiLoading}>
-          <Sparkles size={14} className="mr-1 text-purple-500" />
-          {aiLoading ? 'Suggesting...' : 'AI Suggest'}
-        </Button>
-        {weekMeals.length > 0 && (
+      {weekMeals.length > 0 && (
+        <div className="mb-4">
           <Button size="sm" variant="secondary" onClick={addAllToShoppingList}>
             <ShoppingCart size={14} className="mr-1" />
             Add All to Shopping
           </Button>
-        )}
-      </div>
+        </div>
+      )}
 
-      {/* Days grid */}
       <div className="space-y-2">
         {days.map((day) => {
           const meal = getMealForDay(day)
@@ -175,7 +144,6 @@ export function MealPlannerView() {
         })}
       </div>
 
-      {/* Edit modal */}
       <Dialog
         open={!!editingDay}
         onClose={() => setEditingDay(null)}

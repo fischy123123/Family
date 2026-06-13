@@ -2,8 +2,8 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { signOut } from 'next-auth/react'
-import { Home, Calendar, ListChecks, ShoppingCart, UtensilsCrossed, Bell, Dumbbell, Users, BookTemplate, LogOut } from 'lucide-react'
+import { useAuth } from '@/contexts/AuthContext'
+import { Home, Calendar, ListChecks, ShoppingCart, UtensilsCrossed, Bell, Dumbbell, Users, BookMarked, LogOut } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 const NAV_ITEMS = [
@@ -15,11 +15,12 @@ const NAV_ITEMS = [
   { href: '/tasks?tab=reminders', label: 'Reminders', icon: Bell },
   { href: '/tasks?tab=chores', label: 'Chores', icon: Dumbbell },
   { href: '/family?tab=members', label: 'Family', icon: Users },
-  { href: '/family?tab=templates', label: 'Templates', icon: BookTemplate },
+  { href: '/family?tab=templates', label: 'Templates', icon: BookMarked },
 ]
 
 export function Sidebar() {
   const pathname = usePathname()
+  const { signOut } = useAuth()
 
   return (
     <aside className="hidden sm:flex flex-col w-56 min-h-screen bg-white border-r border-gray-100 py-6">
@@ -52,7 +53,7 @@ export function Sidebar() {
 
       <div className="px-2 mt-4">
         <button
-          onClick={() => signOut({ callbackUrl: '/signin' })}
+          onClick={signOut}
           className="flex items-center gap-3 px-3 py-2 rounded-lg text-sm text-gray-500 hover:bg-gray-50 hover:text-gray-700 w-full"
         >
           <LogOut size={18} />

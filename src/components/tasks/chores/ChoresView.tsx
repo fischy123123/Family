@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import { Plus, CheckCircle2, Dumbbell } from 'lucide-react'
-import { useSheetsData } from '@/hooks/useSheetsData'
+import { useFirestore } from '@/hooks/useFirestore'
 import { ChoreForm } from './ChoreForm'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -10,8 +10,8 @@ import type { Chore, FamilyMember } from '@/lib/types'
 import { isChoreDueToday, recurrenceLabel } from '@/lib/recurrence'
 
 export function ChoresView() {
-  const { data: chores, create, update, remove } = useSheetsData<Chore>('chores')
-  const { data: members } = useSheetsData<FamilyMember>('family')
+  const { data: chores, create, update, remove } = useFirestore<Chore>('chores')
+  const { data: members } = useFirestore<FamilyMember>('members')
   const [formOpen, setFormOpen] = useState(false)
   const [editing, setEditing] = useState<Chore>()
 

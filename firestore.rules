@@ -1,0 +1,22 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Users can read/write their own user doc
+    match /users/{userId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+
+    // Family members can read/write their family's data
+    match /families/{familyId} {
+      allow read, write: if request.auth != null &&
+        request.auth.uid in resource.data.members;
+
+      // All sub-collections are accessible to family members
+      match /{collection}/{docId} {
+        allow read, write: if request.auth != null &&
+          request.auth.uid in get(/databases/$(database)/documents/families/$(familyId)).data.members;
+      }
+    }
+  }
+}

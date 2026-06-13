@@ -2,7 +2,8 @@
 
 import { useState } from 'react'
 import { Plus, BookMarked, Users } from 'lucide-react'
-import { useSheetsData } from '@/hooks/useSheetsData'
+import { useFirestore } from '@/hooks/useFirestore'
+import { useFamily } from '@/contexts/FamilyContext'
 import { MemberCard } from './MemberCard'
 import { MemberForm } from './MemberForm'
 import { TemplateForm } from './TemplateForm'
@@ -19,8 +20,9 @@ export function FamilyPage() {
   const [templateFormOpen, setTemplateFormOpen] = useState(false)
   const [editingTemplate, setEditingTemplate] = useState<Template>()
 
-  const members = useSheetsData<FamilyMember>('family')
-  const templates = useSheetsData<Template>('templates')
+  const members = useFirestore<FamilyMember>('members')
+  const templates = useFirestore<Template>('templates')
+  const { inviteCode } = useFamily()
 
   return (
     <div className="max-w-2xl mx-auto px-4 py-6">
@@ -37,7 +39,14 @@ export function FamilyPage() {
         </Button>
       </div>
 
-      {/* Tabs */}
+      {inviteCode && (
+        <div className="mb-6 p-4 bg-blue-50 rounded-xl border border-blue-100">
+          <p className="text-xs text-blue-500 font-medium uppercase tracking-wider mb-1">Family Invite Code</p>
+          <p className="text-2xl font-mono font-bold text-blue-700 tracking-widest">{inviteCode}</p>
+          <p className="text-xs text-blue-400 mt-1">Share this code with family members so they can join</p>
+        </div>
+      )}
+
       <div className="flex gap-1 mb-6 bg-gray-100 p-1 rounded-xl">
         {([['members', 'Members', Users], ['templates', 'Templates', BookMarked]] as const).map(([t, label, Icon]) => (
           <button

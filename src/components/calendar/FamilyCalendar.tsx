@@ -7,16 +7,17 @@ import timeGridPlugin from '@fullcalendar/timegrid'
 import interactionPlugin, { DateClickArg } from '@fullcalendar/interaction'
 import type { EventClickArg } from '@fullcalendar/core'
 import { Plus } from 'lucide-react'
-import { useCalendarEvents } from '@/hooks/useCalendarEvents'
-import { useSheetsData } from '@/hooks/useSheetsData'
+import { useAuth } from '@/contexts/AuthContext'
+import { useFirestore } from '@/hooks/useFirestore'
 import { MemberLegend } from './MemberLegend'
 import { EventModal } from './EventModal'
 import { Button } from '@/components/ui/button'
 import type { CalendarEvent, FamilyMember } from '@/lib/types'
 
 export function FamilyCalendar() {
-  const { events, create, update, remove } = useCalendarEvents()
-  const { data: members } = useSheetsData<FamilyMember>('family')
+  const { user } = useAuth()
+  const { data: events, create, update, remove } = useFirestore<CalendarEvent>('events')
+  const { data: members } = useFirestore<FamilyMember>('members')
 
   const [modalOpen, setModalOpen] = useState(false)
   const [selectedDate, setSelectedDate] = useState<string>()
@@ -80,15 +81,17 @@ export function FamilyCalendar() {
         onClose={() => setModalOpen(false)}
         initialDate={selectedDate}
         event={selectedEvent}
-        onCreate={create}
+        onCreate={async (ev) => {
+          await create({ ...ev, ownerEmail: user?.email ?? '', color: '#3B82F6' })
+        }}
         onUpdate={
           selectedEvent
-            ? (updates) => update(selectedEvent.id, selectedEvent.calendarId, updates)
+            ? async (updates) => { await update({ ...selectedEvent, ...updates }) }
             : undefined
         }
         onDelete={
           selectedEvent
-            ? () => remove(selectedEvent.id, selectedEvent.calendarId)
+            ? async () => { await remove(selectedEvent.id) }
             : undefined
         }
       />
