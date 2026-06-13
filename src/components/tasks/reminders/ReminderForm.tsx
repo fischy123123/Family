@@ -42,19 +42,24 @@ export function ReminderForm({ open, onClose, reminder, members, onSave, onDelet
     setSaving(true)
     const recurrence: RecurrenceRule | undefined =
       recurrFreq !== 'none'
-        ? { frequency: recurrFreq, interval: recurrInterval, daysOfWeek: recurrFreq === 'weekly' ? recurrDays : undefined }
+        ? {
+            frequency: recurrFreq,
+            interval: recurrInterval,
+            ...(recurrFreq === 'weekly' && recurrDays.length > 0 ? { daysOfWeek: recurrDays } : {}),
+          }
         : undefined
+    const reminderData: FamilyReminder = {
+      id: reminder?.id ?? generateId(),
+      title,
+      isCompleted: reminder?.isCompleted ?? false,
+      priority,
+      notes,
+    }
+    if (dueDate) reminderData.dueDate = `${dueDate}T09:00:00`
+    if (assigneeEmail) reminderData.assigneeEmail = assigneeEmail
+    if (recurrence) reminderData.recurrence = recurrence
     try {
-      await onSave({
-        id: reminder?.id ?? generateId(),
-        title,
-        dueDate: dueDate ? `${dueDate}T09:00:00` : undefined,
-        isCompleted: reminder?.isCompleted ?? false,
-        priority,
-        notes,
-        assigneeEmail: assigneeEmail || undefined,
-        recurrence,
-      })
+      await onSave(reminderData)
       onClose()
     } finally {
       setSaving(false)

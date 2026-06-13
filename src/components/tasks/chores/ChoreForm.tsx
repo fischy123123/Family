@@ -36,14 +36,19 @@ export function ChoreForm({ open, onClose, chore, members, onSave, onDelete }: C
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     setSaving(true)
-    const recurrence: RecurrenceRule = { frequency: freq, interval, daysOfWeek: freq === 'weekly' ? days : undefined }
+    const recurrence: RecurrenceRule = {
+      frequency: freq,
+      interval,
+      ...(freq === 'weekly' && days.length > 0 ? { daysOfWeek: days } : {}),
+    }
+    const choreData: Chore = {
+      id: chore?.id ?? generateId(),
+      name, assigneeEmail, colorHex, recurrence,
+      streak: chore?.streak ?? 0,
+    }
+    if (chore?.lastCompletedDate) choreData.lastCompletedDate = chore.lastCompletedDate
     try {
-      await onSave({
-        id: chore?.id ?? generateId(),
-        name, assigneeEmail, colorHex, recurrence,
-        lastCompletedDate: chore?.lastCompletedDate,
-        streak: chore?.streak ?? 0,
-      })
+      await onSave(choreData)
       onClose()
     } finally {
       setSaving(false)
