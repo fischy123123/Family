@@ -4,6 +4,7 @@ import { format } from 'date-fns'
 import { Calendar, CheckSquare, ShoppingCart, Bell } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { useFirestore } from '@/hooks/useFirestore'
+import { SuggestionsPanel } from './SuggestionsPanel'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { PRIORITY_COLORS } from '@/lib/types'
@@ -183,6 +184,7 @@ export function DashboardPage() {
           </CardContent>
         </Card>
       )}
+      <SuggestionsPanel />
     </div>
   )
 }
