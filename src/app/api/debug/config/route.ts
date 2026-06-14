@@ -33,5 +33,21 @@ export async function GET() {
     }
   }
 
-  return NextResponse.json({ ...status, FIREBASE_SERVICE_ACCOUNT_VALID_JSON: serviceAccountValid })
+  // The exact OAuth redirect URI the app sends to Google. This must be
+  // registered VERBATIM under the OAuth client's Authorized redirect URIs.
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000'
+  const computedRedirectUri = `${appUrl}/api/auth/google/callback`
+  // The client id is not secret (it's sent in the auth URL); expose a hint to
+  // confirm the right OAuth client is wired up.
+  const googleClientIdHint = process.env.GOOGLE_CLIENT_ID
+    ? process.env.GOOGLE_CLIENT_ID.slice(0, 24) + '…'
+    : null
+
+  return NextResponse.json({
+    ...status,
+    FIREBASE_SERVICE_ACCOUNT_VALID_JSON: serviceAccountValid,
+    NEXT_PUBLIC_APP_URL_VALUE: process.env.NEXT_PUBLIC_APP_URL ?? null,
+    computedRedirectUri,
+    googleClientIdHint,
+  })
 }
