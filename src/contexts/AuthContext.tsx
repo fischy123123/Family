@@ -1,7 +1,7 @@
 'use client'
 
 import { createContext, useContext, useEffect, useState } from 'react'
-import { GoogleAuthProvider, signInWithRedirect, getRedirectResult, signOut as firebaseSignOut, onAuthStateChanged } from 'firebase/auth'
+import { GoogleAuthProvider, signInWithPopup, signInWithRedirect, getRedirectResult, signOut as firebaseSignOut, onAuthStateChanged } from 'firebase/auth'
 import type { User } from 'firebase/auth'
 import { auth } from '@/lib/firebase'
 
@@ -52,7 +52,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const provider = new GoogleAuthProvider()
       provider.addScope('email')
       provider.addScope('profile')
-      await signInWithRedirect(auth, provider)
+      try {
+        // Try popup first — works on mobile Chrome and desktop
+        await signInWithPopup(auth, provider)
+      } catch (popupError: unknown) {
+        const code = (popupError as { code?: string }).code ?? ''
+        // Only fall back to redirect if the popup was actually blocked
+        if (code === 'auth/popup-blocked' || code === 'auth/popup-closed-by-user') {
+          await signInWithRedirect(auth, provider)
+        } else {
+          throw popupError
+        }
+      }
     } catch (e: unknown) {
       const err = e as { code?: string; message?: string }
       setSignInError(`${err.code ?? 'error'}: ${err.message ?? 'Sign-in failed'}`)
