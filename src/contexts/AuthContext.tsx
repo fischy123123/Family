@@ -27,10 +27,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [signInError, setSignInError] = useState<string | null>(null)
 
   useEffect(() => {
-    getRedirectResult(auth).catch((e: Error) => {
-      setSignInError(e.message)
-      setLoading(false)
-    })
+    getRedirectResult(auth)
+      .then((result) => {
+        if (result?.user) {
+          setUser(result.user)
+        } else if (result === null) {
+          // No pending redirect — normal page load
+        }
+      })
+      .catch((e: Error) => {
+        setSignInError(`Auth error: ${e.code ?? ''} — ${e.message}`)
+        setLoading(false)
+      })
     const unsub = onAuthStateChanged(auth, (u) => {
       setUser(u)
       setLoading(false)
@@ -40,11 +48,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   async function signIn() {
     try {
-      if (!auth) throw new Error('Firebase not configured — check NEXT_PUBLIC_FIREBASE_* environment variables in Vercel')
+      if (!auth) throw new Error('Firebase not configured — check NEXT_PUBLIC_FIREBASE_* env vars in Vercel')
       const provider = new GoogleAuthProvider()
+      provider.addScope('email')
+      provider.addScope('profile')
       await signInWithRedirect(auth, provider)
     } catch (e: unknown) {
-      setSignInError(e instanceof Error ? e.message : 'Sign-in failed')
+      const err = e as { code?: string; message?: string }
+      setSignInError(`${err.code ?? 'error'}: ${err.message ?? 'Sign-in failed'}`)
       setLoading(false)
     }
   }
