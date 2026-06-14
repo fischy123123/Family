@@ -35,8 +35,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           // No pending redirect — normal page load
         }
       })
-      .catch((e: Error) => {
-        setSignInError(`Auth error: ${e.code ?? ''} — ${e.message}`)
+      .catch((e: unknown) => {
+        const err = e as { code?: string; message?: string }
+        setSignInError(`Auth error: ${err.code ?? ''} — ${err.message ?? ''}`)
         setLoading(false)
       })
     const unsub = onAuthStateChanged(auth, (u) => {
@@ -54,7 +55,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       provider.addScope('profile')
       try {
         // Try popup first — works on mobile Chrome and desktop
-        await signInWithPopup(auth, provider)
+        const result = await signInWithPopup(auth, provider)
+        if (result.user) {
+          // Hard reload so Firebase re-reads auth from localStorage cleanly.
+          // Soft (React Router) navigation loses auth state when storage
+          // is partitioned by Firefox/Safari.
+          window.location.replace('/')
+          return
+        }
       } catch (popupError: unknown) {
         const code = (popupError as { code?: string }).code ?? ''
         // Only fall back to redirect if the popup was actually blocked
