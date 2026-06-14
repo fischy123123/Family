@@ -4,18 +4,28 @@ import { useEffect, useState, useCallback, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import {
   RefreshCw, AlertTriangle, Lightbulb, Clock, ChevronRight,
-  Calendar as CalIcon, Sparkles, Check,
+  Calendar as CalIcon, Sparkles, Check, HelpCircle, X,
 } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { useFirestore } from '@/hooks/useFirestore'
 import { useGoogleTokens } from '@/hooks/useGoogleTokens'
 import { useCapture } from '@/contexts/CaptureContext'
+import { useFamily } from '@/contexts/FamilyContext'
 import { ConnectGooglePrompt } from '@/components/dashboard/ConnectGooglePrompt'
 import { BUCKET_META } from '@/lib/types'
 import type {
   FamilyMember, CalendarEvent, Task, Chore, Plan, SmartList,
   AttentionReport, AttentionItem, AttentionBucket,
 } from '@/lib/types'
+
+type CalendarClarification = {
+  id: string
+  eventId: string
+  eventTitle: string
+  eventDate: string
+  question: string
+  hint: string
+}
 
 const BUCKET_ORDER: AttentionBucket[] = ['now', 'next', 'later', 'upcoming']
 
@@ -24,6 +34,7 @@ export function CommandCenter() {
   const { user } = useAuth()
   const { open: openCapture } = useCapture()
   const { isConnected, getFreshTokens } = useGoogleTokens()
+  const { familyId } = useFamily()
 
   const { data: members } = useFirestore<FamilyMember>('members')
   const { data: localEvents } = useFirestore<CalendarEvent>('events')
@@ -36,6 +47,10 @@ export function CommandCenter() {
   const [loading, setLoading] = useState(false)
   const [googleEvents, setGoogleEvents] = useState<CalendarEvent[]>([])
   const lastRun = useRef<number>(0)
+  const [clarifications, setClarifications] = useState<CalendarClarification[]>([])
+  const [clarificationAnswers, setClarificationAnswers] = useState<Record<string, string>>({})
+  const [clarificationsSubmitted, setClarificationsSubmitted] = useState(false)
+  const clarificationsFetched = useRef(false)
 
   // Fetch Google Calendar events when connected
   useEffect(() => {
@@ -52,9 +67,27 @@ export function CommandCenter() {
         )
         const data = await res.json()
         if (!cancelled && res.ok) {
-          setGoogleEvents(
-            (data.events ?? []).map((e: CalendarEvent) => ({ ...e, ownerEmail: e.ownerEmail || user?.email || '' }))
-          )
+          const loadedEvents: CalendarEvent[] = (data.events ?? []).map((e: CalendarEvent) => ({
+            ...e,
+            ownerEmail: e.ownerEmail || user?.email || '',
+          }))
+          setGoogleEvents(loadedEvents)
+
+          // Fetch calendar clarifications once per session
+          if (loadedEvents.length > 0 && !clarificationsFetched.current) {
+            clarificationsFetched.current = true
+            try {
+              const ctxRes = await fetch('/api/ai/calendar-context', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ events: loadedEvents, members, now: new Date().toISOString() }),
+              })
+              const ctxData = await ctxRes.json()
+              if (!cancelled && ctxRes.ok && ctxData.clarifications?.length > 0) {
+                setClarifications(ctxData.clarifications)
+              }
+            } catch { /* ignore */ }
+          }
         }
       } catch { /* ignore */ }
     }
@@ -138,6 +171,68 @@ export function CommandCenter() {
             <p className="text-[15px] leading-relaxed font-medium">{report.greeting}</p>
           </div>
         </div>
+      )}
+
+      {/* Calendar Intelligence — clarification requests */}
+      {clarifications.length > 0 && !clarificationsSubmitted && (
+        <section className="rounded-2xl p-5 bg-amber-50 border border-amber-200 animate-slide-up">
+          <div className="flex items-start gap-3 mb-4">
+            <div className="w-8 h-8 rounded-lg bg-amber-100 flex items-center justify-center shrink-0">
+              <HelpCircle size={16} className="text-amber-600" />
+            </div>
+            <div>
+              <h3 className="text-sm font-semibold text-amber-900">Help me understand your calendar</h3>
+              <p className="text-xs text-amber-700 mt-0.5">A few events could use more context so I can give better guidance.</p>
+            </div>
+            <button
+              onClick={() => setClarificationsSubmitted(true)}
+              className="ml-auto text-amber-400 hover:text-amber-600"
+              aria-label="Dismiss"
+            >
+              <X size={16} />
+            </button>
+          </div>
+          <div className="space-y-3">
+            {clarifications.map((c) => (
+              <div key={c.id} className="bg-white rounded-xl p-3 border border-amber-100">
+                <p className="text-xs font-medium text-slate-700 mb-1">
+                  📅 {c.eventTitle} · {new Date(c.eventDate).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}
+                </p>
+                <p className="text-xs text-slate-500 mb-2">{c.question}</p>
+                <input
+                  placeholder={c.hint}
+                  value={clarificationAnswers[c.id] ?? ''}
+                  onChange={(e) => setClarificationAnswers((prev) => ({ ...prev, [c.id]: e.target.value }))}
+                  className="w-full text-xs rounded-lg px-3 py-2 border border-slate-200 focus:outline-none focus:border-blue-300 bg-slate-50"
+                />
+              </div>
+            ))}
+          </div>
+          <button
+            onClick={async () => {
+              if (familyId) {
+                const { doc, setDoc } = await import('firebase/firestore')
+                const { db } = await import('@/lib/firebase')
+                await Promise.all(
+                  clarifications
+                    .filter((c) => clarificationAnswers[c.id]?.trim())
+                    .map((c) =>
+                      setDoc(doc(db, 'families', familyId, 'eventContext', c.eventId), {
+                        eventTitle: c.eventTitle,
+                        context: clarificationAnswers[c.id],
+                        savedAt: new Date().toISOString(),
+                      })
+                    )
+                )
+              }
+              setClarificationsSubmitted(true)
+              runEngine()
+            }}
+            className="w-full mt-3 py-2 rounded-xl text-xs font-semibold text-amber-900 bg-amber-100 hover:bg-amber-200 transition-colors"
+          >
+            Save context &amp; refresh
+          </button>
+        </section>
       )}
 
       {/* Loading skeleton */}

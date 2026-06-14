@@ -4,13 +4,11 @@ export const dynamic = 'force-dynamic'
 
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { Check, Copy, Plus, Trash2, Bell, Users, PartyPopper } from 'lucide-react'
+import { Check, Copy, Plus, Trash2, Bell, Users, PartyPopper, Calendar } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { useFamily } from '@/contexts/FamilyContext'
 import { useFirestore } from '@/hooks/useFirestore'
 import { useToast } from '@/contexts/ToastContext'
-import { Input } from '@/components/ui/input'
-import { Button } from '@/components/ui/button'
 import { Select } from '@/components/ui/select'
 import { MEMBER_COLORS } from '@/lib/types'
 import type { FamilyMember } from '@/lib/types'
@@ -23,7 +21,7 @@ export default function OnboardingPage() {
   const router = useRouter()
   const { user, loading } = useAuth()
   const { familyId, inviteCode } = useFamily()
-  const { data: members, create: createMember, remove: removeMember } = useFirestore<FamilyMember>('members')
+  const { data: members, create: createMember, update: updateMember, remove: removeMember } = useFirestore<FamilyMember>('members')
   const { toast } = useToast()
 
   const [step, setStep] = useState(0)
@@ -38,6 +36,16 @@ export default function OnboardingPage() {
   const [colorHex, setColorHex] = useState(MEMBER_COLORS[0])
   const [saving, setSaving] = useState(false)
 
+  // Per-member profile state (step 2)
+  const [profileStep, setProfileStep] = useState(0)
+  const [profileWhat, setProfileWhat] = useState('')
+  const [profileSchedule, setProfileSchedule] = useState('')
+  const [profileImportant, setProfileImportant] = useState('')
+  const [profileSaving, setProfileSaving] = useState(false)
+
+  // Google Calendar step state (step 3)
+  const [calendarRedirecting, setCalendarRedirecting] = useState(false)
+
   useEffect(() => {
     if (!loading && !user) router.replace('/signin')
   }, [user, loading, router])
@@ -45,6 +53,13 @@ export default function OnboardingPage() {
   useEffect(() => {
     notificationsSupported().then(setNotifSupported)
   }, [])
+
+  // Reset profile fields when moving to a new member
+  function resetProfileFields() {
+    setProfileWhat('')
+    setProfileSchedule('')
+    setProfileImportant('')
+  }
 
   function copyCode() {
     if (!inviteCode) return
@@ -65,10 +80,53 @@ export default function OnboardingPage() {
         role, emoji, colorHex,
       })
       setName(''); setEmail(''); setEmoji('👤')
+      // Pick next color based on current members count (after adding, it'll be members.length+1)
       setColorHex(MEMBER_COLORS[(members.length + 1) % MEMBER_COLORS.length])
       toast('Member added', 'success')
     } finally {
       setSaving(false)
+    }
+  }
+
+  function goToStep2() {
+    // If no members, skip straight to step 3
+    if (members.length === 0) {
+      setStep(3)
+      return
+    }
+    setProfileStep(0)
+    resetProfileFields()
+    setStep(2)
+  }
+
+  async function saveProfileAndNext() {
+    const member = members[profileStep]
+    if (!member) return
+    setProfileSaving(true)
+    try {
+      await updateMember({
+        ...member,
+        summary: profileWhat.trim(),
+        routines: profileSchedule.trim(),
+        importantInfo: profileImportant.trim(),
+      } as FamilyMember & { summary: string; routines: string; importantInfo: string })
+    } finally {
+      setProfileSaving(false)
+    }
+    advanceProfile()
+  }
+
+  function skipProfile() {
+    advanceProfile()
+  }
+
+  function advanceProfile() {
+    const nextIndex = profileStep + 1
+    if (nextIndex >= members.length) {
+      setStep(3)
+    } else {
+      setProfileStep(nextIndex)
+      resetProfileFields()
     }
   }
 
@@ -77,7 +135,7 @@ export default function OnboardingPage() {
     try {
       await enableNotifications(familyId, user.email)
       toast('Notifications enabled!', 'success')
-      setStep(3)
+      setStep(5)
     } catch (e: unknown) {
       toast(e instanceof Error ? e.message : 'Could not enable', 'error')
     }
@@ -91,7 +149,7 @@ export default function OnboardingPage() {
     )
   }
 
-  const steps = ['Welcome', 'Family', 'Alerts', 'Done']
+  const steps = ['Welcome', 'Family', 'Profiles', 'Calendar', 'Alerts', 'Done']
 
   return (
     <div className="min-h-screen relative flex items-center justify-center p-4 overflow-hidden bg-slate-900">
@@ -251,13 +309,13 @@ export default function OnboardingPage() {
 
               <div className="flex gap-2 mt-5">
                 <button
-                  onClick={() => setStep(2)}
+                  onClick={goToStep2}
                   className="flex-1 py-2.5 rounded-xl text-sm font-medium text-slate-400 border border-white/10 hover:bg-white/5 transition-all"
                 >
                   Skip
                 </button>
                 <button
-                  onClick={() => setStep(2)}
+                  onClick={goToStep2}
                   disabled={members.length === 0}
                   className="flex-1 py-2.5 rounded-xl text-sm font-semibold text-white disabled:opacity-40 transition-all hover:opacity-90"
                   style={{ background: 'linear-gradient(135deg, #2563eb, #7c3aed)' }}
@@ -268,8 +326,128 @@ export default function OnboardingPage() {
             </div>
           )}
 
-          {/* Step 2 — Notifications */}
-          {step === 2 && (
+          {/* Step 2 — Per-member quick profiles */}
+          {step === 2 && members[profileStep] && (
+            <div>
+              {/* Progress indicator within step */}
+              {members.length > 1 && (
+                <div className="flex gap-1 mb-4">
+                  {members.map((_, i) => (
+                    <div key={i} className="h-1 flex-1 rounded-full overflow-hidden bg-white/10">
+                      <div
+                        className="h-full rounded-full transition-all duration-300"
+                        style={{
+                          width: i <= profileStep ? '100%' : '0%',
+                          background: 'linear-gradient(to right, #60a5fa, #a78bfa)',
+                        }}
+                      />
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <h1 className="text-xl font-bold text-white mb-1">
+                Tell us about {members[profileStep].emoji} {members[profileStep].name}
+              </h1>
+              <p className="text-slate-400 text-xs mb-5">
+                {profileStep + 1} of {members.length} — helps the AI give smarter suggestions
+              </p>
+
+              <div className="space-y-3">
+                <div>
+                  <label className="block text-xs font-medium text-slate-400 mb-1.5">What do they do?</label>
+                  <textarea
+                    value={profileWhat}
+                    onChange={(e) => setProfileWhat(e.target.value)}
+                    placeholder="e.g. 3rd grader at Lincoln Elementary, Works downtown as a nurse"
+                    rows={2}
+                    className="w-full rounded-xl px-4 py-2.5 text-sm text-white placeholder:text-slate-500 border border-white/10 focus:outline-none focus:border-blue-400/50 transition-colors resize-none"
+                    style={{ background: 'rgba(255,255,255,0.07)' }}
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-400 mb-1.5">Typical daily schedule?</label>
+                  <textarea
+                    value={profileSchedule}
+                    onChange={(e) => setProfileSchedule(e.target.value)}
+                    placeholder="e.g. School 8am-3pm, soccer practice Tuesdays 4pm"
+                    rows={2}
+                    className="w-full rounded-xl px-4 py-2.5 text-sm text-white placeholder:text-slate-500 border border-white/10 focus:outline-none focus:border-blue-400/50 transition-colors resize-none"
+                    style={{ background: 'rgba(255,255,255,0.07)' }}
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-400 mb-1.5">Anything important to know?</label>
+                  <textarea
+                    value={profileImportant}
+                    onChange={(e) => setProfileImportant(e.target.value)}
+                    placeholder="e.g. Nut allergy, vegetarian, loves reading"
+                    rows={2}
+                    className="w-full rounded-xl px-4 py-2.5 text-sm text-white placeholder:text-slate-500 border border-white/10 focus:outline-none focus:border-blue-400/50 transition-colors resize-none"
+                    style={{ background: 'rgba(255,255,255,0.07)' }}
+                  />
+                </div>
+              </div>
+
+              <div className="mt-5 space-y-2">
+                <button
+                  onClick={saveProfileAndNext}
+                  disabled={profileSaving}
+                  className="w-full py-3 rounded-xl font-semibold text-white transition-all hover:opacity-90 active:scale-[0.98] disabled:opacity-50"
+                  style={{ background: 'linear-gradient(135deg, #2563eb, #7c3aed)' }}
+                >
+                  {profileSaving ? 'Saving…' : (profileStep + 1 < members.length ? 'Save & Next' : 'Save & Continue')}
+                </button>
+                <button
+                  onClick={skipProfile}
+                  className="w-full py-2 text-sm text-slate-400 hover:text-slate-300 transition-colors"
+                >
+                  Skip
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Step 3 — Connect Google Calendar */}
+          {step === 3 && (
+            <div className="text-center">
+              <div
+                className="w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-5"
+                style={{ background: 'linear-gradient(135deg, rgba(59,130,246,0.25), rgba(99,102,241,0.25))', border: '1px solid rgba(96,165,250,0.3)' }}
+              >
+                <Calendar size={28} className="text-blue-400" />
+              </div>
+              <h1 className="text-xl font-bold text-white mb-2">Connect your Google Calendars</h1>
+              <p className="text-slate-400 text-sm mb-8">
+                See your real schedule and let the AI scan Gmail for appointments. Each family member connects their own account.
+              </p>
+              <button
+                onClick={() => {
+                  setCalendarRedirecting(true)
+                  router.push(`/api/auth/google?email=${user?.email ?? ''}`)
+                }}
+                disabled={calendarRedirecting}
+                className="w-full py-3 rounded-xl font-semibold text-white mb-3 transition-all hover:opacity-90 active:scale-[0.98] disabled:opacity-60"
+                style={{ background: 'linear-gradient(135deg, #2563eb, #7c3aed)' }}
+              >
+                {calendarRedirecting ? 'Redirecting…' : 'Connect & Continue'}
+              </button>
+              {calendarRedirecting && (
+                <p className="text-xs text-slate-400 mb-3">
+                  You&apos;ll be redirected to Google, then brought back to the app.
+                </p>
+              )}
+              <button
+                onClick={() => setStep(4)}
+                className="w-full py-2.5 rounded-xl text-sm font-medium text-slate-400 border border-white/10 hover:bg-white/5 transition-all"
+              >
+                Skip for now
+              </button>
+            </div>
+          )}
+
+          {/* Step 4 — Notifications */}
+          {step === 4 && (
             <div className="text-center">
               <div
                 className="w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-5"
@@ -301,7 +479,7 @@ export default function OnboardingPage() {
                 </div>
               )}
               <button
-                onClick={() => setStep(3)}
+                onClick={() => setStep(5)}
                 className="w-full py-2.5 rounded-xl text-sm font-medium text-slate-400 border border-white/10 hover:bg-white/5 transition-all"
               >
                 Maybe later
@@ -309,8 +487,8 @@ export default function OnboardingPage() {
             </div>
           )}
 
-          {/* Step 3 — Done */}
-          {step === 3 && (
+          {/* Step 5 — Done */}
+          {step === 5 && (
             <div className="text-center">
               <div
                 className="w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-5"
@@ -321,11 +499,10 @@ export default function OnboardingPage() {
               <div className="text-4xl mb-3">🎉</div>
               <h1 className="text-2xl font-bold text-white mb-2">You&apos;re all set!</h1>
               <p className="text-slate-400 text-sm mb-8">
-                Try the Quick Add bar on your dashboard — just type things like
-                &quot;dentist for Mia next Tuesday at 3pm&quot; and the AI will sort it out.
+                Try the Capture button (+ in the corner) — just type &quot;dentist for Mia next Tuesday at 3pm&quot; and the AI will sort it out.
               </p>
               <button
-                onClick={() => router.replace('/dashboard')}
+                onClick={() => router.replace('/command')}
                 className="w-full py-3 rounded-xl font-semibold text-white transition-all hover:opacity-90 active:scale-[0.98]"
                 style={{ background: 'linear-gradient(135deg, #16a34a, #059669)' }}
               >
