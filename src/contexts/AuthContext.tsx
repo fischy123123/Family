@@ -8,6 +8,7 @@ import { auth } from '@/lib/firebase'
 interface AuthContextType {
   user: User | null
   loading: boolean
+  signInError: string | null
   signIn: () => Promise<void>
   signOut: () => Promise<void>
 }
@@ -15,6 +16,7 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType>({
   user: null,
   loading: true,
+  signInError: null,
   signIn: async () => {},
   signOut: async () => {},
 })
@@ -22,10 +24,13 @@ const AuthContext = createContext<AuthContextType>({
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null)
   const [loading, setLoading] = useState(true)
+  const [signInError, setSignInError] = useState<string | null>(null)
 
   useEffect(() => {
-    // Pick up the result after Google redirects back to the app
-    getRedirectResult(auth).catch(() => {})
+    getRedirectResult(auth).catch((e: Error) => {
+      setSignInError(e.message)
+      setLoading(false)
+    })
     const unsub = onAuthStateChanged(auth, (u) => {
       setUser(u)
       setLoading(false)
@@ -43,7 +48,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <AuthContext.Provider value={{ user, loading, signIn, signOut }}>
+    <AuthContext.Provider value={{ user, loading, signInError, signIn, signOut }}>
       {children}
     </AuthContext.Provider>
   )

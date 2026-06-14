@@ -8,7 +8,7 @@ import { useAuth } from '@/contexts/AuthContext'
 import { Calendar, Brain, Users } from 'lucide-react'
 
 export default function SignInPage() {
-  const { user, loading, signIn } = useAuth()
+  const { user, loading, signIn, signInError } = useAuth()
   const router = useRouter()
 
   useEffect(() => {
@@ -81,6 +81,11 @@ export default function SignInPage() {
             Continue with Google
           </button>
 
+          {signInError && (
+            <p className="text-xs text-red-400 text-center mt-3 bg-red-500/10 rounded-lg px-3 py-2 break-all">
+              {signInError}
+            </p>
+          )}
           <p className="text-xs text-slate-600 text-center mt-4">
             Your data is private and secure. No subscriptions.
           </p>
