@@ -160,6 +160,7 @@ export function CommandCenter() {
             members,
             now: new Date().toISOString(),
             knownEventIds: eventContexts.map((e) => e.id),
+            timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
           }),
         })
         const data = await res.json()

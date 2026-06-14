@@ -9,16 +9,20 @@ interface FamilyContextType {
   familyId: string | null
   inviteCode: string | null
   loading: boolean
+  loadError: string | null
   createFamily: () => Promise<void>
   joinFamily: (code: string) => Promise<boolean>
+  resetFamily: () => Promise<void>
 }
 
 const FamilyContext = createContext<FamilyContextType>({
   familyId: null,
   inviteCode: null,
   loading: true,
+  loadError: null,
   createFamily: async () => {},
   joinFamily: async () => false,
+  resetFamily: async () => {},
 })
 
 function randomCode(): string {
@@ -30,10 +34,12 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
   const [familyId, setFamilyId] = useState<string | null>(null)
   const [inviteCode, setInviteCode] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
 
   useEffect(() => {
     if (!user) {
       setFamilyId(null)
+      setLoadError(null)
       setLoading(false)
       return
     }
@@ -50,8 +56,13 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
         if (snap.exists() && snap.data().familyId) {
           const fid = snap.data().familyId
           setFamilyId(fid)
-          const fsnap = await getDoc(doc(db, 'families', fid))
-          if (!cancelled && fsnap.exists()) setInviteCode(fsnap.data().inviteCode ?? null)
+          setLoadError(null)
+          try {
+            const fsnap = await getDoc(doc(db, 'families', fid))
+            if (!cancelled && fsnap.exists()) setInviteCode(fsnap.data().inviteCode ?? null)
+          } catch {
+            // Non-fatal: invite code unavailable but family ID is set
+          }
         }
         if (!cancelled) setLoading(false)
       } catch (err) {
@@ -60,6 +71,10 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
         if (attempt < 3) {
           setTimeout(() => loadFamily(attempt + 1), 800 * (attempt + 1))
         } else {
+          // After all retries, surface the error but do NOT redirect to setup —
+          // that would destroy the user's existing family data.
+          const msg = err instanceof Error ? err.message : 'Could not load family data. Check your connection and refresh.'
+          setLoadError(msg)
           setLoading(false)
         }
       }
@@ -97,8 +112,17 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
     return true
   }
 
+  // Detaches user from their current family (does not delete family data).
+  // Use this to re-run onboarding without touching other family members' data.
+  async function resetFamily(): Promise<void> {
+    if (!user) return
+    await setDoc(doc(db, 'users', user.uid), { familyId: null }, { merge: true })
+    setFamilyId(null)
+    setInviteCode(null)
+  }
+
   return (
-    <FamilyContext.Provider value={{ familyId, inviteCode, loading, createFamily, joinFamily }}>
+    <FamilyContext.Provider value={{ familyId, inviteCode, loading, loadError, createFamily, joinFamily, resetFamily }}>
       {children}
     </FamilyContext.Provider>
   )

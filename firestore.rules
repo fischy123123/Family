@@ -7,9 +7,14 @@ service cloud.firestore {
       allow read, write: if request.auth != null && request.auth.uid == userId;
     }
 
-    // Family members can read/write their family's data
+    // Family documents
     match /families/{familyId} {
-      allow read, write: if request.auth != null &&
+      // Creating a new family: check the members array in the incoming data
+      allow create: if request.auth != null &&
+        request.auth.uid in request.resource.data.members;
+
+      // Reading or updating an existing family: check existing members array
+      allow read, update, delete: if request.auth != null &&
         request.auth.uid in resource.data.members;
 
       // All sub-collections are accessible to family members

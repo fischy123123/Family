@@ -3,7 +3,7 @@
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { useAuth } from '@/contexts/AuthContext'
-import { LayoutGrid, Users, Map, ListChecks, Sparkles, LogOut } from 'lucide-react'
+import { LayoutGrid, Users, Map, ListChecks, Sparkles, LogOut, Settings } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 const NAV_ITEMS = [
@@ -60,6 +60,18 @@ export function Sidebar() {
         {user?.email && (
           <p className="px-3 text-xs text-slate-600 truncate mb-2">{user.email}</p>
         )}
+        <Link
+          href="/settings"
+          className={cn(
+            'flex items-center gap-3 py-2 rounded-xl text-sm w-full transition-all duration-150 border-l-2 pl-[10px] pr-3',
+            pathname === '/settings'
+              ? 'bg-blue-500/20 text-blue-400 font-medium border-blue-500'
+              : 'text-slate-500 hover:bg-slate-800 hover:text-slate-300 border-transparent'
+          )}
+        >
+          <Settings size={16} />
+          Settings
+        </Link>
         <button
           onClick={signOut}
           className="flex items-center gap-3 py-2 rounded-xl text-sm text-slate-500 hover:bg-slate-800 hover:text-slate-300 w-full transition-all duration-150 border-l-2 border-transparent pl-[10px] pr-3"

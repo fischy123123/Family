@@ -81,6 +81,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   async function signOut() {
     await firebaseSignOut(auth)
+    window.location.replace('/signin')
   }
 
   return (
