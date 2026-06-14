@@ -27,6 +27,13 @@ type CalendarClarification = {
   hint: string
 }
 
+type EventContext = {
+  id: string // == event id
+  eventTitle: string
+  context: string
+  savedAt: string
+}
+
 const BUCKET_ORDER: AttentionBucket[] = ['now', 'next', 'later', 'upcoming']
 
 export function CommandCenter() {
@@ -42,6 +49,7 @@ export function CommandCenter() {
   const { data: chores } = useFirestore<Chore>('chores')
   const { data: plans } = useFirestore<Plan>('plans')
   const { data: lists } = useFirestore<SmartList>('lists')
+  const { data: eventContexts, create: createEventContext } = useFirestore<EventContext>('eventContext')
 
   const [report, setReport] = useState<AttentionReport | null>(null)
   const [loading, setLoading] = useState(false)
@@ -49,7 +57,8 @@ export function CommandCenter() {
   const lastRun = useRef<number>(0)
   const [clarifications, setClarifications] = useState<CalendarClarification[]>([])
   const [clarificationAnswers, setClarificationAnswers] = useState<Record<string, string>>({})
-  const [clarificationsSubmitted, setClarificationsSubmitted] = useState(false)
+  const [clarificationsDismissed, setClarificationsDismissed] = useState(false)
+  const [savingItemId, setSavingItemId] = useState<string | null>(null)
   const clarificationsFetched = useRef(false)
 
   // Fetch Google Calendar events when connected
@@ -72,22 +81,6 @@ export function CommandCenter() {
             ownerEmail: e.ownerEmail || user?.email || '',
           }))
           setGoogleEvents(loadedEvents)
-
-          // Fetch calendar clarifications once per session
-          if (loadedEvents.length > 0 && !clarificationsFetched.current) {
-            clarificationsFetched.current = true
-            try {
-              const ctxRes = await fetch('/api/ai/calendar-context', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ events: loadedEvents, members, now: new Date().toISOString() }),
-              })
-              const ctxData = await ctxRes.json()
-              if (!cancelled && ctxRes.ok && ctxData.clarifications?.length > 0) {
-                setClarifications(ctxData.clarifications)
-              }
-            } catch { /* ignore */ }
-          }
         }
       } catch { /* ignore */ }
     }
@@ -96,16 +89,46 @@ export function CommandCenter() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isConnected])
 
+  // Ask the AI which calendar events are ambiguous — once per session, skipping
+  // events the family has already explained.
+  useEffect(() => {
+    if (googleEvents.length === 0 || clarificationsFetched.current) return
+    clarificationsFetched.current = true
+    let cancelled = false
+    ;(async () => {
+      try {
+        const res = await fetch('/api/ai/calendar-context', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            events: googleEvents,
+            members,
+            now: new Date().toISOString(),
+            knownEventIds: eventContexts.map((e) => e.id),
+          }),
+        })
+        const data = await res.json()
+        if (!cancelled && res.ok && data.clarifications?.length > 0) {
+          setClarifications(data.clarifications)
+        }
+      } catch { /* ignore */ }
+    })()
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [googleEvents.length, eventContexts.length])
+
   const events = isConnected ? googleEvents : localEvents
 
-  const runEngine = useCallback(async () => {
+  const runEngine = useCallback(async (overrideContext?: { eventTitle: string; context: string }[]) => {
     setLoading(true)
     try {
+      const eventContext = overrideContext ??
+        eventContexts.map((e) => ({ eventTitle: e.eventTitle, context: e.context }))
       const res = await fetch('/api/ai/attention', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          members, events, tasks, chores, plans, lists,
+          members, events, tasks, chores, plans, lists, eventContext,
           now: new Date().toISOString(),
         }),
       })
@@ -114,7 +137,7 @@ export function CommandCenter() {
     } catch { /* ignore */ } finally {
       setLoading(false)
     }
-  }, [members, events, tasks, chores, plans, lists])
+  }, [members, events, tasks, chores, plans, lists, eventContexts])
 
   // Auto-run once data is loaded (and re-run at most every 60s)
   useEffect(() => {
@@ -131,6 +154,36 @@ export function CommandCenter() {
     const t = tasks.find((x) => x.id === item.sourceId)
     if (t) await updateTask({ ...t, isCompleted: true, completedAt: new Date().toISOString() })
   }
+
+  // Save one clarification, then immediately re-run the engine with it included.
+  async function saveClarification(c: CalendarClarification) {
+    const answer = clarificationAnswers[c.id]?.trim()
+    if (!answer || !familyId) return
+    setSavingItemId(c.id)
+    try {
+      await createEventContext({
+        id: c.eventId,
+        eventTitle: c.eventTitle,
+        context: answer,
+        savedAt: new Date().toISOString(),
+      })
+      // Build the merged context so the just-saved answer is used right away,
+      // without waiting for the Firestore snapshot to round-trip.
+      const merged = [
+        ...eventContexts
+          .filter((e) => e.id !== c.eventId)
+          .map((e) => ({ eventTitle: e.eventTitle, context: e.context })),
+        { eventTitle: c.eventTitle, context: answer },
+      ]
+      runEngine(merged)
+    } finally {
+      setSavingItemId(null)
+    }
+  }
+
+  // Hide events the family has already explained (in this or a past session).
+  const answeredIds = new Set(eventContexts.map((e) => e.id))
+  const visibleClarifications = clarifications.filter((c) => !answeredIds.has(c.eventId))
 
   const firstName = user?.displayName?.split(' ')[0] ?? 'there'
   const todayEvents = events
@@ -152,7 +205,7 @@ export function CommandCenter() {
           </h1>
         </div>
         <button
-          onClick={runEngine}
+          onClick={() => runEngine()}
           disabled={loading}
           className="mt-1 p-2.5 rounded-xl bg-white border border-slate-200 text-slate-500 hover:text-blue-600 hover:border-blue-200 transition-colors shadow-card"
           aria-label="Refresh"
@@ -173,8 +226,8 @@ export function CommandCenter() {
         </div>
       )}
 
-      {/* Calendar Intelligence — clarification requests */}
-      {clarifications.length > 0 && !clarificationsSubmitted && (
+      {/* Calendar Intelligence — clarification requests (saved per item) */}
+      {visibleClarifications.length > 0 && !clarificationsDismissed && (
         <section className="rounded-2xl p-5 bg-amber-50 border border-amber-200 animate-slide-up">
           <div className="flex items-start gap-3 mb-4">
             <div className="w-8 h-8 rounded-lg bg-amber-100 flex items-center justify-center shrink-0">
@@ -182,10 +235,12 @@ export function CommandCenter() {
             </div>
             <div>
               <h3 className="text-sm font-semibold text-amber-900">Help me understand your calendar</h3>
-              <p className="text-xs text-amber-700 mt-0.5">A few events could use more context so I can give better guidance.</p>
+              <p className="text-xs text-amber-700 mt-0.5">
+                Answer any that are useful — each is saved on its own and your assistant uses it right away.
+              </p>
             </div>
             <button
-              onClick={() => setClarificationsSubmitted(true)}
+              onClick={() => setClarificationsDismissed(true)}
               className="ml-auto text-amber-400 hover:text-amber-600"
               aria-label="Dismiss"
             >
@@ -193,45 +248,35 @@ export function CommandCenter() {
             </button>
           </div>
           <div className="space-y-3">
-            {clarifications.map((c) => (
-              <div key={c.id} className="bg-white rounded-xl p-3 border border-amber-100">
-                <p className="text-xs font-medium text-slate-700 mb-1">
-                  📅 {c.eventTitle} · {new Date(c.eventDate).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}
-                </p>
-                <p className="text-xs text-slate-500 mb-2">{c.question}</p>
-                <input
-                  placeholder={c.hint}
-                  value={clarificationAnswers[c.id] ?? ''}
-                  onChange={(e) => setClarificationAnswers((prev) => ({ ...prev, [c.id]: e.target.value }))}
-                  className="w-full text-xs rounded-lg px-3 py-2 border border-slate-200 focus:outline-none focus:border-blue-300 bg-slate-50"
-                />
-              </div>
-            ))}
+            {visibleClarifications.map((c) => {
+              const answer = clarificationAnswers[c.id] ?? ''
+              const saving = savingItemId === c.id
+              return (
+                <div key={c.id} className="bg-white rounded-xl p-3 border border-amber-100">
+                  <p className="text-xs font-medium text-slate-700 mb-1">
+                    📅 {c.eventTitle} · {new Date(c.eventDate).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}
+                  </p>
+                  <p className="text-xs text-slate-500 mb-2">{c.question}</p>
+                  <div className="flex items-center gap-2">
+                    <input
+                      placeholder={c.hint}
+                      value={answer}
+                      onChange={(e) => setClarificationAnswers((prev) => ({ ...prev, [c.id]: e.target.value }))}
+                      onKeyDown={(e) => { if (e.key === 'Enter') saveClarification(c) }}
+                      className="flex-1 text-xs rounded-lg px-3 py-2 border border-slate-200 focus:outline-none focus:border-blue-300 bg-slate-50"
+                    />
+                    <button
+                      onClick={() => saveClarification(c)}
+                      disabled={!answer.trim() || saving}
+                      className="shrink-0 px-3 py-2 rounded-lg text-xs font-semibold text-white bg-amber-500 hover:bg-amber-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                    >
+                      {saving ? 'Saving…' : 'Save'}
+                    </button>
+                  </div>
+                </div>
+              )
+            })}
           </div>
-          <button
-            onClick={async () => {
-              if (familyId) {
-                const { doc, setDoc } = await import('firebase/firestore')
-                const { db } = await import('@/lib/firebase')
-                await Promise.all(
-                  clarifications
-                    .filter((c) => clarificationAnswers[c.id]?.trim())
-                    .map((c) =>
-                      setDoc(doc(db, 'families', familyId, 'eventContext', c.eventId), {
-                        eventTitle: c.eventTitle,
-                        context: clarificationAnswers[c.id],
-                        savedAt: new Date().toISOString(),
-                      })
-                    )
-                )
-              }
-              setClarificationsSubmitted(true)
-              runEngine()
-            }}
-            className="w-full mt-3 py-2 rounded-xl text-xs font-semibold text-amber-900 bg-amber-100 hover:bg-amber-200 transition-colors"
-          >
-            Save context &amp; refresh
-          </button>
         </section>
       )}
 

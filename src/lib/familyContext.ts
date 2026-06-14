@@ -13,6 +13,10 @@ export interface FamilyContextInput {
   plans: Plan[]
   lists: SmartList[]
   now: string // ISO datetime
+  // User-provided clarifications for ambiguous calendar events, keyed loosely
+  // by event title. Captured from the Command Center "help me understand your
+  // calendar" prompt.
+  eventContext?: { eventTitle: string; context: string }[]
 }
 
 function fmtMember(m: FamilyMember): string {
@@ -25,7 +29,7 @@ function fmtMember(m: FamilyMember): string {
 }
 
 export function buildFamilyContext(input: FamilyContextInput): string {
-  const { members, events, tasks, chores, plans, lists, now } = input
+  const { members, events, tasks, chores, plans, lists, now, eventContext } = input
   const nowDate = new Date(now)
   const horizon = new Date(nowDate.getTime() + 14 * 24 * 60 * 60 * 1000)
 
@@ -106,6 +110,14 @@ export function buildFamilyContext(input: FamilyContextInput): string {
           const remaining = l.items.filter((i) => !i.isComplete).length
           return `- ${l.name} (${l.kind}): ${remaining} items remaining`
         })
+        .join('\n')}`
+    )
+  }
+
+  if (eventContext?.length) {
+    sections.push(
+      `USER-PROVIDED CALENDAR CONTEXT (the family explained these otherwise-ambiguous events — rely on this to understand what they are, who they're for, and what prep they need):\n${eventContext
+        .map((e) => `- "${e.eventTitle}": ${e.context}`)
         .join('\n')}`
     )
   }

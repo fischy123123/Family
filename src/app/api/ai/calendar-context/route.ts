@@ -9,10 +9,18 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'ANTHROPIC_API_KEY not configured' }, { status: 500 })
   }
 
-  const { events, members, now }: { events: CalendarEvent[]; members: FamilyMember[]; now: string } =
-    await request.json()
+  const { events, members, now, knownEventIds }: {
+    events: CalendarEvent[]
+    members: FamilyMember[]
+    now: string
+    knownEventIds?: string[]
+  } = await request.json()
 
-  if (!events || events.length === 0) {
+  // Don't re-ask about events the family has already explained.
+  const known = new Set(knownEventIds ?? [])
+  const pending = (events ?? []).filter((e) => !known.has(e.id))
+
+  if (pending.length === 0) {
     return NextResponse.json({ clarifications: [] })
   }
 
@@ -21,7 +29,7 @@ export async function POST(request: NextRequest) {
   const systemPrompt = `You are analyzing a family's Google Calendar events. Identify events whose title or context is ambiguous — unclear who it's for, what it's about, or what preparation is needed. Return ONLY a JSON array (no markdown) of clarification requests. Limit to 5 max.`
 
   const memberNames = members.map((m) => m.name).join(', ')
-  const eventLines = events
+  const eventLines = pending
     .map((e) => {
       const date = new Date(e.start).toLocaleDateString(undefined, {
         weekday: 'short',
