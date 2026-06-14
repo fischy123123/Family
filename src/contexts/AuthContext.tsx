@@ -39,8 +39,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [])
 
   async function signIn() {
-    const provider = new GoogleAuthProvider()
-    await signInWithRedirect(auth, provider)
+    try {
+      if (!auth) throw new Error('Firebase not configured — check NEXT_PUBLIC_FIREBASE_* environment variables in Vercel')
+      const provider = new GoogleAuthProvider()
+      await signInWithRedirect(auth, provider)
+    } catch (e: unknown) {
+      setSignInError(e instanceof Error ? e.message : 'Sign-in failed')
+      setLoading(false)
+    }
   }
 
   async function signOut() {
