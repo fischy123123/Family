@@ -48,79 +48,95 @@ export default function SetupPage() {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center p-4">
-      <div className="bg-white rounded-2xl shadow-xl p-8 w-full max-w-sm text-center">
-        <div className="text-5xl mb-4">🏠</div>
-        <h1 className="text-2xl font-bold text-gray-900 mb-1">Set Up Your Family</h1>
-        <p className="text-gray-500 text-sm mb-8">
-          Create a new family space or join an existing one with an invite code.
-        </p>
+    <div className="min-h-screen relative overflow-hidden flex items-center justify-center p-4"
+      style={{ background: 'linear-gradient(135deg, #0f172a 0%, #1e1b4b 50%, #0f172a 100%)' }}>
+      {/* Orbs */}
+      <div className="absolute top-1/3 right-1/4 w-80 h-80 rounded-full opacity-20 blur-3xl animate-float pointer-events-none"
+        style={{ background: 'radial-gradient(circle, #6366f1, transparent)' }} />
+      <div className="absolute bottom-1/3 left-1/4 w-64 h-64 rounded-full opacity-15 blur-3xl pointer-events-none"
+        style={{ background: 'radial-gradient(circle, #3b82f6, transparent)', animation: 'float 4s ease-in-out 1.5s infinite' }} />
 
-        {mode === 'choose' && (
-          <div className="space-y-3">
-            <button
-              onClick={() => setMode('create')}
-              className="w-full py-3 px-4 bg-blue-600 text-white rounded-xl font-medium hover:bg-blue-700 transition-colors"
-            >
-              Create a New Family
-            </button>
-            <button
-              onClick={() => setMode('join')}
-              className="w-full py-3 px-4 bg-white border border-gray-200 text-gray-700 rounded-xl font-medium hover:bg-gray-50 transition-colors"
-            >
-              Join with Invite Code
-            </button>
-            <button onClick={signOut} className="text-xs text-gray-400 hover:text-gray-600 mt-2">
-              Sign out
-            </button>
+      <div className="relative z-10 w-full max-w-sm animate-scale-in">
+        <div className="rounded-3xl p-8 text-center" style={{
+          background: 'rgba(255,255,255,0.06)',
+          backdropFilter: 'blur(40px)',
+          WebkitBackdropFilter: 'blur(40px)',
+          border: '1px solid rgba(255,255,255,0.12)',
+          boxShadow: '0 32px 64px rgba(0,0,0,0.4)',
+        }}>
+          <div className="inline-flex w-14 h-14 rounded-2xl items-center justify-center mb-4 shadow-float"
+            style={{ background: 'linear-gradient(135deg, #3b82f6, #8b5cf6)' }}>
+            <span className="text-2xl">🏠</span>
           </div>
-        )}
+          <h1 className="text-2xl font-bold text-white mb-1">Set Up Your Family</h1>
+          <p className="text-slate-400 text-sm mb-8">
+            Create a new family space or join an existing one with an invite code.
+          </p>
 
-        {mode === 'create' && (
-          <div className="space-y-4">
-            <p className="text-sm text-gray-600">
-              We&apos;ll create your family space and generate an invite code you can share with family members.
-            </p>
-            {error && <p className="text-red-500 text-xs">{error}</p>}
-            <button
-              onClick={handleCreate}
-              disabled={loading}
-              className="w-full py-3 px-4 bg-blue-600 text-white rounded-xl font-medium hover:bg-blue-700 disabled:opacity-50 transition-colors"
-            >
-              {loading ? 'Creating...' : 'Create Family Space'}
-            </button>
-            <button onClick={() => setMode('choose')} className="text-sm text-gray-400 hover:text-gray-600">
-              Back
-            </button>
-          </div>
-        )}
-
-        {mode === 'join' && (
-          <form onSubmit={handleJoin} className="space-y-4">
-            <div>
-              <input
-                type="text"
-                placeholder="Enter invite code"
-                value={code}
-                onChange={(e) => setCode(e.target.value.toUpperCase())}
-                maxLength={6}
-                className="w-full py-3 px-4 border border-gray-200 rounded-xl text-center text-lg font-mono tracking-widest focus:outline-none focus:ring-2 focus:ring-blue-500"
-                autoFocus
-              />
-              {error && <p className="text-red-500 text-xs mt-2">{error}</p>}
+          {mode === 'choose' && (
+            <div className="space-y-3">
+              <button onClick={() => setMode('create')}
+                className="w-full py-3.5 px-4 rounded-xl font-semibold text-sm transition-all duration-200 hover:-translate-y-0.5 active:translate-y-0"
+                style={{ background: 'linear-gradient(135deg, #3b82f6, #6366f1)', color: 'white', boxShadow: '0 4px 12px rgba(59,130,246,0.4)' }}>
+                Create a New Family
+              </button>
+              <button onClick={() => setMode('join')}
+                className="w-full py-3.5 px-4 rounded-xl font-semibold text-sm transition-all duration-200 text-white hover:bg-white/10"
+                style={{ border: '1px solid rgba(255,255,255,0.2)', background: 'rgba(255,255,255,0.05)' }}>
+                Join with Invite Code
+              </button>
+              <button onClick={signOut} className="text-xs text-slate-600 hover:text-slate-400 mt-2 transition-colors">
+                Sign out
+              </button>
             </div>
-            <button
-              type="submit"
-              disabled={loading || !code.trim()}
-              className="w-full py-3 px-4 bg-blue-600 text-white rounded-xl font-medium hover:bg-blue-700 disabled:opacity-50 transition-colors"
-            >
-              {loading ? 'Joining...' : 'Join Family'}
-            </button>
-            <button type="button" onClick={() => setMode('choose')} className="text-sm text-gray-400 hover:text-gray-600">
-              Back
-            </button>
-          </form>
-        )}
+          )}
+
+          {mode === 'create' && (
+            <div className="space-y-4">
+              <p className="text-sm text-slate-400">
+                We&apos;ll create your family space and generate an invite code you can share with family members.
+              </p>
+              {error && <p className="text-red-400 text-xs">{error}</p>}
+              <button onClick={handleCreate} disabled={loading}
+                className="w-full py-3.5 px-4 rounded-xl font-semibold text-sm text-white transition-all duration-200 hover:-translate-y-0.5 disabled:opacity-50 disabled:translate-y-0"
+                style={{ background: 'linear-gradient(135deg, #3b82f6, #6366f1)', boxShadow: '0 4px 12px rgba(59,130,246,0.4)' }}>
+                {loading ? 'Creating...' : 'Create Family Space'}
+              </button>
+              <button onClick={() => setMode('choose')} className="text-sm text-slate-500 hover:text-slate-300 transition-colors">
+                Back
+              </button>
+            </div>
+          )}
+
+          {mode === 'join' && (
+            <form onSubmit={handleJoin} className="space-y-4">
+              <div>
+                <input
+                  type="text"
+                  placeholder="Enter invite code"
+                  value={code}
+                  onChange={(e) => setCode(e.target.value.toUpperCase())}
+                  maxLength={6}
+                  className="w-full py-3 px-4 rounded-xl text-center text-xl font-mono tracking-widest transition-all duration-200 text-white placeholder-slate-600 focus:outline-none"
+                  style={{
+                    background: 'rgba(255,255,255,0.08)',
+                    border: '1.5px solid rgba(255,255,255,0.15)',
+                  }}
+                  autoFocus
+                />
+                {error && <p className="text-red-400 text-xs mt-2">{error}</p>}
+              </div>
+              <button type="submit" disabled={loading || !code.trim()}
+                className="w-full py-3.5 px-4 rounded-xl font-semibold text-sm text-white transition-all duration-200 hover:-translate-y-0.5 disabled:opacity-40 disabled:translate-y-0"
+                style={{ background: 'linear-gradient(135deg, #3b82f6, #6366f1)', boxShadow: '0 4px 12px rgba(59,130,246,0.4)' }}>
+                {loading ? 'Joining...' : 'Join Family'}
+              </button>
+              <button type="button" onClick={() => setMode('choose')} className="text-sm text-slate-500 hover:text-slate-300 transition-colors">
+                Back
+              </button>
+            </form>
+          )}
+        </div>
       </div>
     </div>
   )
