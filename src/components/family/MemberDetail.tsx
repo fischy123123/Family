@@ -33,6 +33,7 @@ import type {
 
 interface MemberDetailProps {
   member: FamilyMember
+  isCurrentUser?: boolean
   onBack: () => void
 }
 
@@ -64,7 +65,7 @@ function relativeDate(iso: string): string {
   return formatDate(iso)
 }
 
-export function MemberDetail({ member, onBack }: MemberDetailProps) {
+export function MemberDetail({ member, isCurrentUser, onBack }: MemberDetailProps) {
   const { update } = useFirestore<FamilyMember>('members')
   const { toast } = useToast()
   const [editing, setEditing] = useState(false)
@@ -97,15 +98,24 @@ export function MemberDetail({ member, onBack }: MemberDetailProps) {
 
       {/* Member header */}
       <div className="bg-white rounded-2xl shadow-card border border-slate-100 p-6 mb-5 flex items-center gap-5 animate-scale-in">
-        <div
-          className="h-20 w-20 rounded-full flex items-center justify-center text-4xl shrink-0"
-          style={{ backgroundColor: `${member.colorHex}40` }}
-        >
-          {member.emoji}
+        <div className="relative shrink-0">
+          <div
+            className="h-20 w-20 rounded-full flex items-center justify-center text-4xl"
+            style={{ backgroundColor: `${member.colorHex}40` }}
+          >
+            {member.emoji}
+          </div>
+          {isCurrentUser && (
+            <span className="absolute -top-1 -right-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-600 text-white leading-none shadow">
+              YOU
+            </span>
+          )}
         </div>
         <div className="flex-1 min-w-0">
           <h1 className="text-2xl font-bold text-slate-900 truncate">{member.name}</h1>
-          <p className="text-slate-500 capitalize">{member.role}</p>
+          <p className="text-slate-500 capitalize">
+            {member.species ? `${member.species}` : member.role}
+          </p>
           {member.birthday && (
             <p className="text-sm text-slate-400 mt-1 flex items-center gap-1.5">
               <Cake size={14} />

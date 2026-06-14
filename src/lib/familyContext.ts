@@ -13,6 +13,7 @@ export interface FamilyContextInput {
   plans: Plan[]
   lists: SmartList[]
   now: string // ISO datetime
+  timezone?: string // IANA timezone e.g. "America/Los_Angeles"
   // User-provided clarifications for ambiguous calendar events, keyed loosely
   // by event title. Captured from the Command Center "help me understand your
   // calendar" prompt.
@@ -20,6 +21,37 @@ export interface FamilyContextInput {
   // Who is signed in / asking right now, so the AI can address them as "you".
   currentUserEmail?: string
   currentUserName?: string
+}
+
+// Format a date/time in the user's local timezone for the AI.
+function fmtDatetime(iso: string, tz?: string): string {
+  try {
+    return new Date(iso).toLocaleString('en-US', {
+      timeZone: tz,
+      weekday: 'short',
+      month: 'short',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+      timeZoneName: 'short',
+    })
+  } catch {
+    return new Date(iso).toISOString()
+  }
+}
+
+function fmtDate(iso: string, tz?: string): string {
+  try {
+    return new Date(iso).toLocaleDateString('en-US', {
+      timeZone: tz,
+      weekday: 'short',
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+    })
+  } catch {
+    return new Date(iso).toDateString()
+  }
 }
 
 function fmtMember(m: FamilyMember, currentUserEmail?: string): string {
@@ -34,7 +66,8 @@ function fmtMember(m: FamilyMember, currentUserEmail?: string): string {
 }
 
 export function buildFamilyContext(input: FamilyContextInput): string {
-  const { members, events, tasks, chores, plans, lists, now, eventContext, currentUserEmail, currentUserName } = input
+  const { members, events, tasks, chores, plans, lists, now, timezone, eventContext, currentUserEmail, currentUserName } = input
+  const tz = timezone || undefined
   const nowDate = new Date(now)
   const horizon = new Date(nowDate.getTime() + 14 * 24 * 60 * 60 * 1000)
 
@@ -50,7 +83,8 @@ export function buildFamilyContext(input: FamilyContextInput): string {
 
   const sections: string[] = []
 
-  sections.push(`CURRENT TIME: ${nowDate.toString()}`)
+  const nowFormatted = fmtDatetime(now, tz)
+  sections.push(`CURRENT TIME: ${nowFormatted}${tz ? ` (timezone: ${tz})` : ''}`)
 
   const matchedSelf = currentUserEmail
     ? members.find((m) => m.email?.toLowerCase() === currentUserEmail.toLowerCase())
@@ -72,7 +106,7 @@ export function buildFamilyContext(input: FamilyContextInput): string {
         ? upcomingEvents
             .map(
               (e) =>
-                `- ${e.title} | ${e.isAllDay ? 'all-day ' : ''}${new Date(e.start).toString()}${
+                `- ${e.title} | ${e.isAllDay ? 'all-day ' : ''}${fmtDatetime(e.start, tz)}${
                   e.location ? ` @ ${e.location}` : ''
                 }${e.ownerEmail ? ` (${e.ownerEmail})` : ''}`
             )
@@ -87,7 +121,7 @@ export function buildFamilyContext(input: FamilyContextInput): string {
         ? openTasks
             .map(
               (t) =>
-                `- ${t.title}${t.dueDate ? ` (due ${new Date(t.dueDate).toDateString()})` : ''}${
+                `- ${t.title}${t.dueDate ? ` (due ${fmtDate(t.dueDate, tz)})` : ''}${
                   t.assigneeEmail ? ` [${t.assigneeEmail}]` : ''
                 } priority=${t.priority}`
             )
@@ -112,7 +146,7 @@ export function buildFamilyContext(input: FamilyContextInput): string {
       `ACTIVE PLANS:\n${plans
         .map((p) => {
           const openTaskCount = p.tasks.filter((t) => !t.isCompleted).length
-          return `- ${p.title} (${p.kind})${p.targetDate ? ` target ${new Date(p.targetDate).toDateString()}` : ''} — ${openTaskCount} open tasks, readiness ${p.readiness ?? '?'}%`
+          return `- ${p.title} (${p.kind})${p.targetDate ? ` target ${fmtDate(p.targetDate, tz)}` : ''} — ${openTaskCount} open tasks, readiness ${p.readiness ?? '?'}%`
         })
         .join('\n')}`
     )

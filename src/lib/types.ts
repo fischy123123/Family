@@ -47,10 +47,11 @@ export interface FamilyMember {
   email: string
   colorHex: string
   emoji: string
-  role: 'parent' | 'child' | 'other'
+  role: 'parent' | 'child' | 'pet' | 'other'
   // Family Brain extensions (all optional for backward-compat)
   birthday?: string
   summary?: string                    // AI/user one-liner about this person
+  species?: string                    // for pets: e.g. "Golden Retriever"
   routines?: RoutineEntry[]
   preferences?: PreferenceEntry[]
   importantInfo?: InfoEntry[]
@@ -83,6 +84,7 @@ export interface PotentialProblem {
   detail: string                // explanation
   severity: 'low' | 'medium' | 'high'
   suggestedAction?: string
+  actionType?: 'copilot' | 'capture' | 'calendar'
   relatedDate?: string
 }
 

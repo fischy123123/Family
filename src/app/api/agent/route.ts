@@ -283,6 +283,7 @@ function buildSystemPrompt(
   today: string,
   hasGoogleTokens: boolean,
   currentUserEmail?: string,
+  timezone?: string,
 ): string {
   const memberList = members
     .map((m) => {
@@ -305,7 +306,8 @@ function buildSystemPrompt(
     : 'Google Calendar is not connected — use list_events and create_event for Firestore-based calendar.'
 
   return `You are Copilot, the family's AI chief of staff.
-Today is ${today}.
+Today is ${today}${timezone ? ` (user timezone: ${timezone})` : ''}.
+All times you display to the user should be in ${timezone ? `the user's timezone (${timezone})` : 'local time'}, not UTC.
 
 Your job is to reduce the family's mental load. You are not a passive task bot — you are a proactive partner who keeps track of everyone's schedules, lists, and plans, and who tells the family what actually needs their attention. Think like a great executive assistant for a busy household.
 
@@ -699,8 +701,9 @@ export async function POST(request: NextRequest) {
 
     const members: FamilyMember[] = context?.members ?? []
     const today: string = context?.today ?? new Date().toISOString()
+    const timezone: string | undefined = context?.timezone
 
-    const systemPrompt = buildSystemPrompt(members, today, !!googleTokens, userEmail)
+    const systemPrompt = buildSystemPrompt(members, today, !!googleTokens, userEmail, timezone)
 
     let conversationMessages: Anthropic.MessageParam[] = (messages ?? []).map(
       (m: { role: 'user' | 'assistant'; content: string }) => ({

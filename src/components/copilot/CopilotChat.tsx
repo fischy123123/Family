@@ -202,6 +202,7 @@ export function CopilotChat() {
             context: {
               members,
               today: format(new Date(), "yyyy-MM-dd'T'HH:mm:ss (EEEE, MMMM d, yyyy)"),
+              timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
             },
           }),
         })

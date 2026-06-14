@@ -9,9 +9,14 @@ import type { FamilyMember } from '@/lib/types'
 import { generateId } from '@/lib/utils'
 import { useFirestore } from '@/hooks/useFirestore'
 import { useToast } from '@/contexts/ToastContext'
-import { Check } from 'lucide-react'
+import { Check, Sparkles, Loader2 } from 'lucide-react'
 
-const EMOJIS = ['👨', '👩', '🧑', '👦', '👧', '👶', '🧓', '👴', '👵', '🧒']
+const EMOJIS_BY_ROLE: Record<string, string[]> = {
+  parent: ['👨', '👩', '🧑', '👴', '👵', '🧓', '🧔', '👱'],
+  child: ['👦', '👧', '🧒', '👶', '🧑', '🧒‍♂️', '🧒‍♀️', '🎒'],
+  pet: ['🐶', '🐱', '🐰', '🐹', '🐦', '🐠', '🐢', '🦜', '🐈', '🐕'],
+  other: ['🧑', '👤', '🏠', '⭐', '🌟', '💫', '🧡', '💙'],
+}
 
 interface MemberFormProps {
   member?: FamilyMember
@@ -28,7 +33,34 @@ export function MemberForm({ member, onDone }: MemberFormProps) {
   const [emoji, setEmoji] = useState(member?.emoji ?? '🧑')
   const [colorHex, setColorHex] = useState(member?.colorHex ?? MEMBER_COLORS[0])
   const [birthday, setBirthday] = useState(member?.birthday ?? '')
+  const [species, setSpecies] = useState(member?.species ?? '')
   const [saving, setSaving] = useState(false)
+  const [emojiSuggestions, setEmojiSuggestions] = useState<string[]>([])
+  const [loadingEmoji, setLoadingEmoji] = useState(false)
+
+  const emojiPool = EMOJIS_BY_ROLE[role] ?? EMOJIS_BY_ROLE.other
+
+  async function suggestEmojis() {
+    if (!name.trim()) {
+      toast('Enter a name first', 'error')
+      return
+    }
+    setLoadingEmoji(true)
+    try {
+      const res = await fetch('/api/ai/emoji-suggest', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: name.trim(), role, species: species.trim() || undefined }),
+      })
+      const data = await res.json() as { emojis?: string[]; error?: string }
+      if (!res.ok) throw new Error(data.error ?? 'Failed')
+      setEmojiSuggestions(data.emojis ?? [])
+    } catch {
+      toast('Could not generate suggestions', 'error')
+    } finally {
+      setLoadingEmoji(false)
+    }
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -38,29 +70,21 @@ export function MemberForm({ member, onDone }: MemberFormProps) {
     }
     setSaving(true)
     try {
+      const base: FamilyMember = {
+        id: member?.id ?? generateId(),
+        name: name.trim(),
+        email: email.trim(),
+        role,
+        emoji,
+        colorHex,
+        ...(birthday ? { birthday } : {}),
+        ...(role === 'pet' && species.trim() ? { species: species.trim() } : {}),
+      }
       if (member) {
-        const updated: FamilyMember = {
-          ...member,
-          name: name.trim(),
-          email: email.trim(),
-          role,
-          emoji,
-          colorHex,
-          ...(birthday ? { birthday } : {}),
-        }
-        if (!birthday) delete updated.birthday
-        await update(updated)
+        await update({ ...member, ...base })
         toast('Member updated', 'success')
       } else {
-        await create({
-          id: generateId(),
-          name: name.trim(),
-          email: email.trim(),
-          role,
-          emoji,
-          colorHex,
-          ...(birthday ? { birthday } : {}),
-        })
+        await create(base)
         toast('Member added', 'success')
       }
       onDone()
@@ -69,6 +93,12 @@ export function MemberForm({ member, onDone }: MemberFormProps) {
     } finally {
       setSaving(false)
     }
+  }
+
+  const seenEmojis = new Set<string>()
+  const allEmojis: string[] = []
+  for (const e of [...emojiPool, ...(member?.emoji ? [member.emoji] : []), ...emojiSuggestions]) {
+    if (!seenEmojis.has(e)) { seenEmojis.add(e); allEmojis.push(e) }
   }
 
   return (
@@ -84,19 +114,7 @@ export function MemberForm({ member, onDone }: MemberFormProps) {
         <form onSubmit={handleSubmit} className="space-y-5">
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1.5">Name</label>
-            <Input placeholder="e.g. Maya" value={name} onChange={(e) => setName(e.target.value)} autoFocus />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1.5">
-              Email <span className="text-slate-400 font-normal">(optional)</span>
-            </label>
-            <Input
-              type="email"
-              placeholder="name@example.com"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-            />
+            <Input placeholder="e.g. Buddy" value={name} onChange={(e) => setName(e.target.value)} autoFocus />
           </div>
 
           <div>
@@ -104,14 +122,55 @@ export function MemberForm({ member, onDone }: MemberFormProps) {
             <Select value={role} onChange={(e) => setRole(e.target.value as FamilyMember['role'])}>
               <option value="parent">Parent</option>
               <option value="child">Child</option>
+              <option value="pet">Pet</option>
               <option value="other">Other</option>
             </Select>
           </div>
 
+          {role === 'pet' ? (
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1.5">
+                Species / Breed <span className="text-slate-400 font-normal">(optional)</span>
+              </label>
+              <Input
+                placeholder="e.g. Golden Retriever"
+                value={species}
+                onChange={(e) => setSpecies(e.target.value)}
+              />
+            </div>
+          ) : (
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1.5">
+                Email <span className="text-slate-400 font-normal">(optional)</span>
+              </label>
+              <Input
+                type="email"
+                placeholder="name@example.com"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+              />
+            </div>
+          )}
+
           <div>
-            <label className="block text-sm font-medium text-slate-700 mb-2">Avatar</label>
+            <div className="flex items-center justify-between mb-2">
+              <label className="block text-sm font-medium text-slate-700">Avatar emoji</label>
+              <button
+                type="button"
+                onClick={suggestEmojis}
+                disabled={loadingEmoji}
+                className="inline-flex items-center gap-1.5 text-xs font-medium text-purple-600 hover:text-purple-700 disabled:opacity-50 transition-colors"
+              >
+                {loadingEmoji ? (
+                  <Loader2 size={13} className="animate-spin" />
+                ) : (
+                  <Sparkles size={13} />
+                )}
+                {loadingEmoji ? 'Generating…' : 'AI suggestions'}
+              </button>
+            </div>
             <div className="flex flex-wrap gap-2">
-              {EMOJIS.map((e) => (
+              {allEmojis.map((e) => (
                 <button
                   key={e}
                   type="button"
@@ -126,6 +185,9 @@ export function MemberForm({ member, onDone }: MemberFormProps) {
                 </button>
               ))}
             </div>
+            {emojiSuggestions.length > 0 && (
+              <p className="text-xs text-slate-400 mt-1.5">AI suggestions highlighted above — tap to select</p>
+            )}
           </div>
 
           <div>

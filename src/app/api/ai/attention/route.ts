@@ -70,7 +70,12 @@ Rules:
 - Return 0-8 items, ordered by priority (highest first within natural reading order).
 - Return 0-5 problems and 0-4 recommendations.
 - If the family has little data, give a gentle, helpful greeting and a recommendation to add events/family info.
-- Output ONLY the JSON object, no markdown, no commentary.`
+- Output ONLY the JSON object, no markdown, no commentary.
+
+CRITICAL — Calendar context entries:
+The section "USER-PROVIDED CALENDAR CONTEXT" contains the family's own explanations of their calendar events. These events ARE already on the calendar and DO have dates and times — the context just tells you what the event IS and who it is for. NEVER create a problem saying these events have no date, have not been added, or need to be scheduled. Use the context purely to understand and reason about the event (e.g. prep time, who needs to travel, what to pack). Do not treat a context explanation as evidence that the event is missing from the calendar.
+
+For each problem, include an optional "actionType" field: "copilot" for conversational actions (asking the AI to add/plan something), "capture" for quick adds (events/tasks/lists), "calendar" for calendar navigation. Default to "copilot" when unsure.`
 
   try {
     const response = await anthropic.messages.create({

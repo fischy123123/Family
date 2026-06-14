@@ -3,8 +3,8 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import {
-  RefreshCw, AlertTriangle, Lightbulb, Clock, ChevronRight,
-  Calendar as CalIcon, Sparkles, Check, HelpCircle, X,
+  RefreshCw, AlertTriangle, Lightbulb, Clock,
+  Calendar as CalIcon, Sparkles, Check, HelpCircle, X, MessageCircle,
 } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { useFirestore } from '@/hooks/useFirestore'
@@ -16,7 +16,7 @@ import { MicButton } from '@/components/ui/MicButton'
 import { BUCKET_META } from '@/lib/types'
 import type {
   FamilyMember, CalendarEvent, Task, Chore, Plan, SmartList,
-  AttentionReport, AttentionItem, AttentionBucket,
+  AttentionReport, AttentionItem, AttentionBucket, PotentialProblem,
 } from '@/lib/types'
 
 type CalendarClarification = {
@@ -54,6 +54,7 @@ export function CommandCenter() {
 
   const [report, setReport] = useState<AttentionReport | null>(null)
   const [loading, setLoading] = useState(false)
+  const [backgroundRefresh, setBackgroundRefresh] = useState(false)
   const [googleEvents, setGoogleEvents] = useState<CalendarEvent[]>([])
   const lastRun = useRef<number>(0)
   const [clarifications, setClarifications] = useState<CalendarClarification[]>([])
@@ -62,6 +63,19 @@ export function CommandCenter() {
   const [savingItemId, setSavingItemId] = useState<string | null>(null)
   const [selfLinkDismissed, setSelfLinkDismissed] = useState(false)
   const clarificationsFetched = useRef(false)
+  const cacheKey = familyId ? `attention-cache-${familyId}` : null
+
+  // Load cached report immediately so the page appears instant
+  useEffect(() => {
+    if (!cacheKey) return
+    try {
+      const raw = localStorage.getItem(cacheKey)
+      if (raw) {
+        const cached = JSON.parse(raw) as AttentionReport
+        setReport(cached)
+      }
+    } catch { /* ignore corrupt cache */ }
+  }, [cacheKey])
 
   // Fetch Google Calendar events when connected
   useEffect(() => {
@@ -121,8 +135,12 @@ export function CommandCenter() {
 
   const events = isConnected ? googleEvents : localEvents
 
-  const runEngine = useCallback(async (overrideContext?: { eventTitle: string; context: string }[]) => {
-    setLoading(true)
+  const runEngine = useCallback(async (overrideContext?: { eventTitle: string; context: string }[], silent?: boolean) => {
+    if (silent) {
+      setBackgroundRefresh(true)
+    } else {
+      setLoading(true)
+    }
     try {
       const eventContext = overrideContext ??
         eventContexts.map((e) => ({ eventTitle: e.eventTitle, context: e.context }))
@@ -134,22 +152,31 @@ export function CommandCenter() {
           currentUserEmail: user?.email ?? undefined,
           currentUserName: user?.displayName ?? undefined,
           now: new Date().toISOString(),
+          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
         }),
       })
-      const data = await res.json()
-      if (res.ok) setReport(data)
+      const data = await res.json() as AttentionReport
+      if (res.ok) {
+        setReport(data)
+        if (cacheKey) {
+          try { localStorage.setItem(cacheKey, JSON.stringify(data)) } catch { /* ignore */ }
+        }
+      }
     } catch { /* ignore */ } finally {
       setLoading(false)
+      setBackgroundRefresh(false)
     }
-  }, [members, events, tasks, chores, plans, lists, eventContexts])
+  }, [members, events, tasks, chores, plans, lists, eventContexts, cacheKey])
 
-  // Auto-run once data is loaded (and re-run at most every 60s)
+  // Auto-run once data is loaded. If we already have a cached report, run silently.
   useEffect(() => {
     const now = Date.now()
     if (members.length === 0 && events.length === 0 && tasks.length === 0) return
-    if (now - lastRun.current < 60000 && report) return
+    if (now - lastRun.current < 60000) return
     lastRun.current = now
-    runEngine()
+    // Run silently (cached report already visible) or with spinner (first load)
+    const hasCached = !!report
+    runEngine(undefined, hasCached)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [members.length, events.length, tasks.length, googleEvents.length])
 
@@ -218,14 +245,17 @@ export function CommandCenter() {
           <h1 className="text-2xl sm:text-3xl font-bold text-slate-900 tracking-tight">
             Good {greeting()}, {firstName}
           </h1>
+          {backgroundRefresh && (
+            <p className="text-[11px] text-slate-400 mt-0.5 animate-pulse">Refreshing…</p>
+          )}
         </div>
         <button
-          onClick={() => runEngine()}
+          onClick={() => runEngine(undefined, false)}
           disabled={loading}
           className="mt-1 p-2.5 rounded-xl bg-white border border-slate-200 text-slate-500 hover:text-blue-600 hover:border-blue-200 transition-colors shadow-card"
           aria-label="Refresh"
         >
-          <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
+          <RefreshCw size={16} className={loading || backgroundRefresh ? 'animate-spin' : ''} />
         </button>
       </div>
 
@@ -395,30 +425,13 @@ export function CommandCenter() {
           <SectionLabel icon={AlertTriangle} color="#dc2626">Potential Problems</SectionLabel>
           <div className="space-y-2 stagger-children">
             {report.problems.map((p) => (
-              <div
+              <ProblemCard
                 key={p.id}
-                className="rounded-2xl p-4 bg-white shadow-card animate-slide-up"
-                style={{ borderLeft: `3px solid ${p.severity === 'high' ? '#dc2626' : p.severity === 'medium' ? '#f97316' : '#eab308'}` }}
-              >
-                <div className="flex items-start gap-3">
-                  <div className="flex-1">
-                    <p className="text-sm font-semibold text-slate-900">{p.title}</p>
-                    <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">{p.detail}</p>
-                    {p.suggestedAction && (
-                      <p className="text-xs text-blue-600 mt-1.5 font-medium">→ {p.suggestedAction}</p>
-                    )}
-                  </div>
-                  <span
-                    className="text-[10px] font-bold uppercase px-2 py-0.5 rounded-full shrink-0"
-                    style={{
-                      background: p.severity === 'high' ? '#fee2e2' : p.severity === 'medium' ? '#ffedd5' : '#fef9c3',
-                      color: p.severity === 'high' ? '#dc2626' : p.severity === 'medium' ? '#ea580c' : '#a16207',
-                    }}
-                  >
-                    {p.severity}
-                  </span>
-                </div>
-              </div>
+                problem={p}
+                onCapture={openCapture}
+                onCopilot={() => router.push('/copilot')}
+                onCalendar={() => router.push('/calendar')}
+              />
             ))}
           </div>
         </section>
@@ -494,6 +507,57 @@ export function CommandCenter() {
           <p className="text-xs text-slate-400 mt-1">Nothing needs your attention right now.</p>
         </div>
       )}
+    </div>
+  )
+}
+
+function ProblemCard({
+  problem: p,
+  onCapture,
+  onCopilot,
+  onCalendar,
+}: {
+  problem: PotentialProblem
+  onCapture: () => void
+  onCopilot: () => void
+  onCalendar: () => void
+}) {
+  const severityBg = p.severity === 'high' ? '#fee2e2' : p.severity === 'medium' ? '#ffedd5' : '#fef9c3'
+  const severityColor = p.severity === 'high' ? '#dc2626' : p.severity === 'medium' ? '#ea580c' : '#a16207'
+  const borderColor = p.severity === 'high' ? '#dc2626' : p.severity === 'medium' ? '#f97316' : '#eab308'
+
+  function handleAction() {
+    if (p.actionType === 'calendar') { onCalendar(); return }
+    if (p.actionType === 'capture') { onCapture(); return }
+    onCopilot() // default: open Copilot to discuss / handle it
+  }
+
+  return (
+    <div
+      className="rounded-2xl p-4 bg-white shadow-card animate-slide-up"
+      style={{ borderLeft: `3px solid ${borderColor}` }}
+    >
+      <div className="flex items-start gap-3">
+        <div className="flex-1 min-w-0">
+          <p className="text-sm font-semibold text-slate-900">{p.title}</p>
+          <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">{p.detail}</p>
+          {p.suggestedAction && (
+            <button
+              onClick={handleAction}
+              className="inline-flex items-center gap-1.5 text-xs text-blue-600 hover:text-blue-700 mt-2 font-medium group"
+            >
+              <MessageCircle size={11} className="shrink-0" />
+              {p.suggestedAction}
+            </button>
+          )}
+        </div>
+        <span
+          className="text-[10px] font-bold uppercase px-2 py-0.5 rounded-full shrink-0"
+          style={{ background: severityBg, color: severityColor }}
+        >
+          {p.severity}
+        </span>
+      </div>
     </div>
   )
 }

@@ -113,11 +113,13 @@ export async function createEvent(
     location?: string
     notes?: string
     calendarId?: string
+    timezone?: string
   }
 ): Promise<GoogleEvent> {
   const auth = getAuthorizedClient(accessToken, refreshToken)
   const calendar = google.calendar({ version: 'v3', auth })
   const calendarId = event.calendarId ?? 'primary'
+  const tz = event.timezone || 'UTC'
 
   const requestBody: {
     summary: string
@@ -131,10 +133,10 @@ export async function createEvent(
     description: event.notes,
     start: event.isAllDay
       ? { date: event.start.split('T')[0] }
-      : { dateTime: event.start, timeZone: 'UTC' },
+      : { dateTime: event.start, timeZone: tz },
     end: event.isAllDay
       ? { date: event.end.split('T')[0] }
-      : { dateTime: event.end, timeZone: 'UTC' },
+      : { dateTime: event.end, timeZone: tz },
   }
 
   const { data } = await calendar.events.insert({ calendarId, requestBody })
