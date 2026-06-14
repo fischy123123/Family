@@ -2,7 +2,7 @@
 
 export const dynamic = 'force-dynamic'
 
-import { useEffect } from 'react'
+import { Suspense, useEffect } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { useAuth } from '@/contexts/AuthContext'
 import { useFamily } from '@/contexts/FamilyContext'
@@ -11,6 +11,18 @@ import { AppShell } from '@/components/layout/AppShell'
 import { CommandCenter } from '@/components/command/CommandCenter'
 
 export default function CommandPage() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen flex items-center justify-center bg-slate-50">
+        <div className="w-8 h-8 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+      </div>
+    }>
+      <CommandPageInner />
+    </Suspense>
+  )
+}
+
+function CommandPageInner() {
   const { user, loading } = useAuth()
   const { familyId } = useFamily()
   const router = useRouter()

@@ -6,9 +6,9 @@ import { useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { useAuth } from '@/contexts/AuthContext'
 import { AppShell } from '@/components/layout/AppShell'
-import { TasksPage } from '@/components/tasks/TasksPage'
+import { CopilotChat } from '@/components/copilot/CopilotChat'
 
-export default function Tasks() {
+export default function CopilotPage() {
   const { user, loading } = useAuth()
   const router = useRouter()
 
@@ -16,15 +16,17 @@ export default function Tasks() {
     if (!loading && !user) router.replace('/signin')
   }, [user, loading, router])
 
-  if (loading || !user) return (
-    <div className="min-h-screen flex items-center justify-center">
-      <div className="w-8 h-8 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
-    </div>
-  )
+  if (loading || !user) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-50">
+        <div className="w-8 h-8 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+      </div>
+    )
+  }
 
   return (
     <AppShell>
-      <TasksPage />
+      <CopilotChat />
     </AppShell>
   )
 }
