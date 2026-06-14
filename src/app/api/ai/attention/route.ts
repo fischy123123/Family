@@ -80,8 +80,12 @@ For each problem, include an optional "actionType" field: "copilot" for conversa
   try {
     const response = await anthropic.messages.create({
       model: AI_MODEL,
-      max_tokens: 2000,
-      system: systemPrompt,
+      max_tokens: 1600,
+      // The system prompt is large and static — cache it so repeated calls skip
+      // re-processing it, which trims both latency and cost.
+      system: [
+        { type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } },
+      ],
       messages: [{ role: 'user', content: `FAMILY CONTEXT:\n\n${contextBlock}` }],
     })
 

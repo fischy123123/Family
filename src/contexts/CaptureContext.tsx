@@ -80,7 +80,7 @@ export function CaptureProvider({ children }: { children: React.ReactNode }) {
           rawText: text,
           imageBase64: imageData?.base64,
           imageMediaType: imageData?.mediaType,
-          members: members.map((m) => ({ name: m.name, email: m.email })),
+          members: members.map((m) => ({ name: m.name, email: m.email, role: m.role })),
           today: new Date().toISOString(),
         }),
       })

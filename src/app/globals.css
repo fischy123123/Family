@@ -97,6 +97,10 @@ body {
   50% { background-position: 100% 50%; }
   100% { background-position: 0% 50%; }
 }
+@keyframes progress-slide {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(400%); }
+}
 
 .animate-fade-in { animation: fadeIn 0.3s ease-out; }
 .animate-slide-up { animation: slideUp 0.3s ease-out both; }
@@ -104,6 +108,7 @@ body {
 .animate-scale-in { animation: scaleIn 0.2s ease-out; }
 .animate-float { animation: float 3s ease-in-out infinite; }
 .animate-spin-slow { animation: spin-slow 8s linear infinite; }
+.animate-progress-slide { animation: progress-slide 1.1s ease-in-out infinite; }
 .animate-gradient {
   background-size: 200% 200%;
   animation: gradient-shift 4s ease infinite;

@@ -37,6 +37,32 @@ type EventContext = {
 
 const BUCKET_ORDER: AttentionBucket[] = ['now', 'next', 'later', 'upcoming']
 
+// ── Local cache (stale-while-revalidate) ────────────────────
+// Everything that gates the page is cached per-family so returning visits
+// render instantly and only update in the background.
+const ATTN_PREFIX = 'fam-attn-'
+const GCAL_PREFIX = 'fam-gcal-'
+const CLAR_PREFIX = 'fam-clar-'
+
+function readCache<T>(key: string | null): T | null {
+  if (!key) return null
+  try {
+    const raw = localStorage.getItem(key)
+    return raw ? (JSON.parse(raw) as T) : null
+  } catch {
+    return null
+  }
+}
+
+function writeCache(key: string | null, value: unknown) {
+  if (!key) return
+  try {
+    localStorage.setItem(key, JSON.stringify(value))
+  } catch {
+    /* quota / private mode — ignore */
+  }
+}
+
 export function CommandCenter() {
   const router = useRouter()
   const { user } = useAuth()
@@ -52,10 +78,16 @@ export function CommandCenter() {
   const { data: lists } = useFirestore<SmartList>('lists')
   const { data: eventContexts, create: createEventContext } = useFirestore<EventContext>('eventContext')
 
+  const attnKey = familyId ? ATTN_PREFIX + familyId : null
+  const gcalKey = familyId ? GCAL_PREFIX + familyId : null
+  const clarKey = familyId ? CLAR_PREFIX + familyId : null
+
   const [report, setReport] = useState<AttentionReport | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [backgroundRefresh, setBackgroundRefresh] = useState(false)
+  const [loading, setLoading] = useState(false)        // true cold start only (no report yet)
+  const [refreshing, setRefreshing] = useState(false)  // silent background update
   const [googleEvents, setGoogleEvents] = useState<CalendarEvent[]>([])
+  const [googleLoaded, setGoogleLoaded] = useState(false)
+  const [hydrated, setHydrated] = useState(false)
   const lastRun = useRef<number>(0)
   const [clarifications, setClarifications] = useState<CalendarClarification[]>([])
   const [clarificationAnswers, setClarificationAnswers] = useState<Record<string, string>>({})
@@ -63,25 +95,29 @@ export function CommandCenter() {
   const [savingItemId, setSavingItemId] = useState<string | null>(null)
   const [selfLinkDismissed, setSelfLinkDismissed] = useState(false)
   const clarificationsFetched = useRef(false)
-  const cacheKey = familyId ? `attention-cache-${familyId}` : null
 
-  // Load cached report immediately so the page appears instant
+  // Hydrate everything from cache the moment the family id is known, so a
+  // returning visit paints a complete page on the first frame.
   useEffect(() => {
-    if (!cacheKey) return
-    try {
-      const raw = localStorage.getItem(cacheKey)
-      if (raw) {
-        const cached = JSON.parse(raw) as AttentionReport
-        setReport(cached)
-      }
-    } catch { /* ignore corrupt cache */ }
-  }, [cacheKey])
+    if (!familyId) return
+    const r = readCache<AttentionReport>(attnKey)
+    if (r) setReport(r)
+    const g = readCache<CalendarEvent[]>(gcalKey)
+    if (g?.length) setGoogleEvents(g)
+    const c = readCache<CalendarClarification[]>(clarKey)
+    if (c?.length) setClarifications(c)
+    setHydrated(true)
+  }, [familyId, attnKey, gcalKey, clarKey])
 
-  // Fetch Google Calendar events when connected
+  // Fetch fresh Google Calendar events when connected (updates the cache).
   useEffect(() => {
     let cancelled = false
     async function load() {
-      if (!isConnected) { setGoogleEvents([]); return }
+      if (!isConnected) {
+        setGoogleEvents([])
+        setGoogleLoaded(true)
+        return
+      }
       const fresh = await getFreshTokens()
       if (!fresh || cancelled) return
       const timeMin = new Date().toISOString()
@@ -97,16 +133,19 @@ export function CommandCenter() {
             ownerEmail: e.ownerEmail || user?.email || '',
           }))
           setGoogleEvents(loadedEvents)
+          writeCache(gcalKey, loadedEvents)
         }
-      } catch { /* ignore */ }
+      } catch { /* keep cached events */ } finally {
+        if (!cancelled) setGoogleLoaded(true)
+      }
     }
     load()
     return () => { cancelled = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isConnected])
+  }, [isConnected, gcalKey])
 
   // Ask the AI which calendar events are ambiguous — once per session, skipping
-  // events the family has already explained.
+  // events the family has already explained. Cached so it doesn't pop in again.
   useEffect(() => {
     if (googleEvents.length === 0 || clarificationsFetched.current) return
     clarificationsFetched.current = true
@@ -126,6 +165,7 @@ export function CommandCenter() {
         const data = await res.json()
         if (!cancelled && res.ok && data.clarifications?.length > 0) {
           setClarifications(data.clarifications)
+          writeCache(clarKey, data.clarifications)
         }
       } catch { /* ignore */ }
     })()
@@ -136,11 +176,8 @@ export function CommandCenter() {
   const events = isConnected ? googleEvents : localEvents
 
   const runEngine = useCallback(async (overrideContext?: { eventTitle: string; context: string }[], silent?: boolean) => {
-    if (silent) {
-      setBackgroundRefresh(true)
-    } else {
-      setLoading(true)
-    }
+    if (silent) setRefreshing(true)
+    else setLoading(true)
     try {
       const eventContext = overrideContext ??
         eventContexts.map((e) => ({ eventTitle: e.eventTitle, context: e.context }))
@@ -158,27 +195,27 @@ export function CommandCenter() {
       const data = await res.json() as AttentionReport
       if (res.ok) {
         setReport(data)
-        if (cacheKey) {
-          try { localStorage.setItem(cacheKey, JSON.stringify(data)) } catch { /* ignore */ }
-        }
+        writeCache(attnKey, data)
       }
-    } catch { /* ignore */ } finally {
+    } catch { /* keep showing last report */ } finally {
       setLoading(false)
-      setBackgroundRefresh(false)
+      setRefreshing(false)
     }
-  }, [members, events, tasks, chores, plans, lists, eventContexts, cacheKey])
+  }, [members, events, tasks, chores, plans, lists, eventContexts, attnKey])
 
-  // Auto-run once data is loaded. If we already have a cached report, run silently.
+  // Auto-run once the data we expect is loaded. Always silent when a report is
+  // already on screen (cached or fresh) so content updates in place, never via a
+  // skeleton flash. We wait for Google to settle first to avoid an empty run.
   useEffect(() => {
-    const now = Date.now()
+    if (!hydrated) return
+    if (isConnected && !googleLoaded) return
     if (members.length === 0 && events.length === 0 && tasks.length === 0) return
+    const now = Date.now()
     if (now - lastRun.current < 60000) return
     lastRun.current = now
-    // Run silently (cached report already visible) or with spinner (first load)
-    const hasCached = !!report
-    runEngine(undefined, hasCached)
+    runEngine(undefined, !!report)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [members.length, events.length, tasks.length, googleEvents.length])
+  }, [hydrated, googleLoaded, members.length, events.length, tasks.length, googleEvents.length])
 
   async function completeTaskFromItem(item: AttentionItem) {
     if (item.sourceType !== 'task' || !item.sourceId) return
@@ -224,7 +261,7 @@ export function CommandCenter() {
   async function linkSelf(m: FamilyMember) {
     if (!user?.email) return
     await updateMember({ ...m, email: user.email })
-    runEngine()
+    runEngine(undefined, true)
   }
 
   const firstName = user?.displayName?.split(' ')[0] ?? 'there'
@@ -234,8 +271,12 @@ export function CommandCenter() {
 
   const itemsByBucket = (b: AttentionBucket) => (report?.items ?? []).filter((i) => i.bucket === b)
 
+  const busy = loading || refreshing
+
   return (
     <div className="max-w-3xl mx-auto px-4 sm:px-6 py-6 space-y-6">
+      <TopProgressBar active={busy} />
+
       {/* Header */}
       <div className="flex items-start justify-between">
         <div>
@@ -245,17 +286,14 @@ export function CommandCenter() {
           <h1 className="text-2xl sm:text-3xl font-bold text-slate-900 tracking-tight">
             Good {greeting()}, {firstName}
           </h1>
-          {backgroundRefresh && (
-            <p className="text-[11px] text-slate-400 mt-0.5 animate-pulse">Refreshing…</p>
-          )}
         </div>
         <button
-          onClick={() => runEngine(undefined, false)}
-          disabled={loading}
-          className="mt-1 p-2.5 rounded-xl bg-white border border-slate-200 text-slate-500 hover:text-blue-600 hover:border-blue-200 transition-colors shadow-card"
+          onClick={() => runEngine(undefined, !!report)}
+          disabled={busy}
+          className="mt-1 p-2.5 rounded-xl bg-white border border-slate-200 text-slate-500 hover:text-blue-600 hover:border-blue-200 transition-colors shadow-card disabled:opacity-60"
           aria-label="Refresh"
         >
-          <RefreshCw size={16} className={loading || backgroundRefresh ? 'animate-spin' : ''} />
+          <RefreshCw size={16} className={busy ? 'animate-spin' : ''} />
         </button>
       </div>
 
@@ -375,12 +413,16 @@ export function CommandCenter() {
         </section>
       )}
 
-      {/* Loading skeleton */}
+      {/* Cold-start skeleton — only when we have nothing cached to show. Shaped
+          like the real content so there is no jump when the report arrives. */}
       {loading && !report && (
-        <div className="space-y-3">
-          <div className="skeleton h-24 w-full" />
-          <div className="skeleton h-24 w-full" />
-          <div className="skeleton h-24 w-full" />
+        <div className="space-y-6 animate-fade-in">
+          <div className="skeleton h-20 w-full rounded-2xl" />
+          <div className="space-y-3">
+            <div className="skeleton h-4 w-24 rounded" />
+            <div className="skeleton h-20 w-full rounded-2xl" />
+            <div className="skeleton h-20 w-full rounded-2xl" />
+          </div>
         </div>
       )}
 
@@ -558,6 +600,17 @@ function ProblemCard({
           {p.severity}
         </span>
       </div>
+    </div>
+  )
+}
+
+// A thin indeterminate bar pinned to the very top of the viewport. It signals
+// background activity without occupying layout space or shifting any content.
+function TopProgressBar({ active }: { active: boolean }) {
+  if (!active) return null
+  return (
+    <div className="fixed top-0 inset-x-0 z-50 h-0.5 overflow-hidden pointer-events-none">
+      <div className="h-full w-1/3 bg-gradient-to-r from-transparent via-blue-500 to-transparent animate-progress-slide" />
     </div>
   )
 }
