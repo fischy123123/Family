@@ -1,6 +1,6 @@
 import { initializeApp, getApps, type FirebaseApp } from 'firebase/app'
 import { getAuth, setPersistence, browserLocalPersistence, type Auth } from 'firebase/auth'
-import { getFirestore, type Firestore } from 'firebase/firestore'
+import { initializeFirestore, type Firestore } from 'firebase/firestore'
 
 const firebaseConfig = {
   apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
@@ -21,7 +21,9 @@ if (firebaseConfig.apiKey) {
   // Use localStorage directly so Firefox/Safari storage partitioning
   // doesn't block auth state via the cross-origin firebaseapp.com iframe
   setPersistence(_auth, browserLocalPersistence).catch(() => {})
-  _db = getFirestore(_app)
+  // Auto-detect long polling so Firestore works in Safari/Firefox, where the
+  // default streaming (WebChannel) transport is blocked by storage partitioning.
+  _db = initializeFirestore(_app, { experimentalAutoDetectLongPolling: true })
 }
 
 // eslint-disable-next-line @typescript-eslint/no-non-null-assertion

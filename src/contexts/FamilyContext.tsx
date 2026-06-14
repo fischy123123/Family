@@ -38,21 +38,35 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
       return
     }
 
-    const userDocRef = doc(db, 'users', user.uid)
-    getDoc(userDocRef).then((snap) => {
-      if (snap.exists() && snap.data().familyId) {
-        const fid = snap.data().familyId
-        setFamilyId(fid)
-        // Load invite code
-        getDoc(doc(db, 'families', fid)).then((fsnap) => {
-          if (fsnap.exists()) setInviteCode(fsnap.data().inviteCode ?? null)
-        })
+    let cancelled = false
+
+    // Retry the lookup a few times: in Safari/Firefox the first Firestore
+    // request can fail under storage partitioning. We must NOT treat a failed
+    // read as "no family" — that wrongly sends an existing user to setup.
+    async function loadFamily(attempt = 0): Promise<void> {
+      try {
+        const snap = await getDoc(doc(db, 'users', user!.uid))
+        if (cancelled) return
+        if (snap.exists() && snap.data().familyId) {
+          const fid = snap.data().familyId
+          setFamilyId(fid)
+          const fsnap = await getDoc(doc(db, 'families', fid))
+          if (!cancelled && fsnap.exists()) setInviteCode(fsnap.data().inviteCode ?? null)
+        }
+        if (!cancelled) setLoading(false)
+      } catch (err) {
+        console.error('Firestore family lookup failed (attempt ' + attempt + '):', err)
+        if (cancelled) return
+        if (attempt < 3) {
+          setTimeout(() => loadFamily(attempt + 1), 800 * (attempt + 1))
+        } else {
+          setLoading(false)
+        }
       }
-      setLoading(false)
-    }).catch((err) => {
-      console.error('Firestore error:', err)
-      setLoading(false)
-    })
+    }
+
+    loadFamily()
+    return () => { cancelled = true }
   }, [user])
 
   async function createFamily() {
