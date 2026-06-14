@@ -85,8 +85,8 @@ export default function OnboardingPage() {
 
   if (loading || !user) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="w-8 h-8 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+      <div className="min-h-screen flex items-center justify-center bg-slate-900">
+        <div className="w-8 h-8 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
       </div>
     )
   }
@@ -94,15 +94,30 @@ export default function OnboardingPage() {
   const steps = ['Welcome', 'Family', 'Alerts', 'Done']
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center p-4">
-      <div className="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden animate-fade-in">
-        {/* Progress */}
+    <div className="min-h-screen relative flex items-center justify-center p-4 overflow-hidden bg-slate-900">
+      {/* Orb background */}
+      <div className="absolute inset-0 overflow-hidden pointer-events-none">
+        <div className="absolute -top-40 -left-40 w-96 h-96 bg-blue-600/20 rounded-full blur-3xl" />
+        <div className="absolute top-1/2 -right-40 w-80 h-80 bg-indigo-600/20 rounded-full blur-3xl" />
+        <div className="absolute -bottom-20 left-1/3 w-64 h-64 bg-purple-600/15 rounded-full blur-3xl" />
+      </div>
+
+      <div
+        className="relative w-full max-w-md overflow-hidden animate-fade-in rounded-2xl border border-white/10"
+        style={{ background: 'rgba(255,255,255,0.07)', backdropFilter: 'blur(24px)' }}
+      >
+        {/* Progress bar */}
         <div className="flex gap-1 p-4 pb-0">
           {steps.map((_, i) => (
-            <div
-              key={i}
-              className={`h-1.5 flex-1 rounded-full transition-colors ${i <= step ? 'bg-blue-500' : 'bg-gray-200'}`}
-            />
+            <div key={i} className="h-1.5 flex-1 rounded-full overflow-hidden bg-white/10">
+              <div
+                className="h-full rounded-full transition-all duration-500"
+                style={{
+                  width: i <= step ? '100%' : '0%',
+                  background: 'linear-gradient(to right, #60a5fa, #a78bfa)',
+                }}
+              />
+            </div>
           ))}
         </div>
 
@@ -110,21 +125,40 @@ export default function OnboardingPage() {
           {/* Step 0 — Welcome + invite code */}
           {step === 0 && (
             <div className="text-center">
-              <div className="text-5xl mb-3">🏠</div>
-              <h1 className="text-2xl font-bold text-gray-900 mb-1">Your family space is ready!</h1>
-              <p className="text-gray-500 text-sm mb-6">
+              <div className="text-6xl mb-4 animate-bounce" style={{ animationDuration: '2s' }}>🏠</div>
+              <h1 className="text-2xl font-bold text-white mb-2">Your family space is ready!</h1>
+              <p className="text-slate-400 text-sm mb-8">
                 Share this code with your partner or family so they can join the same space.
               </p>
-              <div className="bg-blue-50 rounded-xl border border-blue-100 p-5 mb-6">
-                <p className="text-xs text-blue-500 font-medium uppercase tracking-wider mb-2">Invite Code</p>
-                <div className="flex items-center justify-center gap-3">
-                  <span className="text-3xl font-mono font-bold text-blue-700 tracking-widest">{inviteCode}</span>
-                  <button onClick={copyCode} className="p-2 rounded-lg hover:bg-blue-100 text-blue-600">
-                    {copied ? <Check size={20} /> : <Copy size={20} />}
+              {/* Invite code — dramatic presentation */}
+              <div
+                className="relative rounded-2xl border border-blue-400/30 p-6 mb-8 overflow-hidden"
+                style={{ background: 'rgba(59,130,246,0.12)' }}
+              >
+                {/* Pulsing glow ring */}
+                <div className="absolute inset-0 rounded-2xl" style={{
+                  boxShadow: '0 0 0 1px rgba(96,165,250,0.3), 0 0 40px rgba(96,165,250,0.15)',
+                  animation: 'pulse 2.5s ease-in-out infinite',
+                }} />
+                <p className="text-xs text-blue-400 font-semibold uppercase tracking-widest mb-3">Invite Code</p>
+                <div className="flex items-center justify-center gap-4">
+                  <span className="text-4xl font-mono font-black text-white tracking-[0.25em]">{inviteCode}</span>
+                  <button
+                    onClick={copyCode}
+                    className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium text-blue-300 border border-blue-400/30 hover:bg-blue-400/10 transition-all"
+                  >
+                    {copied ? <Check size={14} className="text-green-400" /> : <Copy size={14} />}
+                    {copied ? 'Copied!' : 'Copy'}
                   </button>
                 </div>
               </div>
-              <Button size="lg" className="w-full" onClick={() => setStep(1)}>Get Started</Button>
+              <button
+                onClick={() => setStep(1)}
+                className="w-full py-3 rounded-xl font-semibold text-white transition-all hover:opacity-90 active:scale-[0.98]"
+                style={{ background: 'linear-gradient(135deg, #2563eb, #7c3aed)' }}
+              >
+                Get Started
+              </button>
             </div>
           )}
 
@@ -132,25 +166,31 @@ export default function OnboardingPage() {
           {step === 1 && (
             <div>
               <div className="flex items-center gap-2 mb-1">
-                <Users size={20} className="text-blue-500" />
-                <h1 className="text-xl font-bold text-gray-900">Add family members</h1>
+                <div className="w-7 h-7 rounded-lg flex items-center justify-center" style={{ background: 'rgba(59,130,246,0.2)' }}>
+                  <Users size={14} className="text-blue-400" />
+                </div>
+                <h1 className="text-xl font-bold text-white">Add family members</h1>
               </div>
-              <p className="text-gray-500 text-sm mb-4">
+              <p className="text-slate-400 text-sm mb-4">
                 Add everyone in your household. Each person gets a color and emoji used across the calendar and chores.
               </p>
 
               {members.length > 0 && (
                 <div className="space-y-2 mb-4">
                   {members.map((m) => (
-                    <div key={m.id} className="flex items-center gap-3 p-2 rounded-lg bg-gray-50">
-                      <div className="w-8 h-8 rounded-full flex items-center justify-center text-base" style={{ backgroundColor: `${m.colorHex}25` }}>
+                    <div
+                      key={m.id}
+                      className="flex items-center gap-3 p-2.5 rounded-xl border border-white/10"
+                      style={{ background: 'rgba(255,255,255,0.05)' }}
+                    >
+                      <div className="w-8 h-8 rounded-full flex items-center justify-center text-base shrink-0" style={{ backgroundColor: `${m.colorHex}30` }}>
                         {m.emoji}
                       </div>
                       <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium text-gray-800">{m.name}</p>
-                        <p className="text-xs text-gray-400 capitalize">{m.role}</p>
+                        <p className="text-sm font-medium text-white">{m.name}</p>
+                        <p className="text-xs text-slate-400 capitalize">{m.role}</p>
                       </div>
-                      <button onClick={() => removeMember(m.id)} className="text-gray-300 hover:text-red-400">
+                      <button onClick={() => removeMember(m.id)} className="text-slate-600 hover:text-red-400 transition-colors">
                         <Trash2 size={14} />
                       </button>
                     </div>
@@ -158,10 +198,28 @@ export default function OnboardingPage() {
                 </div>
               )}
 
-              <form onSubmit={addMember} className="space-y-3 border-t border-gray-100 pt-4">
-                <Input placeholder="Name" value={name} onChange={(e) => setName(e.target.value)} required />
-                <Input placeholder="Google email (optional)" type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
-                <Select value={role} onChange={(e) => setRole(e.target.value as FamilyMember['role'])}>
+              <form onSubmit={addMember} className="space-y-3 border-t border-white/10 pt-4">
+                <input
+                  placeholder="Name"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  required
+                  className="w-full rounded-xl px-4 py-2.5 text-sm text-white placeholder:text-slate-500 border border-white/10 focus:outline-none focus:border-blue-400/50 transition-colors"
+                  style={{ background: 'rgba(255,255,255,0.07)' }}
+                />
+                <input
+                  placeholder="Google email (optional)"
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  className="w-full rounded-xl px-4 py-2.5 text-sm text-white placeholder:text-slate-500 border border-white/10 focus:outline-none focus:border-blue-400/50 transition-colors"
+                  style={{ background: 'rgba(255,255,255,0.07)' }}
+                />
+                <Select
+                  value={role}
+                  onChange={(e) => setRole(e.target.value as FamilyMember['role'])}
+                  className="bg-transparent text-white border-white/10"
+                >
                   <option value="parent">Parent</option>
                   <option value="child">Child</option>
                   <option value="other">Other</option>
@@ -169,7 +227,7 @@ export default function OnboardingPage() {
                 <div className="flex flex-wrap gap-1.5">
                   {EMOJIS.map((em) => (
                     <button key={em} type="button" onClick={() => setEmoji(em)}
-                      className={`text-lg p-1 rounded-lg border-2 ${emoji === em ? 'border-blue-500 bg-blue-50' : 'border-transparent'}`}>
+                      className={`text-lg p-1.5 rounded-lg border-2 transition-all ${emoji === em ? 'border-blue-400 bg-blue-400/10' : 'border-transparent hover:bg-white/5'}`}>
                       {em}
                     </button>
                   ))}
@@ -177,18 +235,35 @@ export default function OnboardingPage() {
                 <div className="flex flex-wrap gap-2">
                   {MEMBER_COLORS.map((c) => (
                     <button key={c} type="button" onClick={() => setColorHex(c)}
-                      className={`w-6 h-6 rounded-full border-2 ${colorHex === c ? 'border-gray-800 scale-110' : 'border-transparent'}`}
+                      className={`w-6 h-6 rounded-full border-2 transition-transform ${colorHex === c ? 'border-white scale-110' : 'border-transparent'}`}
                       style={{ backgroundColor: c }} />
                   ))}
                 </div>
-                <Button type="submit" variant="secondary" disabled={saving} className="w-full">
-                  <Plus size={16} className="mr-1" /> {saving ? 'Adding…' : 'Add member'}
-                </Button>
+                <button
+                  type="submit"
+                  disabled={saving}
+                  className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-medium text-white border border-white/20 hover:bg-white/10 disabled:opacity-50 transition-all"
+                  style={{ background: 'rgba(255,255,255,0.07)' }}
+                >
+                  <Plus size={16} /> {saving ? 'Adding…' : 'Add member'}
+                </button>
               </form>
 
               <div className="flex gap-2 mt-5">
-                <Button variant="ghost" onClick={() => setStep(2)} className="flex-1">Skip</Button>
-                <Button onClick={() => setStep(2)} className="flex-1" disabled={members.length === 0}>Next</Button>
+                <button
+                  onClick={() => setStep(2)}
+                  className="flex-1 py-2.5 rounded-xl text-sm font-medium text-slate-400 border border-white/10 hover:bg-white/5 transition-all"
+                >
+                  Skip
+                </button>
+                <button
+                  onClick={() => setStep(2)}
+                  disabled={members.length === 0}
+                  className="flex-1 py-2.5 rounded-xl text-sm font-semibold text-white disabled:opacity-40 transition-all hover:opacity-90"
+                  style={{ background: 'linear-gradient(135deg, #2563eb, #7c3aed)' }}
+                >
+                  Next
+                </button>
               </div>
             </div>
           )}
@@ -196,41 +271,66 @@ export default function OnboardingPage() {
           {/* Step 2 — Notifications */}
           {step === 2 && (
             <div className="text-center">
-              <div className="w-14 h-14 rounded-2xl bg-blue-100 flex items-center justify-center mx-auto mb-4">
-                <Bell size={26} className="text-blue-600" />
+              <div
+                className="w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-5"
+                style={{ background: 'linear-gradient(135deg, rgba(59,130,246,0.25), rgba(99,102,241,0.25))', border: '1px solid rgba(96,165,250,0.3)' }}
+              >
+                <Bell size={28} className="text-blue-400" />
               </div>
-              <h1 className="text-xl font-bold text-gray-900 mb-1">Stay in the loop</h1>
-              <p className="text-gray-500 text-sm mb-6">
+              <h1 className="text-xl font-bold text-white mb-2">Stay in the loop</h1>
+              <p className="text-slate-400 text-sm mb-8">
                 Get a daily morning agenda and reminders for events and chores right on your phone.
               </p>
               {notifSupported ? (
-                <Button size="lg" className="w-full mb-2" onClick={turnOnNotifications}>
+                <button
+                  onClick={turnOnNotifications}
+                  className="w-full py-3 rounded-xl font-semibold text-white mb-3 transition-all hover:opacity-90 active:scale-[0.98]"
+                  style={{ background: 'linear-gradient(135deg, #2563eb, #7c3aed)' }}
+                >
                   Enable Notifications
-                </Button>
+                </button>
               ) : (
-                <p className="text-xs text-amber-600 bg-amber-50 rounded-lg p-3 mb-2">
-                  To get push notifications on iPhone, first add this app to your Home Screen
-                  (Share → Add to Home Screen), then open it and enable notifications from the dashboard.
-                </p>
+                <div
+                  className="rounded-xl p-4 mb-3 text-left border border-amber-400/20"
+                  style={{ background: 'rgba(251,191,36,0.08)' }}
+                >
+                  <p className="text-xs text-amber-400 leading-relaxed">
+                    To get push notifications on iPhone, first add this app to your Home Screen
+                    (Share → Add to Home Screen), then open it and enable notifications from the dashboard.
+                  </p>
+                </div>
               )}
-              <Button variant="ghost" className="w-full" onClick={() => setStep(3)}>Maybe later</Button>
+              <button
+                onClick={() => setStep(3)}
+                className="w-full py-2.5 rounded-xl text-sm font-medium text-slate-400 border border-white/10 hover:bg-white/5 transition-all"
+              >
+                Maybe later
+              </button>
             </div>
           )}
 
           {/* Step 3 — Done */}
           {step === 3 && (
             <div className="text-center">
-              <div className="w-14 h-14 rounded-2xl bg-green-100 flex items-center justify-center mx-auto mb-4">
-                <PartyPopper size={26} className="text-green-600" />
+              <div
+                className="w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-5"
+                style={{ background: 'linear-gradient(135deg, rgba(34,197,94,0.25), rgba(16,185,129,0.25))', border: '1px solid rgba(34,197,94,0.3)' }}
+              >
+                <PartyPopper size={28} className="text-green-400" />
               </div>
-              <h1 className="text-2xl font-bold text-gray-900 mb-1">You&apos;re all set!</h1>
-              <p className="text-gray-500 text-sm mb-6">
+              <div className="text-4xl mb-3">🎉</div>
+              <h1 className="text-2xl font-bold text-white mb-2">You&apos;re all set!</h1>
+              <p className="text-slate-400 text-sm mb-8">
                 Try the Quick Add bar on your dashboard — just type things like
                 &quot;dentist for Mia next Tuesday at 3pm&quot; and the AI will sort it out.
               </p>
-              <Button size="lg" className="w-full" onClick={() => router.replace('/dashboard')}>
+              <button
+                onClick={() => router.replace('/dashboard')}
+                className="w-full py-3 rounded-xl font-semibold text-white transition-all hover:opacity-90 active:scale-[0.98]"
+                style={{ background: 'linear-gradient(135deg, #16a34a, #059669)' }}
+              >
                 Go to Dashboard
-              </Button>
+              </button>
             </div>
           )}
         </div>
