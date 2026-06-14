@@ -19,6 +19,8 @@ import { useFirestore } from '@/hooks/useFirestore'
 import { useGoogleTokens } from '@/hooks/useGoogleTokens'
 import { useToast } from '@/contexts/ToastContext'
 import { MicButton } from '@/components/ui/MicButton'
+import { Markdown } from '@/components/ui/Markdown'
+import { ProposedActions, type PendingAction, type ActionStatus } from '@/components/copilot/ProposedActions'
 import { cn } from '@/lib/utils'
 import type { FamilyMember } from '@/lib/types'
 
@@ -30,6 +32,8 @@ interface Message {
   role: 'user' | 'assistant'
   content: string
   actions?: string[]
+  pendingActions?: PendingAction[]
+  actionStatus?: ActionStatus
 }
 
 // ---------------------------------------------------------------------------
@@ -66,18 +70,35 @@ function ActionPills({ actions }: { actions: string[] }) {
   )
 }
 
-function AssistantBubble({ msg }: { msg: Message }) {
+function AssistantBubble({
+  msg,
+  members,
+  onConfirm,
+  onCancel,
+}: {
+  msg: Message
+  members: FamilyMember[]
+  onConfirm: () => void
+  onCancel: () => void
+}) {
   return (
     <div className="flex items-start gap-3 animate-slide-up">
       <div className="w-9 h-9 rounded-full bg-gradient-to-br from-blue-600 to-purple-600 flex items-center justify-center shrink-0 shadow-card mt-0.5">
         <Bot size={17} className="text-white" />
       </div>
-      <div className="flex-1 min-w-0 max-w-[80%]">
+      <div className="flex-1 min-w-0 max-w-[85%]">
         <div className="bg-white border border-slate-100 shadow-card rounded-2xl rounded-tl-md px-4 py-3">
-          <p className="text-[15px] text-slate-800 leading-relaxed whitespace-pre-wrap">
-            {msg.content}
-          </p>
+          <Markdown content={msg.content} />
         </div>
+        {msg.pendingActions && msg.pendingActions.length > 0 && (
+          <ProposedActions
+            actions={msg.pendingActions}
+            members={members}
+            status={msg.actionStatus ?? 'pending'}
+            onConfirm={onConfirm}
+            onCancel={onCancel}
+          />
+        )}
         {msg.actions && <ActionPills actions={msg.actions} />}
       </div>
     </div>
@@ -212,12 +233,19 @@ export function CopilotChat() {
           throw new Error((err as { error?: string }).error ?? `HTTP ${res.status}`)
         }
 
-        const data = (await res.json()) as { reply: string; actions: string[] }
+        const data = (await res.json()) as {
+          reply: string
+          actions: string[]
+          pendingActions?: PendingAction[]
+        }
 
+        const hasPending = (data.pendingActions?.length ?? 0) > 0
         const assistantMsg: Message = {
           role: 'assistant',
-          content: data.reply || 'Done.',
-          actions: data.actions ?? [],
+          content: data.reply || (hasPending ? "Here's what I'll do — confirm to apply." : 'Done.'),
+          actions: hasPending ? [] : (data.actions ?? []),
+          pendingActions: data.pendingActions ?? [],
+          actionStatus: hasPending ? 'pending' : undefined,
         }
         setMessages((prev) => [...prev, assistantMsg])
       } catch (e: unknown) {
@@ -237,6 +265,68 @@ export function CopilotChat() {
     },
     [input, loading, familyId, user?.email, members, messages, getFreshTokens, toast],
   )
+
+  // Apply the queued actions for a given message after the user confirms
+  const handleConfirm = useCallback(
+    async (msgIndex: number) => {
+      const msg = messages[msgIndex]
+      if (!msg?.pendingActions?.length || !familyId || !user?.email) return
+
+      setMessages((prev) =>
+        prev.map((m, i) => (i === msgIndex ? { ...m, actionStatus: 'confirming' } : m)),
+      )
+
+      try {
+        const freshTokens = await getFreshTokens()
+        const googleTokens = freshTokens
+          ? { accessToken: freshTokens.accessToken, refreshToken: freshTokens.refreshToken }
+          : null
+
+        const res = await fetch('/api/agent/execute', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            actions: msg.pendingActions,
+            familyId,
+            userEmail: user.email,
+            googleTokens,
+          }),
+        })
+
+        const data = await res.json()
+        if (!res.ok) throw new Error(data.error ?? 'Could not apply changes')
+
+        const failed = (data.results ?? []).filter((r: { ok: boolean }) => !r.ok)
+        if (failed.length > 0) {
+          toast(`${failed.length} change(s) couldn't be applied`, 'error')
+        } else {
+          toast('Changes applied', 'success')
+        }
+
+        setMessages((prev) =>
+          prev.map((m, i) =>
+            i === msgIndex
+              ? { ...m, actionStatus: 'done', actions: data.actions ?? [] }
+              : m,
+          ),
+        )
+      } catch (e: unknown) {
+        toast(e instanceof Error ? e.message : 'Could not apply changes', 'error')
+        setMessages((prev) =>
+          prev.map((m, i) => (i === msgIndex ? { ...m, actionStatus: 'pending' } : m)),
+        )
+        // eslint-disable-next-line no-console
+        console.error('[copilot] execute error:', e)
+      }
+    },
+    [messages, familyId, user?.email, getFreshTokens, toast],
+  )
+
+  const handleCancel = useCallback((msgIndex: number) => {
+    setMessages((prev) =>
+      prev.map((m, i) => (i === msgIndex ? { ...m, actionStatus: 'cancelled' } : m)),
+    )
+  }, [])
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -275,7 +365,13 @@ export function CopilotChat() {
                 msg.role === 'user' ? (
                   <UserBubble key={i} msg={msg} />
                 ) : (
-                  <AssistantBubble key={i} msg={msg} />
+                  <AssistantBubble
+                    key={i}
+                    msg={msg}
+                    members={members}
+                    onConfirm={() => handleConfirm(i)}
+                    onCancel={() => handleCancel(i)}
+                  />
                 ),
               )}
               {loading && <LoadingBubble />}
