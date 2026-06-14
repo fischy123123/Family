@@ -470,7 +470,7 @@ export function CommandCenter() {
               <ProblemCard
                 key={p.id}
                 problem={p}
-                onCapture={openCapture}
+                onCapture={(text) => openCapture({ text, autoAnalyze: true })}
                 onCopilot={() => router.push('/copilot')}
                 onCalendar={() => router.push('/calendar')}
               />
@@ -495,8 +495,11 @@ export function CommandCenter() {
                 </div>
                 {r.actionLabel && (
                   <button
-                    onClick={openCapture}
-                    className="text-xs font-medium text-purple-600 hover:text-purple-700 shrink-0 mt-0.5"
+                    onClick={() => openCapture({
+                      text: `${r.title}. ${r.rationale}`,
+                      autoAnalyze: true,
+                    })}
+                    className="shrink-0 mt-0.5 px-3 py-1.5 rounded-xl text-xs font-semibold text-white bg-gradient-to-r from-purple-600 to-purple-700 hover:from-purple-500 hover:to-purple-600 transition-all"
                   >
                     {r.actionLabel}
                   </button>
@@ -513,7 +516,7 @@ export function CommandCenter() {
         {todayEvents.length === 0 ? (
           <div className="rounded-2xl p-6 bg-white shadow-card text-center">
             <p className="text-sm text-slate-400">Nothing scheduled today.</p>
-            <button onClick={openCapture} className="text-xs text-blue-600 font-medium mt-1">Capture something →</button>
+            <button onClick={() => openCapture()} className="text-xs text-blue-600 font-medium mt-1">Capture something →</button>
           </div>
         ) : (
           <div className="rounded-2xl bg-white shadow-card divide-y divide-slate-50 overflow-hidden">
@@ -560,17 +563,18 @@ function ProblemCard({
   onCalendar,
 }: {
   problem: PotentialProblem
-  onCapture: () => void
+  onCapture: (text: string) => void
   onCopilot: () => void
   onCalendar: () => void
 }) {
   const severityBg = p.severity === 'high' ? '#fee2e2' : p.severity === 'medium' ? '#ffedd5' : '#fef9c3'
   const severityColor = p.severity === 'high' ? '#dc2626' : p.severity === 'medium' ? '#ea580c' : '#a16207'
   const borderColor = p.severity === 'high' ? '#dc2626' : p.severity === 'medium' ? '#f97316' : '#eab308'
+  const actionText = p.suggestedAction ? `${p.title}. ${p.suggestedAction}` : p.title
 
   function handleAction() {
     if (p.actionType === 'calendar') { onCalendar(); return }
-    if (p.actionType === 'capture') { onCapture(); return }
+    if (p.actionType === 'capture') { onCapture(actionText); return }
     onCopilot() // default: open Copilot to discuss / handle it
   }
 

@@ -10,7 +10,7 @@ import { MicButton } from '@/components/ui/MicButton'
 import type { FamilyMember, Task, CalendarEvent, SmartList, ExtractedOutcome, MemoryEntry } from '@/lib/types'
 
 interface CaptureContextValue {
-  open: () => void
+  open: (opts?: { text?: string; autoAnalyze?: boolean }) => void
 }
 
 const CaptureContext = createContext<CaptureContextValue>({ open: () => {} })
@@ -42,14 +42,38 @@ export function CaptureProvider({ children }: { children: React.ReactNode }) {
   const { update: updateMember } = useFirestore<FamilyMember>('members')
   const { toast } = useToast()
 
-  const open = useCallback(() => {
+  const open = useCallback((opts?: { text?: string; autoAnalyze?: boolean }) => {
+    const prefill = opts?.text ?? ''
     setIsOpen(true)
-    setText('')
+    setText(prefill)
     setImageData(null)
     setSummary('')
     setOutcomes([])
     setApplied(new Set())
-  }, [])
+
+    // If pre-filled text is provided and autoAnalyze is requested, immediately
+    // call the extraction API so the user sees results right away.
+    if (prefill && opts?.autoAnalyze) {
+      setLoading(true)
+      fetch('/api/ai/extract', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          rawText: prefill,
+          members: members.map((m) => ({ name: m.name, email: m.email, role: m.role })),
+          today: new Date().toISOString(),
+        }),
+      })
+        .then((r) => r.json())
+        .then((data: { summary?: string; outcomes?: ExtractedOutcome[]; error?: string }) => {
+          if (data.error) throw new Error(data.error)
+          setSummary(data.summary ?? '')
+          setOutcomes(data.outcomes ?? [])
+        })
+        .catch(() => { /* user can still type and manually analyze */ })
+        .finally(() => setLoading(false))
+    }
+  }, [members])
 
   function close() {
     setIsOpen(false)

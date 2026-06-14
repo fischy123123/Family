@@ -17,7 +17,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
       {/* Global Capture FAB */}
       <button
-        onClick={open}
+        onClick={() => open()}
         aria-label="Capture"
         className="fixed z-50 bottom-24 sm:bottom-8 right-5 w-14 h-14 rounded-2xl bg-gradient-to-br from-blue-600 to-purple-600 text-white flex items-center justify-center shadow-float hover:-translate-y-0.5 hover:shadow-lg transition-all duration-200 active:translate-y-0"
         style={{ boxShadow: '0 12px 28px rgba(79,70,229,0.45)' }}
