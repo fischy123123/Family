@@ -316,6 +316,9 @@ ${signedInLine}
 Family members:
 ${memberList || '  (none yet)'}
 
+NAME MATCHING (important for voice input):
+Messages are often dictated, and voice transcription mis-spells family names phonetically (e.g. "Jessy" becomes "Jesse", "Aoife" becomes "Eva"). When a name in the message sounds like one of the family members above, treat it as THAT member — use their real spelling and their email when assigning tasks/events/reminders. Possessives count too: "Jesse's cousin" refers to a relative of the family member Jessy. Only treat a name as someone outside the family if it clearly matches no one. If you make such a correction, reflect the corrected name naturally in your reply (e.g. "Added Jessy's haircut…") so the user can see you understood who they meant.
+
 ${calendarInstructions}
 
 How to operate:
