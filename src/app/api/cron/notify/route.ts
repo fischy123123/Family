@@ -1,15 +1,38 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getAdminDb, getAdminMessaging } from '@/lib/firebaseAdmin'
+import Anthropic from '@anthropic-ai/sdk'
 
-interface DueItem {
-  label: string
-}
-
-/** Returns true if an ISO date string falls on today (local-ish, UTC date compare). */
-function isDueToday(iso?: string): boolean {
+/** Returns true if an ISO date string falls on today or is overdue (past today). */
+function isDueOrOverdue(iso?: string): boolean {
   if (!iso) return false
   const today = new Date().toISOString().split('T')[0]
   return iso.split('T')[0] <= today
+}
+
+/** Returns true if an ISO date string falls on today exactly. */
+function isToday(iso?: string): boolean {
+  if (!iso) return false
+  const today = new Date().toISOString().split('T')[0]
+  return iso.split('T')[0] === today
+}
+
+async function generateBriefing(familyName: string, summary: string): Promise<string> {
+  const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
+
+  const response = await anthropic.messages.create({
+    model: 'claude-sonnet-4-6',
+    max_tokens: 100,
+    messages: [
+      {
+        role: 'user',
+        content: `Today's family data for ${familyName}:\n${summary}`,
+      },
+    ],
+    system:
+      "You are a family assistant. Given today's family data, write a morning briefing notification. Keep it under 200 characters total (notification body). Be warm, specific, and action-oriented. Mention the 2-3 most important things. Example: 'Mia has soccer at 4pm (leave by 3:40). Dentist for Jake at 2pm. Grocery run needed.'",
+  })
+
+  return response.content[0].type === 'text' ? response.content[0].text.trim() : ''
 }
 
 export async function GET(request: NextRequest) {
@@ -28,54 +51,93 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: msg }, { status: 500 })
   }
 
+  if (!process.env.ANTHROPIC_API_KEY) {
+    return NextResponse.json({ error: 'ANTHROPIC_API_KEY not configured' }, { status: 500 })
+  }
+
   const familiesSnap = await db.collection('families').get()
   let sent = 0
 
   for (const familyDoc of familiesSnap.docs) {
     const familyId = familyDoc.id
-
-    // Gather what's due today across reminders, events, and chores.
-    const due: DueItem[] = []
-
-    const remindersSnap = await db.collection('families').doc(familyId).collection('reminders').get()
-    remindersSnap.forEach((d) => {
-      const r = d.data()
-      if (!r.isCompleted && isDueToday(r.dueDate)) due.push({ label: `🔔 ${r.title}` })
-    })
+    const familyData = familyDoc.data()
+    const familyName: string = familyData.name ?? 'the family'
 
     const today = new Date().toISOString().split('T')[0]
-    const eventsSnap = await db.collection('families').doc(familyId).collection('events').get()
-    eventsSnap.forEach((d) => {
-      const e = d.data()
-      if (typeof e.start === 'string' && e.start.split('T')[0] === today) {
-        due.push({ label: `📅 ${e.title}` })
+
+    // Gather members
+    const membersSnap = await db.collection('families').doc(familyId).collection('members').get()
+    const members = membersSnap.docs.map((d) => d.data().name as string).filter(Boolean)
+
+    // Gather incomplete tasks due today or overdue
+    const tasksSnap = await db.collection('families').doc(familyId).collection('tasks').get()
+    const dueTasks: string[] = []
+    tasksSnap.forEach((d) => {
+      const t = d.data()
+      if (!t.isCompleted && isDueOrOverdue(t.dueDate)) {
+        const assignee = t.assignedTo ? ` (${t.assignedTo})` : ''
+        const overdue = t.dueDate && t.dueDate.split('T')[0] < today ? ' [OVERDUE]' : ''
+        dueTasks.push(`${t.title}${assignee}${overdue}`)
       }
     })
 
-    const choresSnap = await db.collection('families').doc(familyId).collection('chores').get()
-    choresSnap.forEach((d) => {
-      const c = d.data()
-      if (c.lastCompletedDate !== today) due.push({ label: `🧹 ${c.name}` })
+    // Gather today's events
+    const eventsSnap = await db.collection('families').doc(familyId).collection('events').get()
+    const todayEvents: string[] = []
+    eventsSnap.forEach((d) => {
+      const e = d.data()
+      if (typeof e.start === 'string' && isToday(e.start)) {
+        const time = e.start.includes('T') ? ` at ${e.start.split('T')[1].slice(0, 5)}` : ''
+        const who = e.attendees?.join(', ') ?? ''
+        todayEvents.push(`${e.title}${time}${who ? ` (${who})` : ''}`)
+      }
     })
 
-    if (due.length === 0) continue
+    // Gather all chores
+    const choresSnap = await db.collection('families').doc(familyId).collection('chores').get()
+    const pendingChores: string[] = []
+    choresSnap.forEach((d) => {
+      const c = d.data()
+      if (c.lastCompletedDate !== today) {
+        pendingChores.push(c.name)
+      }
+    })
+
+    // Skip if nothing to report
+    if (dueTasks.length === 0 && todayEvents.length === 0 && pendingChores.length === 0) continue
 
     // Collect this family's device tokens.
     const tokensSnap = await db.collection('families').doc(familyId).collection('pushTokens').get()
     const tokens = tokensSnap.docs.map((d) => d.data().token as string).filter(Boolean)
     if (tokens.length === 0) continue
 
-    const body = due.slice(0, 5).map((d) => d.label).join('\n') +
-      (due.length > 5 ? `\n…and ${due.length - 5} more` : '')
+    // Build structured summary for Claude
+    const summaryParts: string[] = []
+    if (members.length > 0) summaryParts.push(`Members: ${members.join(', ')}`)
+    if (todayEvents.length > 0) summaryParts.push(`Today's events: ${todayEvents.join('; ')}`)
+    if (dueTasks.length > 0) summaryParts.push(`Tasks due/overdue: ${dueTasks.join('; ')}`)
+    if (pendingChores.length > 0) summaryParts.push(`Pending chores: ${pendingChores.join(', ')}`)
+    const summary = summaryParts.join('\n')
+
+    // Generate AI briefing
+    let body: string
+    try {
+      body = await generateBriefing(familyName, summary)
+    } catch (e) {
+      console.error(`Failed to generate briefing for family ${familyId}:`, e)
+      continue
+    }
+
+    if (!body) continue
 
     const res = await messaging.sendEachForMulticast({
       tokens,
       notification: {
-        title: `Today's Family Agenda (${due.length})`,
+        title: `Good morning, ${familyName}! ☀️`,
         body,
       },
       webpush: {
-        fcmOptions: { link: '/dashboard' },
+        fcmOptions: { link: '/command' },
       },
     })
     sent += res.successCount
