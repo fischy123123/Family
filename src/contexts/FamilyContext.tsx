@@ -49,6 +49,9 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
         })
       }
       setLoading(false)
+    }).catch((err) => {
+      console.error('Firestore error:', err)
+      setLoading(false)
     })
   }, [user])
 
