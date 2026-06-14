@@ -17,10 +17,15 @@ export interface FamilyContextInput {
   // by event title. Captured from the Command Center "help me understand your
   // calendar" prompt.
   eventContext?: { eventTitle: string; context: string }[]
+  // Who is signed in / asking right now, so the AI can address them as "you".
+  currentUserEmail?: string
+  currentUserName?: string
 }
 
-function fmtMember(m: FamilyMember): string {
-  const parts = [`- ${m.name} (${m.role}${m.email ? `, ${m.email}` : ''})`]
+function fmtMember(m: FamilyMember, currentUserEmail?: string): string {
+  const isYou = !!currentUserEmail && m.email?.toLowerCase() === currentUserEmail.toLowerCase()
+  const youTag = isYou ? ' ← THIS IS THE SIGNED-IN USER (address as "you")' : ''
+  const parts = [`- ${m.name} (${m.role}${m.email ? `, ${m.email}` : ''})${youTag}`]
   if (m.summary) parts.push(`  summary: ${m.summary}`)
   if (m.routines?.length) parts.push(`  routines: ${m.routines.map((r) => `${r.title} [${r.schedule}]`).join('; ')}`)
   if (m.preferences?.length) parts.push(`  prefs: ${m.preferences.map((p) => p.text).join('; ')}`)
@@ -29,7 +34,7 @@ function fmtMember(m: FamilyMember): string {
 }
 
 export function buildFamilyContext(input: FamilyContextInput): string {
-  const { members, events, tasks, chores, plans, lists, now, eventContext } = input
+  const { members, events, tasks, chores, plans, lists, now, eventContext, currentUserEmail, currentUserName } = input
   const nowDate = new Date(now)
   const horizon = new Date(nowDate.getTime() + 14 * 24 * 60 * 60 * 1000)
 
@@ -47,8 +52,18 @@ export function buildFamilyContext(input: FamilyContextInput): string {
 
   sections.push(`CURRENT TIME: ${nowDate.toString()}`)
 
+  const matchedSelf = currentUserEmail
+    ? members.find((m) => m.email?.toLowerCase() === currentUserEmail.toLowerCase())
+    : undefined
+  const selfDescriptor = matchedSelf
+    ? `${matchedSelf.name} (${currentUserEmail})`
+    : currentUserName || currentUserEmail
+      ? `${currentUserName ?? ''}${currentUserEmail ? ` <${currentUserEmail}>` : ''} — NOTE: this person is not yet matched to a family member profile`
+      : 'unknown'
+  sections.push(`SIGNED-IN USER (the person you are talking to right now — address them as "you"): ${selfDescriptor}`)
+
   sections.push(
-    `FAMILY MEMBERS:\n${members.length ? members.map(fmtMember).join('\n') : '(none yet)'}`
+    `FAMILY MEMBERS:\n${members.length ? members.map((m) => fmtMember(m, currentUserEmail)).join('\n') : '(none yet)'}`
   )
 
   sections.push(

@@ -44,7 +44,7 @@ export function CommandCenter() {
   const { isConnected, getFreshTokens } = useGoogleTokens()
   const { familyId } = useFamily()
 
-  const { data: members } = useFirestore<FamilyMember>('members')
+  const { data: members, update: updateMember } = useFirestore<FamilyMember>('members')
   const { data: localEvents } = useFirestore<CalendarEvent>('events')
   const { data: tasks, update: updateTask } = useFirestore<Task>('tasks')
   const { data: chores } = useFirestore<Chore>('chores')
@@ -60,6 +60,7 @@ export function CommandCenter() {
   const [clarificationAnswers, setClarificationAnswers] = useState<Record<string, string>>({})
   const [clarificationsDismissed, setClarificationsDismissed] = useState(false)
   const [savingItemId, setSavingItemId] = useState<string | null>(null)
+  const [selfLinkDismissed, setSelfLinkDismissed] = useState(false)
   const clarificationsFetched = useRef(false)
 
   // Fetch Google Calendar events when connected
@@ -130,6 +131,8 @@ export function CommandCenter() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           members, events, tasks, chores, plans, lists, eventContext,
+          currentUserEmail: user?.email ?? undefined,
+          currentUserName: user?.displayName ?? undefined,
           now: new Date().toISOString(),
         }),
       })
@@ -186,6 +189,17 @@ export function CommandCenter() {
   const answeredIds = new Set(eventContexts.map((e) => e.id))
   const visibleClarifications = clarifications.filter((c) => !answeredIds.has(c.eventId))
 
+  // If the signed-in user isn't linked to a family-member profile, the AI can't
+  // tell which person "you" are. Offer a one-tap link.
+  const selfLinked = !!user?.email &&
+    members.some((m) => m.email?.toLowerCase() === user.email!.toLowerCase())
+
+  async function linkSelf(m: FamilyMember) {
+    if (!user?.email) return
+    await updateMember({ ...m, email: user.email })
+    runEngine()
+  }
+
   const firstName = user?.displayName?.split(' ')[0] ?? 'there'
   const todayEvents = events
     .filter((e) => new Date(e.start).toDateString() === new Date().toDateString())
@@ -216,6 +230,47 @@ export function CommandCenter() {
       </div>
 
       {!isConnected && <ConnectGooglePrompt onConnect={() => router.push(`/api/auth/google?email=${user?.email ?? ''}`)} />}
+
+      {/* Self-link: tell the assistant which member you are */}
+      {members.length > 0 && !selfLinked && !selfLinkDismissed && user?.email && (
+        <section className="rounded-2xl p-5 bg-blue-50 border border-blue-200 animate-slide-up">
+          <div className="flex items-start gap-3 mb-3">
+            <div className="w-8 h-8 rounded-lg bg-blue-100 flex items-center justify-center shrink-0">
+              <Sparkles size={16} className="text-blue-600" />
+            </div>
+            <div>
+              <h3 className="text-sm font-semibold text-blue-900">Which one is you?</h3>
+              <p className="text-xs text-blue-700 mt-0.5">
+                Link your profile so I know who &quot;you&quot; are and can personalize everything.
+              </p>
+            </div>
+            <button
+              onClick={() => setSelfLinkDismissed(true)}
+              className="ml-auto text-blue-400 hover:text-blue-600"
+              aria-label="Dismiss"
+            >
+              <X size={16} />
+            </button>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {members.map((m) => (
+              <button
+                key={m.id}
+                onClick={() => linkSelf(m)}
+                className="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-white border border-blue-100 hover:border-blue-300 text-sm text-slate-700 transition-colors"
+              >
+                <span
+                  className="w-6 h-6 rounded-full flex items-center justify-center text-xs"
+                  style={{ background: `${m.colorHex}25` }}
+                >
+                  {m.emoji}
+                </span>
+                {m.name}
+              </button>
+            ))}
+          </div>
+        </section>
+      )}
 
       {/* AI greeting / briefing line */}
       {report?.greeting && (

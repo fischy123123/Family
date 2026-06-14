@@ -282,10 +282,23 @@ function buildSystemPrompt(
   members: FamilyMember[],
   today: string,
   hasGoogleTokens: boolean,
+  currentUserEmail?: string,
 ): string {
   const memberList = members
-    .map((m) => `  - ${m.name} (${m.email}, ${m.role})`)
+    .map((m) => {
+      const isYou = !!currentUserEmail && m.email?.toLowerCase() === currentUserEmail.toLowerCase()
+      return `  - ${m.name} (${m.email}, ${m.role})${isYou ? ' ← THIS IS THE PERSON YOU ARE TALKING TO (refer to them as "you")' : ''}`
+    })
     .join('\n')
+
+  const self = currentUserEmail
+    ? members.find((m) => m.email?.toLowerCase() === currentUserEmail.toLowerCase())
+    : undefined
+  const signedInLine = self
+    ? `You are talking to ${self.name} (${currentUserEmail}). When they say "I", "me", or "my", they mean ${self.name}.`
+    : currentUserEmail
+      ? `You are talking to the person signed in as ${currentUserEmail} (not yet matched to a family member profile).`
+      : ''
 
   const calendarInstructions = hasGoogleTokens
     ? 'Google Calendar is connected — prefer get_google_events and create_google_event for calendar operations. Use list_events / create_event only for Firestore-only storage.'
@@ -295,6 +308,8 @@ function buildSystemPrompt(
 Today is ${today}.
 
 Your job is to reduce the family's mental load. You are not a passive task bot — you are a proactive partner who keeps track of everyone's schedules, lists, and plans, and who tells the family what actually needs their attention. Think like a great executive assistant for a busy household.
+
+${signedInLine}
 
 Family members:
 ${memberList || '  (none yet)'}
@@ -685,7 +700,7 @@ export async function POST(request: NextRequest) {
     const members: FamilyMember[] = context?.members ?? []
     const today: string = context?.today ?? new Date().toISOString()
 
-    const systemPrompt = buildSystemPrompt(members, today, !!googleTokens)
+    const systemPrompt = buildSystemPrompt(members, today, !!googleTokens, userEmail)
 
     let conversationMessages: Anthropic.MessageParam[] = (messages ?? []).map(
       (m: { role: 'user' | 'assistant'; content: string }) => ({
