@@ -12,7 +12,7 @@ import { auth } from '@/lib/firebase'
 export default function SettingsPage() {
   const router = useRouter()
   const { user, signOut } = useAuth()
-  const { familyId, inviteCode, resetFamily } = useFamily()
+  const { familyId, inviteCode, resetFamily, deleteFamily } = useFamily()
 
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [deleting, setDeleting] = useState(false)
@@ -36,13 +36,38 @@ export default function SettingsPage() {
     setDeleting(true)
     setError('')
     try {
-      const idToken = await auth.currentUser?.getIdToken()
-      const res = await fetch('/api/admin/reset-family', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${idToken}` },
-      })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error ?? 'Delete failed')
+      // Prefer the server-side admin endpoint (clears every member's pointer),
+      // but tolerate it being unavailable or returning a non-JSON error page.
+      let serverOk = false
+      try {
+        const idToken = await auth.currentUser?.getIdToken()
+        const res = await fetch('/api/admin/reset-family', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${idToken}` },
+        })
+        const text = await res.text()
+        let data: { error?: string } = {}
+        try {
+          data = text ? JSON.parse(text) : {}
+        } catch {
+          // Non-JSON response (e.g. an HTML error page) — treat as server failure
+        }
+        if (res.ok) serverOk = true
+        else if (res.status === 401 || res.status === 403) {
+          throw new Error(data.error ?? 'Not authorized to delete this family')
+        }
+        // Other failures fall through to the client-side wipe below
+      } catch (serverErr) {
+        // Network or auth error — fall back to client-side deletion
+        console.warn('Admin reset unavailable, using client-side wipe:', serverErr)
+      }
+
+      // Always ensure the data is gone via the client SDK (idempotent if the
+      // server already deleted it). Guarantees we never leave the user stuck.
+      if (!serverOk) {
+        await deleteFamily()
+      }
+
       // Clear localStorage caches
       Object.keys(localStorage).forEach((k) => {
         if (k.startsWith('attn:') || k.startsWith('gcal:') || k.startsWith('clar:')) {

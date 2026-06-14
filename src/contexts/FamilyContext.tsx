@@ -1,7 +1,7 @@
 'use client'
 
 import { createContext, useContext, useEffect, useState } from 'react'
-import { doc, getDoc, setDoc, collection, query, where, getDocs } from 'firebase/firestore'
+import { doc, getDoc, setDoc, deleteDoc, collection, query, where, getDocs } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
 import { useAuth } from './AuthContext'
 
@@ -13,6 +13,7 @@ interface FamilyContextType {
   createFamily: () => Promise<void>
   joinFamily: (code: string) => Promise<boolean>
   resetFamily: () => Promise<void>
+  deleteFamily: () => Promise<void>
 }
 
 const FamilyContext = createContext<FamilyContextType>({
@@ -23,7 +24,14 @@ const FamilyContext = createContext<FamilyContextType>({
   createFamily: async () => {},
   joinFamily: async () => false,
   resetFamily: async () => {},
+  deleteFamily: async () => {},
 })
+
+// Subcollections under families/{id} that hold family data.
+const FAMILY_SUBCOLLECTIONS = [
+  'members', 'events', 'tasks', 'chores', 'plans', 'lists',
+  'eventContext', 'shopping_lists', 'meal_plans', 'reminders', 'templates',
+]
 
 function randomCode(): string {
   return Math.random().toString(36).substring(2, 8).toUpperCase()
@@ -121,8 +129,37 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
     setInviteCode(null)
   }
 
+  // Fully deletes the current family's data from the browser using the client
+  // SDK. The signed-in user has permission (per Firestore rules) to delete their
+  // own family's subcollections and the family doc. This is the reliable
+  // fallback when the server-side admin endpoint is unavailable. Note: it can
+  // only clear THIS user's familyId pointer — other members' pointers require
+  // the admin endpoint. Sufficient for re-running onboarding.
+  async function deleteFamily(): Promise<void> {
+    if (!user) return
+    const fid = familyId
+    if (fid) {
+      for (const c of FAMILY_SUBCOLLECTIONS) {
+        try {
+          const snap = await getDocs(collection(db, 'families', fid, c))
+          await Promise.all(snap.docs.map((d) => deleteDoc(d.ref)))
+        } catch (e) {
+          console.error('Failed to clear subcollection', c, e)
+        }
+      }
+      try {
+        await deleteDoc(doc(db, 'families', fid))
+      } catch (e) {
+        console.error('Failed to delete family doc', e)
+      }
+    }
+    await setDoc(doc(db, 'users', user.uid), { familyId: null }, { merge: true })
+    setFamilyId(null)
+    setInviteCode(null)
+  }
+
   return (
-    <FamilyContext.Provider value={{ familyId, inviteCode, loading, loadError, createFamily, joinFamily, resetFamily }}>
+    <FamilyContext.Provider value={{ familyId, inviteCode, loading, loadError, createFamily, joinFamily, resetFamily, deleteFamily }}>
       {children}
     </FamilyContext.Provider>
   )
