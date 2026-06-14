@@ -86,6 +86,14 @@ export default function SignInPage() {
               {signInError}
             </p>
           )}
+
+          {/* Temporary debug panel — remove once auth is working */}
+          <div className="mt-4 rounded-lg p-3 text-left text-[10px] font-mono text-slate-500 border border-white/5" style={{ background: 'rgba(255,255,255,0.03)' }}>
+            <p>loading: {String(loading)}</p>
+            <p>user: {user ? user.email : 'null'}</p>
+            <p>error: {signInError ?? 'none'}</p>
+          </div>
+
           <p className="text-xs text-slate-600 text-center mt-4">
             Your data is private and secure. No subscriptions.
           </p>
