@@ -1,3 +1,46 @@
+// ─────────────────────────────────────────────────────────────
+// FamilyOS Type System
+// ─────────────────────────────────────────────────────────────
+// FamilyOS is a decision-support system for family life. These types
+// model not just information, but ATTENTION — what needs to happen next.
+
+// ============================================================
+// FAMILY BRAIN — the knowledge system
+// ============================================================
+
+export interface RoutineEntry {
+  id: string
+  title: string            // "School pickup", "Soccer practice"
+  schedule: string         // human-readable: "Weekdays 3:30pm", "Tue/Thu 5pm"
+  notes?: string
+}
+
+export interface PreferenceEntry {
+  id: string
+  category: string         // "Food", "Activities", "Dislikes"
+  text: string
+}
+
+export interface InfoEntry {
+  id: string
+  category: 'medical' | 'education' | 'logistics' | 'personal' | 'other'
+  label: string            // "Allergies", "Teacher", "Shoe size"
+  value: string
+}
+
+export interface MemoryEntry {
+  id: string
+  text: string
+  createdAt: string
+}
+
+export interface TimelineMilestone {
+  id: string
+  title: string
+  date: string             // ISO date
+  notes?: string
+}
+
 export interface FamilyMember {
   id: string
   name: string
@@ -5,7 +48,207 @@ export interface FamilyMember {
   colorHex: string
   emoji: string
   role: 'parent' | 'child' | 'other'
+  // Family Brain extensions (all optional for backward-compat)
+  birthday?: string
+  summary?: string                    // AI/user one-liner about this person
+  routines?: RoutineEntry[]
+  preferences?: PreferenceEntry[]
+  importantInfo?: InfoEntry[]
+  memories?: MemoryEntry[]
+  timeline?: TimelineMilestone[]
 }
+
+// ============================================================
+// ATTENTION ENGINE — the core output
+// ============================================================
+
+export type AttentionBucket = 'now' | 'next' | 'later' | 'upcoming'
+
+export interface AttentionItem {
+  id: string
+  bucket: AttentionBucket
+  title: string                 // the instruction: "Leave for soccer pickup"
+  reason: string                // why this matters now
+  startBy?: string              // ISO time the user should begin acting
+  dueAt?: string                // ISO time the underlying thing happens
+  assigneeEmail?: string
+  sourceType: 'event' | 'task' | 'chore' | 'plan' | 'reminder' | 'inferred'
+  sourceId?: string
+  priority: number              // 0-100, higher = more urgent
+}
+
+export interface PotentialProblem {
+  id: string
+  title: string                 // "No dinner planned for tonight"
+  detail: string                // explanation
+  severity: 'low' | 'medium' | 'high'
+  suggestedAction?: string
+  relatedDate?: string
+}
+
+export interface Recommendation {
+  id: string
+  title: string                 // "Pack swim bags tonight"
+  rationale: string             // why it reduces future stress
+  actionLabel?: string          // "Add to tonight's list"
+}
+
+export interface AttentionReport {
+  generatedAt: string
+  greeting: string              // contextual one-liner
+  items: AttentionItem[]
+  problems: PotentialProblem[]
+  recommendations: Recommendation[]
+}
+
+// ============================================================
+// OPEN LOOPS / TASKS — unresolved responsibilities
+// ============================================================
+
+export interface Task {
+  id: string
+  title: string
+  notes?: string
+  isCompleted: boolean
+  completedAt?: string
+  dueDate?: string
+  assigneeEmail?: string
+  priority: 'none' | 'low' | 'medium' | 'high'
+  recurrence?: RecurrenceRule
+  planId?: string               // if part of a Plan
+  source?: 'manual' | 'capture' | 'ai' | 'email'
+  createdAt: string
+}
+
+// ============================================================
+// PLANS — multi-step initiatives / living workspaces
+// ============================================================
+
+export type PlanKind =
+  | 'trip' | 'vacation' | 'school-year' | 'holiday'
+  | 'birthday' | 'home-project' | 'event' | 'other'
+
+export interface PlanTask {
+  id: string
+  title: string
+  isCompleted: boolean
+  dueDate?: string
+  assigneeEmail?: string
+}
+
+export interface PlanShoppingItem {
+  id: string
+  name: string
+  quantity?: number
+  isPurchased: boolean
+}
+
+export interface PlanDocument {
+  id: string
+  label: string
+  url?: string
+  notes?: string
+}
+
+export interface PlanMilestone {
+  id: string
+  title: string
+  date: string
+  isComplete: boolean
+}
+
+export interface Plan {
+  id: string
+  title: string
+  kind: PlanKind
+  emoji: string
+  colorHex: string
+  summary?: string
+  targetDate?: string             // when the plan culminates (trip start, party day)
+  createdAt: string
+  participants: string[]          // member emails
+  milestones: PlanMilestone[]
+  tasks: PlanTask[]
+  shopping: PlanShoppingItem[]
+  documents: PlanDocument[]
+  // AI-generated, cached
+  readiness?: number              // 0-100
+  readinessSummary?: string
+  risks?: string[]
+  insights?: string[]
+}
+
+// ============================================================
+// LISTS — intelligent, context-aware
+// ============================================================
+
+export type ListKind = 'grocery' | 'shopping' | 'packing' | 'tasks' | 'household' | 'custom'
+
+export interface SmartListItem {
+  id: string
+  name: string
+  quantity?: number
+  unit?: string
+  category?: string
+  isComplete: boolean
+  isRecurring?: boolean
+  notes?: string
+}
+
+export interface SmartList {
+  id: string
+  name: string
+  kind: ListKind
+  emoji: string
+  colorHex: string
+  store?: string
+  createdAt: string
+  items: SmartListItem[]
+  planId?: string
+}
+
+// ============================================================
+// CAPTURE — everything in becomes structured action
+// ============================================================
+
+export type CaptureInputType = 'text' | 'voice' | 'image' | 'email' | 'document'
+export type CaptureStatus = 'pending' | 'processed' | 'error'
+
+export interface ExtractedOutcome {
+  kind: 'task' | 'event' | 'shopping_item' | 'packing_item' | 'plan' | 'memory' | 'follow_up'
+  title: string
+  date?: string
+  assigneeEmail?: string
+  notes?: string
+  targetListId?: string
+  targetPlanId?: string
+  applied?: boolean
+}
+
+export interface Capture {
+  id: string
+  inputType: CaptureInputType
+  rawText: string
+  imageUrl?: string
+  status: CaptureStatus
+  createdAt: string
+  outcomes: ExtractedOutcome[]
+  summary?: string
+}
+
+// ============================================================
+// COPILOT — conversational interface
+// ============================================================
+
+export interface CopilotMessage {
+  role: 'user' | 'assistant'
+  content: string
+  actions?: string[]
+}
+
+// ============================================================
+// LEGACY TYPES (kept for backward compatibility during migration)
+// ============================================================
 
 export interface CalendarEvent {
   id: string
@@ -116,6 +359,10 @@ export interface PushSubscription {
   subscription: string
 }
 
+// ============================================================
+// CONSTANTS
+// ============================================================
+
 export const SHOPPING_CATEGORIES = [
   'Produce',
   'Dairy',
@@ -149,4 +396,31 @@ export const PRIORITY_COLORS: Record<FamilyReminder['priority'], string> = {
   low: '#22C55E',
   medium: '#F97316',
   high: '#EF4444',
+}
+
+export const PLAN_KINDS: { kind: PlanKind; label: string; emoji: string }[] = [
+  { kind: 'trip', label: 'Trip', emoji: '✈️' },
+  { kind: 'vacation', label: 'Vacation', emoji: '🏖️' },
+  { kind: 'school-year', label: 'School Year', emoji: '🎒' },
+  { kind: 'holiday', label: 'Holiday', emoji: '🎄' },
+  { kind: 'birthday', label: 'Birthday', emoji: '🎂' },
+  { kind: 'home-project', label: 'Home Project', emoji: '🔨' },
+  { kind: 'event', label: 'Event', emoji: '🎉' },
+  { kind: 'other', label: 'Other', emoji: '📋' },
+]
+
+export const LIST_KINDS: { kind: ListKind; label: string; emoji: string }[] = [
+  { kind: 'grocery', label: 'Grocery', emoji: '🛒' },
+  { kind: 'shopping', label: 'Shopping', emoji: '🛍️' },
+  { kind: 'packing', label: 'Packing', emoji: '🧳' },
+  { kind: 'tasks', label: 'Tasks', emoji: '✅' },
+  { kind: 'household', label: 'Household', emoji: '🏠' },
+  { kind: 'custom', label: 'Custom', emoji: '📝' },
+]
+
+export const BUCKET_META: Record<AttentionBucket, { label: string; color: string }> = {
+  now: { label: 'Now', color: '#EF4444' },
+  next: { label: 'Next', color: '#F97316' },
+  later: { label: 'Later Today', color: '#3B82F6' },
+  upcoming: { label: 'Upcoming', color: '#8B5CF6' },
 }

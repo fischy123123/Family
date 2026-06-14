@@ -16,7 +16,7 @@ export default function RootPage() {
     if (authLoading || familyLoading) return
     if (!user) { router.replace('/signin'); return }
     if (!familyId) { router.replace('/setup'); return }
-    router.replace('/dashboard')
+    router.replace('/command')
   }, [user, familyId, authLoading, familyLoading, router])
 
   return (

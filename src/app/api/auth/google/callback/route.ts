@@ -10,7 +10,7 @@ export async function GET(request: NextRequest) {
   const error = request.nextUrl.searchParams.get('error')
 
   if (error || !code) {
-    return NextResponse.redirect(`${base}/dashboard?google=error`)
+    return NextResponse.redirect(`${base}/command?google=error`)
   }
 
   try {
@@ -23,9 +23,9 @@ export async function GET(request: NextRequest) {
       path: '/',
       sameSite: 'lax',
     })
-    return NextResponse.redirect(`${base}/dashboard?google=connected`)
+    return NextResponse.redirect(`${base}/command?google=connected`)
   } catch (e) {
     console.error('OAuth callback error:', e)
-    return NextResponse.redirect(`${base}/dashboard?google=error`)
+    return NextResponse.redirect(`${base}/command?google=error`)
   }
 }

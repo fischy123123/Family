@@ -2,15 +2,15 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { Home, Calendar, ListChecks, CheckSquare, Users } from 'lucide-react'
+import { LayoutGrid, Users, Map, ListChecks, Sparkles } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 const NAV_ITEMS = [
-  { href: '/dashboard', label: 'Home', icon: Home },
-  { href: '/calendar', label: 'Calendar', icon: Calendar },
-  { href: '/lists', label: 'Lists', icon: ListChecks },
-  { href: '/tasks', label: 'Tasks', icon: CheckSquare },
+  { href: '/command', label: 'Home', icon: LayoutGrid },
   { href: '/family', label: 'Family', icon: Users },
+  { href: '/plans', label: 'Plans', icon: Map },
+  { href: '/lists', label: 'Lists', icon: ListChecks },
+  { href: '/copilot', label: 'Copilot', icon: Sparkles },
 ]
 
 export function MobileNav() {
