@@ -6,6 +6,7 @@ import { useFamily } from '@/contexts/FamilyContext'
 import { useFirestore } from '@/hooks/useFirestore'
 import { useToast } from '@/contexts/ToastContext'
 import { generateId } from '@/lib/utils'
+import { MicButton } from '@/components/ui/MicButton'
 import type { FamilyMember, Task, CalendarEvent, SmartList, ExtractedOutcome, MemoryEntry } from '@/lib/types'
 
 interface CaptureContextValue {
@@ -199,14 +200,23 @@ export function CaptureProvider({ children }: { children: React.ReactNode }) {
                 </div>
               )}
 
-              <textarea
-                value={text}
-                onChange={(e) => setText(e.target.value)}
-                placeholder="Paste an email, type a note, or describe something… e.g. 'Soccer signup due Friday, bring snacks for 12 kids'"
-                rows={4}
-                className="w-full input-premium px-4 py-3 text-sm text-slate-800 resize-none"
-                autoFocus
-              />
+              <div className="relative">
+                <textarea
+                  value={text}
+                  onChange={(e) => setText(e.target.value)}
+                  placeholder="Speak or type… e.g. 'Soccer signup due Friday, bring snacks for 12 kids'"
+                  rows={4}
+                  className="w-full input-premium px-4 py-3 pr-14 text-sm text-slate-800 resize-none"
+                  autoFocus
+                />
+                <div className="absolute top-2.5 right-2.5">
+                  <MicButton
+                    size={38}
+                    title="Tap to speak"
+                    onText={(spoken) => setText((prev) => (prev ? prev.trim() + ' ' : '') + spoken)}
+                  />
+                </div>
+              </div>
 
               <div className="flex gap-2">
                 <input ref={fileRef} type="file" accept="image/*" onChange={handleImage} className="hidden" />

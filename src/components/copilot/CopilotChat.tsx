@@ -18,6 +18,7 @@ import { useFamily } from '@/contexts/FamilyContext'
 import { useFirestore } from '@/hooks/useFirestore'
 import { useGoogleTokens } from '@/hooks/useGoogleTokens'
 import { useToast } from '@/contexts/ToastContext'
+import { MicButton } from '@/components/ui/MicButton'
 import { cn } from '@/lib/utils'
 import type { FamilyMember } from '@/lib/types'
 
@@ -298,6 +299,11 @@ export function CopilotChat() {
               'placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-300',
               'disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-150',
             )}
+          />
+          <MicButton
+            size={48}
+            className="!rounded-full"
+            onText={(spoken) => setInput((prev) => (prev ? prev.trim() + ' ' : '') + spoken)}
           />
           <button
             onClick={() => handleSend()}

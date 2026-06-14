@@ -12,6 +12,7 @@ import { useGoogleTokens } from '@/hooks/useGoogleTokens'
 import { useCapture } from '@/contexts/CaptureContext'
 import { useFamily } from '@/contexts/FamilyContext'
 import { ConnectGooglePrompt } from '@/components/dashboard/ConnectGooglePrompt'
+import { MicButton } from '@/components/ui/MicButton'
 import { BUCKET_META } from '@/lib/types'
 import type {
   FamilyMember, CalendarEvent, Task, Chore, Plan, SmartList,
@@ -264,6 +265,15 @@ export function CommandCenter() {
                       onChange={(e) => setClarificationAnswers((prev) => ({ ...prev, [c.id]: e.target.value }))}
                       onKeyDown={(e) => { if (e.key === 'Enter') saveClarification(c) }}
                       className="flex-1 text-xs rounded-lg px-3 py-2 border border-slate-200 focus:outline-none focus:border-blue-300 bg-slate-50"
+                    />
+                    <MicButton
+                      size={34}
+                      onText={(spoken) =>
+                        setClarificationAnswers((prev) => ({
+                          ...prev,
+                          [c.id]: (prev[c.id] ? prev[c.id].trim() + ' ' : '') + spoken,
+                        }))
+                      }
                     />
                     <button
                       onClick={() => saveClarification(c)}
