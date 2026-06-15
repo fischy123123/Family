@@ -147,10 +147,10 @@ export function buildFamilyContext(input: FamilyContextInput): string {
   sections.push(`SIGNED-IN USER (the person you are talking to right now — address them as "you"): ${selfDescriptor}`)
 
   // Split memories: family-wide vs personal to the current user.
-  // Personal memories are tagged with subjectEmail = currentUserEmail.
-  const familyMemories = (memories ?? []).filter(
-    (m) => !m.subjectEmail || m.subjectEmail.toLowerCase() !== (currentUserEmail ?? '').toLowerCase()
-  )
+  // A memory with ANY subjectEmail is personal to that person only — it must
+  // never appear in another family member's context. Only memories with no
+  // subjectEmail at all are truly family-wide and shared with everyone.
+  const familyMemories = (memories ?? []).filter((m) => !m.subjectEmail)
   const personalMemories = (memories ?? []).filter(
     (m) => m.subjectEmail && m.subjectEmail.toLowerCase() === (currentUserEmail ?? '').toLowerCase()
   )
