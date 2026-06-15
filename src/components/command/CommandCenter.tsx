@@ -8,13 +8,14 @@ import {
 import { db } from '@/lib/firebase'
 import {
   RefreshCw, AlertTriangle, Lightbulb, Clock,
-  Calendar as CalIcon, Sparkles, Check, HelpCircle, X, MessageCircle,
+  Calendar as CalIcon, Sparkles, Check, HelpCircle, X, MessageCircle, Users,
 } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { useFirestore } from '@/hooks/useFirestore'
 import { useGoogleTokens } from '@/hooks/useGoogleTokens'
 import { useCapture } from '@/contexts/CaptureContext'
 import { useFamily } from '@/contexts/FamilyContext'
+import { useToast } from '@/contexts/ToastContext'
 import { ConnectGooglePrompt } from '@/components/dashboard/ConnectGooglePrompt'
 import { MicButton } from '@/components/ui/MicButton'
 import { generateId } from '@/lib/utils'
@@ -85,6 +86,7 @@ export function CommandCenter() {
   const { open: openCapture } = useCapture()
   const { isConnected, getFreshTokens } = useGoogleTokens()
   const { familyId } = useFamily()
+  const { toast } = useToast()
 
   const { data: members, update: updateMember } = useFirestore<FamilyMember>('members')
   const { data: localEvents } = useFirestore<CalendarEvent>('events')
@@ -93,7 +95,7 @@ export function CommandCenter() {
   const { data: chores } = useFirestore<Chore>('chores')
   const { data: plans } = useFirestore<Plan>('plans')
   const { data: lists } = useFirestore<SmartList>('lists')
-  const { data: memories, create: createMemory } = useFirestore<FamilyMemory>('memories')
+  const { data: memories, create: createMemory, update: updateMemory } = useFirestore<FamilyMemory>('memories')
   const { data: profiles } = useFirestore<FamilyProfile>('profile')
   const { data: eventContexts, create: createEventContext } = useFirestore<EventContext>('eventContext')
 
@@ -130,6 +132,14 @@ export function CommandCenter() {
   const [completedTitles, setCompletedTitles] = useState<Set<string>>(new Set())
   // When a user dismisses something, offer to teach the assistant once.
   const [teachPrompt, setTeachPrompt] = useState<{ title: string; reason: string } | null>(null)
+  // After saving calendar context, show a brief inline confirmation telling the
+  // user what was saved and how the assistant will use it.
+  const [contextSaved, setContextSaved] = useState<{ eventTitle: string; context: string } | null>(null)
+  // Optimistic assignment overrides keyed by item title, so the "for" / responsible
+  // chips update instantly on assign without waiting for the engine to re-run.
+  const [assignmentOverrides, setAssignmentOverrides] = useState<
+    Record<string, { assigneeEmail?: string; forEmails?: string[] }>
+  >({})
 
   // Hydrate everything from cache the moment the family id is known, so a
   // returning visit paints a complete page on the first frame.
@@ -390,6 +400,69 @@ export function CommandCenter() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ctxSignature, hydrated])
 
+  // Auto-dismiss the "context saved" confirmation after a few seconds.
+  useEffect(() => {
+    if (!contextSaved) return
+    const t = setTimeout(() => setContextSaved(null), 6000)
+    return () => clearTimeout(t)
+  }, [contextSaved])
+
+  // Assign an item to people. Two-sided: `forEmails` is who it concerns (e.g. the
+  // kids); `responsibleEmail` is who handles it (e.g. a parent). We persist this
+  // three ways so it sticks across engine re-runs:
+  //  1. Optimistic on-screen override so the chips update instantly.
+  //  2. Update the underlying task/reminder's assigneeEmail (the responsible person).
+  //  3. A family-wide memory capturing the full nuance, deduped per item title,
+  //     so the AI re-emits the assignment on every future briefing.
+  async function assignItem(item: AttentionItem, forEmails: string[], responsibleEmail?: string) {
+    setAssignmentOverrides((prev) => ({
+      ...prev,
+      [item.title]: { assigneeEmail: responsibleEmail, forEmails },
+    }))
+
+    const nameFor = (email?: string) =>
+      members.find((m) => m.email?.toLowerCase() === email?.toLowerCase())?.name ?? email
+    const forNames = forEmails.map((e) => nameFor(e)).filter(Boolean).join(', ')
+    const respName = responsibleEmail ? nameFor(responsibleEmail) : ''
+
+    // 2. Update underlying task/reminder assignee, if this item maps to one.
+    if (responsibleEmail) {
+      const t = item.sourceId
+        ? tasks.find((x) => x.id === item.sourceId)
+        : tasks.find((x) => x.title.toLowerCase() === item.title.toLowerCase())
+      if (t) await updateTask({ ...t, assigneeEmail: responsibleEmail })
+      const r = item.sourceId
+        ? reminders.find((x) => x.id === item.sourceId)
+        : reminders.find((x) => x.title.toLowerCase() === item.title.toLowerCase())
+      if (r) await updateReminder({ ...r, assigneeEmail: responsibleEmail })
+    }
+
+    // 3. Persist the nuance as a deduped family memory.
+    const marker = `Assignment · "${item.title}":`
+    const parts: string[] = []
+    if (forNames) parts.push(`it concerns ${forNames}`)
+    if (respName) parts.push(`${respName} is responsible for handling it`)
+    const text = `${marker} ${parts.join('; ')}.`
+    try {
+      const existing = memories.find((m) => m.text.startsWith(marker))
+      if (existing) {
+        await updateMemory({ ...existing, text, createdAt: new Date().toISOString() })
+      } else {
+        await createMemory({
+          id: generateId(),
+          text,
+          category: 'logistics',
+          source: 'manual',
+          createdAt: new Date().toISOString(),
+        } as FamilyMemory)
+      }
+    } catch { /* non-fatal */ }
+
+    const who = respName ? `${respName} (for ${forNames || 'the family'})` : forNames || 'the family'
+    toast(`Assigned "${item.title}" — ${who}`, 'success')
+    await runEngine(undefined, true)
+  }
+
   async function completeTaskFromItem(item: AttentionItem) {
     // Hide it from view right away — don't wait for the engine to re-run.
     setCompletedTitles((prev) => new Set(prev).add(item.title))
@@ -423,15 +496,21 @@ export function CommandCenter() {
         context: answer,
         savedAt: new Date().toISOString(),
       })
+      // Confirm to the user what was saved and what it means — both an inline
+      // card (where the question was) and a toast.
+      setContextSaved({ eventTitle: c.eventTitle, context: answer })
+      toast(`Got it — I'll use that to help with "${c.eventTitle}"`, 'success')
       // Build the merged context so the just-saved answer is used right away,
-      // without waiting for the Firestore snapshot to round-trip.
+      // without waiting for the Firestore snapshot to round-trip. Run SILENTLY so
+      // the briefing stays on screen and updates in place (TopProgressBar shows
+      // the refresh is happening) rather than blanking out.
       const merged = [
         ...eventContexts
           .filter((e) => e.id !== c.eventId)
           .map((e) => ({ eventTitle: e.eventTitle, context: e.context })),
         { eventTitle: c.eventTitle, context: answer },
       ]
-      runEngine(merged)
+      await runEngine(merged, true)
     } finally {
       setSavingItemId(null)
     }
@@ -583,6 +662,29 @@ export function CommandCenter() {
         </div>
       )}
 
+      {/* Context-saved confirmation — tells the user what the assistant learned
+          and that it's now factoring it in (the briefing refreshes in place). */}
+      {contextSaved && (
+        <div className="rounded-2xl p-4 bg-green-50 border border-green-200 flex items-start gap-3 animate-slide-up">
+          <Check size={16} className="text-green-600 mt-0.5 shrink-0" />
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-semibold text-green-800">Got it — I&apos;ll remember that</p>
+            <p className="text-xs text-green-700 mt-0.5 leading-relaxed">
+              For <span className="font-medium">{contextSaved.eventTitle}</span>: &ldquo;{contextSaved.context}&rdquo;.
+              I&apos;m using this to understand what it needs and surface the right prep at the right time —
+              updating your briefing now.
+            </p>
+          </div>
+          <button
+            onClick={() => setContextSaved(null)}
+            className="shrink-0 text-green-400 hover:text-green-600"
+            aria-label="Dismiss"
+          >
+            <X size={14} />
+          </button>
+        </div>
+      )}
+
       {/* Empty state — shown when the engine ran but found nothing for this person */}
       {report && !loading &&
         (report.items ?? []).filter((i) => !dismissedTitles.has(i.title) && !completedTitles.has(i.title)).length === 0 &&
@@ -702,30 +804,43 @@ export function CommandCenter() {
                     </span>
                   </div>
                   <div className="space-y-2 stagger-children">
-                    {items.map((item) => (
-                      <AttentionCard
-                        key={item.id}
-                        item={item}
-                        accent={meta.color}
-                        member={members.find((m) => m.email === item.assigneeEmail)}
-                        onComplete={() => completeTaskFromItem(item)}
-                        onDismiss={() => dismissItem(item.title)}
-                        onAddContext={(context) => {
-                          // Re-run the engine with the added context so it appears immediately
-                          const merged = [
-                            ...eventContexts.map((e) => ({ eventTitle: e.eventTitle, context: e.context })),
-                            { eventTitle: item.title, context },
-                          ]
-                          createEventContext({
-                            id: generateId(),
-                            eventTitle: item.title,
-                            context,
-                            savedAt: new Date().toISOString(),
-                          } as EventContext)
-                          runEngine(merged, true)
-                        }}
-                      />
-                    ))}
+                    {items.map((item) => {
+                      // Apply any optimistic assignment override the user just made.
+                      const ov = assignmentOverrides[item.title]
+                      const assigneeEmail = ov?.assigneeEmail ?? item.assigneeEmail
+                      const forEmails = ov?.forEmails ?? item.forEmails ?? []
+                      const findMember = (email?: string) =>
+                        members.find((m) => m.email?.toLowerCase() === email?.toLowerCase())
+                      return (
+                        <AttentionCard
+                          key={item.id}
+                          item={item}
+                          accent={meta.color}
+                          allMembers={members}
+                          responsible={findMember(assigneeEmail)}
+                          forMembers={forEmails.map(findMember).filter(Boolean) as FamilyMember[]}
+                          onComplete={() => completeTaskFromItem(item)}
+                          onDismiss={() => dismissItem(item.title)}
+                          onAssign={(f, r) => assignItem(item, f, r)}
+                          onAddContext={(context) => {
+                            // Re-run the engine with the added context so it appears immediately
+                            const merged = [
+                              ...eventContexts.map((e) => ({ eventTitle: e.eventTitle, context: e.context })),
+                              { eventTitle: item.title, context },
+                            ]
+                            createEventContext({
+                              id: generateId(),
+                              eventTitle: item.title,
+                              context,
+                              savedAt: new Date().toISOString(),
+                            } as EventContext)
+                            setContextSaved({ eventTitle: item.title, context })
+                            toast(`Got it — I'll use that to help with "${item.title}"`, 'success')
+                            runEngine(merged, true)
+                          }}
+                        />
+                      )
+                    })}
                   </div>
                 </div>
               )
@@ -931,17 +1046,21 @@ function SectionLabel({ icon: Icon, color, children }: { icon: typeof Clock; col
 }
 
 function AttentionCard({
-  item, accent, member, onComplete, onDismiss, onAddContext,
+  item, accent, allMembers, responsible, forMembers, onComplete, onDismiss, onAddContext, onAssign,
 }: {
   item: AttentionItem
   accent: string
-  member?: FamilyMember
+  allMembers: FamilyMember[]
+  responsible?: FamilyMember
+  forMembers: FamilyMember[]
   onComplete: () => void
   onDismiss: () => void
   onAddContext: (context: string) => void
+  onAssign: (forEmails: string[], responsibleEmail?: string) => void
 }) {
   const [done, setDone] = useState(false)
   const [expanded, setExpanded] = useState(false)
+  const [assigning, setAssigning] = useState(false)
   const [contextDraft, setContextDraft] = useState('')
   const startStr = item.startBy
     ? new Date(item.startBy).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
@@ -954,6 +1073,8 @@ function AttentionCard({
     setContextDraft('')
     setExpanded(false)
   }
+
+  const hasAssignment = !!responsible || forMembers.length > 0
 
   return (
     <div
@@ -979,17 +1100,56 @@ function AttentionCard({
                 <Clock size={10} /> Start by {startStr}
               </span>
             )}
-            {member && (
-              <span className="inline-flex items-center gap-1 text-[11px] text-slate-500">
-                <span className="w-4 h-4 rounded-full flex items-center justify-center text-[9px]" style={{ background: `${member.colorHex}25` }}>
-                  {member.emoji}
+            {/* Who it's FOR (the kids / subject) */}
+            {forMembers.length > 0 && (
+              <button
+                onClick={() => setAssigning((v) => !v)}
+                className="inline-flex items-center gap-1 text-[11px] text-slate-500 hover:text-slate-700"
+              >
+                <span className="text-slate-400">For</span>
+                {forMembers.map((m) => (
+                  <span key={m.id} className="inline-flex items-center gap-1">
+                    <span className="w-4 h-4 rounded-full flex items-center justify-center text-[9px]" style={{ background: `${m.colorHex}25` }}>
+                      {m.emoji}
+                    </span>
+                    {m.name}
+                  </span>
+                ))}
+              </button>
+            )}
+            {/* Who's RESPONSIBLE (the parent handling it) */}
+            {responsible && (
+              <button
+                onClick={() => setAssigning((v) => !v)}
+                className="inline-flex items-center gap-1 text-[11px] text-slate-600 font-medium"
+              >
+                <span className="text-slate-400 font-normal">·</span>
+                <span className="w-4 h-4 rounded-full flex items-center justify-center text-[9px]" style={{ background: `${responsible.colorHex}25` }}>
+                  {responsible.emoji}
                 </span>
-                {member.name}
-              </span>
+                {responsible.name}
+                <span className="text-slate-400 font-normal">on it</span>
+              </button>
+            )}
+            {/* Assign affordance when nothing is set yet */}
+            {!hasAssignment && (
+              <button
+                onClick={() => setAssigning((v) => !v)}
+                className="inline-flex items-center gap-1 text-[11px] font-medium text-blue-600 hover:text-blue-700"
+              >
+                <Users size={11} /> Assign
+              </button>
             )}
           </div>
         </div>
         <div className="flex gap-0.5 shrink-0">
+          <button
+            onClick={() => setAssigning((v) => !v)}
+            className="p-1.5 rounded-lg text-slate-300 hover:text-slate-500 hover:bg-slate-50 transition-colors"
+            title="Assign"
+          >
+            <Users size={14} />
+          </button>
           <button
             onClick={() => setExpanded((v) => !v)}
             className="p-1.5 rounded-lg text-slate-300 hover:text-slate-500 hover:bg-slate-50 transition-colors"
@@ -1006,6 +1166,16 @@ function AttentionCard({
           </button>
         </div>
       </div>
+
+      {assigning && (
+        <AssignPanel
+          allMembers={allMembers}
+          initialFor={forMembers.map((m) => m.email)}
+          initialResponsible={responsible?.email}
+          onCancel={() => setAssigning(false)}
+          onSave={(f, r) => { onAssign(f, r); setAssigning(false) }}
+        />
+      )}
 
       {expanded && (
         <div className="px-4 pb-4 border-t border-slate-50 pt-3">
@@ -1033,6 +1203,88 @@ function AttentionCard({
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+// Two-sided assignment: pick who it's FOR (often the kids — multi-select) and
+// optionally who's RESPONSIBLE for handling it (one parent). Keeping these
+// separate captures the real nuance: a kid's appointment is "for" the kid but a
+// parent does the driving.
+function AssignPanel({
+  allMembers, initialFor, initialResponsible, onCancel, onSave,
+}: {
+  allMembers: FamilyMember[]
+  initialFor: string[]
+  initialResponsible?: string
+  onCancel: () => void
+  onSave: (forEmails: string[], responsibleEmail?: string) => void
+}) {
+  const [forEmails, setForEmails] = useState<string[]>(initialFor)
+  const [responsible, setResponsible] = useState<string | undefined>(initialResponsible)
+
+  const toggleFor = (email: string) =>
+    setForEmails((prev) => (prev.includes(email) ? prev.filter((e) => e !== email) : [...prev, email]))
+
+  const Chip = ({ m, selected, onClick }: { m: FamilyMember; selected: boolean; onClick: () => void }) => (
+    <button
+      onClick={onClick}
+      className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-xs transition-all border"
+      style={{
+        background: selected ? `${m.colorHex}20` : 'white',
+        borderColor: selected ? m.colorHex : '#e2e8f0',
+        color: selected ? '#0f172a' : '#64748b',
+        fontWeight: selected ? 600 : 400,
+      }}
+    >
+      <span className="w-4 h-4 rounded-full flex items-center justify-center text-[9px]" style={{ background: `${m.colorHex}25` }}>
+        {m.emoji}
+      </span>
+      {m.name}
+      {selected && <Check size={11} />}
+    </button>
+  )
+
+  return (
+    <div className="px-4 pb-4 border-t border-slate-50 pt-3 space-y-3">
+      <div>
+        <p className="text-xs font-medium text-slate-600 mb-1.5">Who&apos;s this for?</p>
+        <div className="flex flex-wrap gap-1.5">
+          {allMembers.map((m) => (
+            <Chip key={m.id} m={m} selected={forEmails.includes(m.email)} onClick={() => toggleFor(m.email)} />
+          ))}
+        </div>
+      </div>
+      <div>
+        <p className="text-xs font-medium text-slate-600 mb-1.5">Who&apos;s responsible? <span className="text-slate-400 font-normal">(optional)</span></p>
+        <div className="flex flex-wrap gap-1.5">
+          {allMembers
+            .filter((m) => m.role !== 'pet')
+            .map((m) => (
+              <Chip
+                key={m.id}
+                m={m}
+                selected={responsible === m.email}
+                onClick={() => setResponsible((prev) => (prev === m.email ? undefined : m.email))}
+              />
+            ))}
+        </div>
+      </div>
+      <div className="flex justify-end gap-2 pt-1">
+        <button
+          onClick={onCancel}
+          className="px-3 py-1.5 rounded-lg text-xs font-medium text-slate-500 hover:bg-slate-100 transition-colors"
+        >
+          Cancel
+        </button>
+        <button
+          onClick={() => onSave(forEmails, responsible)}
+          disabled={forEmails.length === 0 && !responsible}
+          className="px-3 py-1.5 rounded-lg text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-40 transition-colors"
+        >
+          Save assignment
+        </button>
+      </div>
     </div>
   )
 }

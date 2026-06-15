@@ -55,7 +55,8 @@ Given the family context, produce a JSON report with this exact shape:
       "reason": "why this matters now, with the timing or context logic",
       "startBy": "ISO datetime they should begin (optional)",
       "dueAt": "ISO datetime the underlying thing happens (optional)",
-      "assigneeEmail": "matched family member email (optional)",
+      "assigneeEmail": "email of the person RESPONSIBLE for handling this (the parent doing the pickup, the person who must act). Optional.",
+      "forEmails": ["emails of who this is FOR or ABOUT — often the kids or a pet. Can differ from the responsible person. Optional array."],
       "sourceType": "event" | "task" | "chore" | "plan" | "reminder" | "inferred",
       "sourceId": "for task/reminder sourceType: the raw id from [id:xxx] in the tasks list (omit the 'id:' prefix). Omit for other types.",
       "priority": 0-100
@@ -95,6 +96,12 @@ Rules:
 
 CRITICAL — Calendar context entries:
 The section "USER-PROVIDED CALENDAR CONTEXT" contains the family's own explanations of their calendar events. These events ARE already on the calendar and DO have dates and times — the context just tells you what the event IS and who it is for. NEVER create a problem saying these events have no date, have not been added, or need to be scheduled. Use the context purely to understand and reason about the event (e.g. prep time, who needs to travel, what to pack). Do not treat a context explanation as evidence that the event is missing from the calendar.
+
+CRITICAL — When the user has explained or assigned something, KEEP IT VISIBLE:
+If the user took the time to add context to, or assign, an event/task, that is a strong signal it matters to them. Do NOT drop it from the briefing just because it is now "understood" — instead, surface it as an awareness item enriched by what you learned (the right prep, timing, and who's involved). Removing something the user just engaged with feels broken to them.
+
+CRITICAL — Honor explicit assignments:
+Memories beginning with 'Assignment ·' are the family's explicit decisions about who an item is for and who is responsible. When you surface that item, ALWAYS reflect that assignment in "forEmails" (who it's about) and "assigneeEmail" (who's responsible), mapping the names to their emails from the FAMILY MEMBERS list. Never contradict an explicit assignment.
 
 For each problem, include an optional "actionType" field: "copilot" for conversational actions (asking the AI to add/plan something), "capture" for quick adds (events/tasks/lists), "calendar" for calendar navigation. Default to "copilot" when unsure.`
 

@@ -103,7 +103,11 @@ export interface AttentionItem {
   reason: string                // why this matters now
   startBy?: string              // ISO time the user should begin acting
   dueAt?: string                // ISO time the underlying thing happens
-  assigneeEmail?: string
+  // Assignment is two-sided: who the thing is FOR/ABOUT (e.g. the kids), and
+  // who is RESPONSIBLE for handling it (e.g. the parent doing pickup). They can
+  // differ — a kid's appointment is "for" the kid but a parent handles it.
+  assigneeEmail?: string        // the responsible person
+  forEmails?: string[]          // who it concerns / is about (often kids)
   sourceType: 'event' | 'task' | 'chore' | 'plan' | 'reminder' | 'inferred'
   sourceId?: string
   priority: number              // 0-100, higher = more urgent
