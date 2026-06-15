@@ -3,7 +3,7 @@
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { useAuth } from '@/contexts/AuthContext'
-import { LayoutGrid, Users, Map, ListChecks, Sparkles, LogOut, Settings } from 'lucide-react'
+import { LayoutGrid, Users, Map, ListChecks, Sparkles, Compass, LogOut, Settings } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 const NAV_ITEMS = [
@@ -11,6 +11,7 @@ const NAV_ITEMS = [
   { href: '/family', label: 'Family', icon: Users },
   { href: '/plans', label: 'Plans', icon: Map },
   { href: '/lists', label: 'Lists', icon: ListChecks },
+  { href: '/coach', label: 'Coach', icon: Compass },
   { href: '/copilot', label: 'Copilot', icon: Sparkles },
 ]
 

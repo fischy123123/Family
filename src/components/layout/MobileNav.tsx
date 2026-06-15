@@ -2,14 +2,15 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { LayoutGrid, Users, Map, ListChecks, Sparkles } from 'lucide-react'
+import { LayoutGrid, Users, Map, ListChecks, Sparkles, Compass } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 const NAV_ITEMS = [
   { href: '/command', label: 'Home', icon: LayoutGrid },
-  { href: '/family', label: 'Family', icon: Users },
+  { href: '/coach', label: 'Coach', icon: Compass },
   { href: '/plans', label: 'Plans', icon: Map },
   { href: '/lists', label: 'Lists', icon: ListChecks },
+  { href: '/family', label: 'Family', icon: Users },
   { href: '/copilot', label: 'Copilot', icon: Sparkles },
 ]
 

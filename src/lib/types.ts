@@ -72,6 +72,70 @@ export interface TimelineMilestone {
   notes?: string
 }
 
+// ============================================================
+// LIFE COACHING — proactive, values-aligned guidance
+// ============================================================
+// The attention engine answers "what needs to happen today." The coaching
+// layer answers a different question: "are we becoming the family we want to
+// be?" It reasons over longer time horizons, notices drift from stated values,
+// and reflects rather than instructs.
+
+// The areas of family life the coach watches for balance and neglect.
+export type LifeArea =
+  | 'health' | 'relationships' | 'kids' | 'finances'
+  | 'home' | 'personal' | 'work-life' | 'fun'
+
+// A standing commitment for how the family wants to operate. Unlike a Task
+// (one-off) this is an ongoing intention the coach holds them accountable to,
+// e.g. "family dinner at least 4 nights a week" or "monthly date night".
+export interface FamilyGoal {
+  id: string
+  text: string                  // the commitment itself
+  area: LifeArea
+  cadence?: string              // free text: "weekly", "4x/week", "monthly"
+  why?: string                  // why it matters — shapes the coaching tone
+  active: boolean
+  createdAt: string
+}
+
+// An observation the coaching engine surfaces. Softer than an AttentionItem —
+// reflective, not transactional.
+export type InsightType =
+  | 'celebration'   // something going well, worth recognizing
+  | 'drift'         // slipping from a stated goal/value
+  | 'pattern'       // a trend noticed over time
+  | 'suggestion'    // a low-pressure idea to try
+  | 'question'      // a reflective question to sit with
+
+export interface CoachingInsight {
+  id: string
+  type: InsightType
+  area?: LifeArea
+  title: string
+  detail: string
+  question?: string             // optional reflective question
+  relatedGoalId?: string
+  suggestedAction?: string      // optional concrete next step
+  actionType?: 'copilot' | 'capture' | 'calendar' | 'goal'
+  generatedAt: string
+  weekOf?: string               // ISO date of the week this belongs to
+  dismissed?: boolean
+  acknowledged?: boolean
+}
+
+// A weekly reflection captured from a family member. Stored so the coach
+// learns what's really happening beneath the logistics.
+export interface Reflection {
+  id: string
+  weekOf: string                // ISO date of the week (Sunday) it covers
+  wentWell?: string
+  wasHard?: string
+  wouldChange?: string
+  gratitude?: string
+  authorEmail?: string
+  createdAt: string
+}
+
 export interface FamilyMember {
   id: string
   name: string
@@ -460,4 +524,23 @@ export const BUCKET_META: Record<AttentionBucket, { label: string; color: string
   next: { label: 'Next', color: '#F97316' },
   later: { label: 'Later Today', color: '#3B82F6' },
   upcoming: { label: 'Upcoming', color: '#8B5CF6' },
+}
+
+export const LIFE_AREAS: { area: LifeArea; label: string; emoji: string; color: string }[] = [
+  { area: 'health',        label: 'Health',        emoji: '🌱', color: '#22C55E' },
+  { area: 'relationships', label: 'Relationships', emoji: '❤️', color: '#EC4899' },
+  { area: 'kids',          label: 'Kids',          emoji: '🧒', color: '#F59E0B' },
+  { area: 'finances',      label: 'Finances',      emoji: '💰', color: '#14B8A6' },
+  { area: 'home',          label: 'Home',          emoji: '🏠', color: '#8B5CF6' },
+  { area: 'personal',      label: 'Personal',      emoji: '🧘', color: '#6366F1' },
+  { area: 'work-life',     label: 'Work–Life',     emoji: '⚖️', color: '#3B82F6' },
+  { area: 'fun',           label: 'Fun',           emoji: '🎉', color: '#EF4444' },
+]
+
+export const INSIGHT_META: Record<InsightType, { label: string; color: string; emoji: string }> = {
+  celebration: { label: 'Going well', color: '#22C55E', emoji: '✨' },
+  drift:       { label: 'Drifting',   color: '#F59E0B', emoji: '🧭' },
+  pattern:     { label: 'Pattern',    color: '#3B82F6', emoji: '🔍' },
+  suggestion:  { label: 'Try this',   color: '#8B5CF6', emoji: '💡' },
+  question:    { label: 'Reflect',    color: '#64748B', emoji: '🤔' },
 }
