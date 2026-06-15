@@ -105,6 +105,7 @@ export function CommandCenter() {
   const gmailKey = familyId ? GMAIL_PREFIX + familyId : null
 
   const [report, setReport] = useState<AttentionReport | null>(null)
+  const [engineError, setEngineError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)        // true cold start only (no report yet)
   const [refreshing, setRefreshing] = useState(false)  // silent background update
   const [googleEvents, setGoogleEvents] = useState<CalendarEvent[]>([])
@@ -329,12 +330,21 @@ export function CommandCenter() {
           timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
         }),
       })
-      const data = await res.json() as AttentionReport
+      const data = await res.json() as AttentionReport & { error?: string }
       if (res.ok) {
         setReport(data)
+        setEngineError(null)
         writeCache(attnKey, data)
+      } else {
+        // Surface the error so it's visible instead of silently showing nothing.
+        setEngineError(data.error ?? 'Something went wrong. Tap refresh to try again.')
+        // Reset the throttle so the engine retries automatically when new data arrives.
+        lastRun.current = 0
       }
-    } catch { /* keep showing last report */ } finally {
+    } catch {
+      setEngineError('Could not reach the server. Check your connection and tap refresh.')
+      lastRun.current = 0
+    } finally {
       setLoading(false)
       setRefreshing(false)
     }
@@ -366,12 +376,13 @@ export function CommandCenter() {
   const ctxSignature = `${emailSuggestions.length}|${memories.length}|${profile?.updatedAt ?? ''}|${completedCount}|${eventsFingerprint}`
   const lastCtxSig = useRef<string>('')
   useEffect(() => {
-    if (!hydrated || !report) return
+    if (!hydrated) return
     if (lastCtxSig.current === '') { lastCtxSig.current = ctxSignature; return }
     if (lastCtxSig.current === ctxSignature) return
     lastCtxSig.current = ctxSignature
     lastRun.current = Date.now()
-    runEngine(undefined, true)
+    // Silent if a report exists, cold-start otherwise (so the user sees the loader).
+    runEngine(undefined, !!report)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ctxSignature, hydrated])
 
@@ -542,12 +553,41 @@ export function CommandCenter() {
       )}
 
       {/* AI greeting / briefing line */}
+      {/* Engine error — shown instead of a blank screen when something goes wrong */}
+      {engineError && !loading && (
+        <div className="rounded-2xl p-4 bg-red-50 border border-red-200 flex items-start gap-3 animate-slide-up">
+          <AlertTriangle size={16} className="text-red-500 mt-0.5 shrink-0" />
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-semibold text-red-800">Couldn't load your briefing</p>
+            <p className="text-xs text-red-600 mt-0.5">{engineError}</p>
+          </div>
+          <button
+            onClick={() => { setEngineError(null); runEngine(undefined, false) }}
+            className="shrink-0 text-xs font-semibold text-red-700 hover:text-red-900 px-3 py-1.5 rounded-lg hover:bg-red-100 transition-colors"
+          >
+            Retry
+          </button>
+        </div>
+      )}
+
       {report?.greeting && (
         <div className="rounded-2xl p-5 bg-gradient-to-br from-blue-600 to-purple-700 text-white shadow-elevated animate-scale-in">
           <div className="flex items-start gap-3">
             <Sparkles size={18} className="mt-0.5 shrink-0 opacity-90" />
             <p className="text-[15px] leading-relaxed font-medium">{report.greeting}</p>
           </div>
+        </div>
+      )}
+
+      {/* Empty state — shown when the engine ran but found nothing for this person */}
+      {report && !loading &&
+        (report.items ?? []).filter((i) => !dismissedTitles.has(i.title) && !completedTitles.has(i.title)).length === 0 &&
+        (report.problems ?? []).filter((p) => !dismissedTitles.has(p.title)).length === 0 &&
+        (report.recommendations ?? []).length === 0 && (
+        <div className="rounded-2xl p-5 bg-slate-50 border border-slate-200 text-center animate-slide-up">
+          <p className="text-2xl mb-2">✓</p>
+          <p className="text-sm font-semibold text-slate-700">All clear</p>
+          <p className="text-xs text-slate-500 mt-1">Nothing urgent for you right now. Have a great day!</p>
         </div>
       )}
 
