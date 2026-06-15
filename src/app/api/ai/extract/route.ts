@@ -23,6 +23,7 @@ export async function POST(request: NextRequest) {
   const imageMediaType: string | undefined = body.imageMediaType
   const members: MemberLite[] = body.members ?? []
   const today: string = body.today ?? new Date().toISOString()
+  const existingEventTitles: string[] = body.existingEventTitles ?? []
 
   if (!rawText.trim() && !imageBase64) {
     return NextResponse.json({ error: 'No input provided' }, { status: 400 })
@@ -42,7 +43,10 @@ Today is ${new Date(today).toString()}.
 THIS FAMILY:
 ${memberList}
 
-CRITICAL — name matching for voice transcripts:
+${existingEventTitles.length > 0 ? `ALREADY ON THE CALENDAR — do NOT re-extract these as event outcomes, and do NOT create tasks or follow-ups to "confirm" or "schedule" anything that already appears here:
+${existingEventTitles.join('\n')}
+
+` : ''}CRITICAL — name matching for voice transcripts:
 Voice dictation frequently mis-transcribes family names phonetically (e.g. "Jessy" → "Jesse", "Aoife" → "Eva", "Niamh" → "Neve"). Whenever a name in the input sounds like one of the family members above, treat it as THAT member: correct the spelling to the real name in your titles/notes AND set assigneeEmail to their email. Possessives count too — "Jesse's cousin" means the cousin OF the family member Jessy, so the relevant person is Jessy. Only leave a name uncorrected if it clearly doesn't match anyone in the family.
 
 Analyze the input and extract every actionable outcome. Each outcome has a "kind":

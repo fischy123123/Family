@@ -50,7 +50,7 @@ export function CaptureProvider({ children }: { children: React.ReactNode }) {
 
   const { data: members } = useFirestore<FamilyMember>('members')
   const { create: createTask } = useFirestore<Task>('tasks')
-  const { create: createEvent } = useFirestore<CalendarEvent>('events')
+  const { data: existingEvents, create: createEvent } = useFirestore<CalendarEvent>('events')
   const { data: lists, update: updateList, create: createList } = useFirestore<SmartList>('lists')
   const { create: createMemory } = useFirestore<FamilyMemory>('memories')
   const { toast } = useToast()
@@ -87,6 +87,23 @@ export function CaptureProvider({ children }: { children: React.ReactNode }) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, isConnected])
 
+  // Fuzzy dedup: drop event outcomes whose title is substantially contained in an existing event.
+  function dedupeEvents(outcomes: ExtractedOutcome[]): ExtractedOutcome[] {
+    const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9 ]/g, '').trim()
+    const existing = existingEvents.map((e) => norm(e.title))
+    return outcomes.filter((o) => {
+      if (o.kind !== 'event') return true
+      const t = norm(o.title)
+      return !existing.some((e) => e.includes(t) || t.includes(e))
+    })
+  }
+
+  const calendarEventList = existingEvents
+    .slice()
+    .sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime())
+    .slice(0, 60)
+    .map((e) => `- ${e.title} (${new Date(e.start).toLocaleDateString()})`)
+
   const open = useCallback((opts?: { text?: string; autoAnalyze?: boolean }) => {
     const prefill = opts?.text ?? ''
     setIsOpen(true)
@@ -108,18 +125,20 @@ export function CaptureProvider({ children }: { children: React.ReactNode }) {
           rawText: prefill,
           members: members.map((m) => ({ name: m.name, email: m.email, role: m.role })),
           today: new Date().toISOString(),
+          existingEventTitles: calendarEventList,
         }),
       })
         .then((r) => r.json())
         .then((data: { summary?: string; outcomes?: ExtractedOutcome[]; error?: string }) => {
           if (data.error) throw new Error(data.error)
           setSummary(data.summary ?? '')
-          setOutcomes(data.outcomes ?? [])
+          setOutcomes(dedupeEvents(data.outcomes ?? []))
         })
         .catch(() => { /* user can still type and manually analyze */ })
         .finally(() => setLoading(false))
     }
-  }, [members])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [members, existingEvents])
 
   function close() {
     setIsOpen(false)
@@ -152,11 +171,12 @@ export function CaptureProvider({ children }: { children: React.ReactNode }) {
           imageMediaType: imageData?.mediaType,
           members: members.map((m) => ({ name: m.name, email: m.email, role: m.role })),
           today: new Date().toISOString(),
+          existingEventTitles: calendarEventList,
         }),
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error ?? 'Extraction failed')
-      const newOutcomes: ExtractedOutcome[] = data.outcomes ?? []
+      const newOutcomes: ExtractedOutcome[] = dedupeEvents(data.outcomes ?? [])
       setSummary(data.summary ?? '')
       setOutcomes(newOutcomes)
       if (newOutcomes.length === 0) {
