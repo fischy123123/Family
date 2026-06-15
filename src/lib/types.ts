@@ -136,6 +136,20 @@ export interface Reflection {
   createdAt: string
 }
 
+export type GroceryCategory = 'produce' | 'dairy' | 'meat' | 'bakery' | 'pantry' | 'frozen' | 'household' | 'other'
+
+export interface GroceryItem {
+  id: string
+  name: string
+  category: GroceryCategory
+  frequency: 'always' | 'sometimes'   // 'always' = pre-selected on weekly restock
+  status: 'need' | 'stocked'
+  notes?: string
+  addedBy?: string
+  lastBoughtAt?: string               // ISO string, set when checked off in shop mode
+  createdAt: string
+}
+
 export interface FamilyMember {
   id: string
   name: string

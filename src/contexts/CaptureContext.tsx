@@ -8,7 +8,7 @@ import { useToast } from '@/contexts/ToastContext'
 import { useGoogleTokens } from '@/hooks/useGoogleTokens'
 import { generateId } from '@/lib/utils'
 import { MicButton } from '@/components/ui/MicButton'
-import type { FamilyMember, Task, CalendarEvent, SmartList, ExtractedOutcome, FamilyMemory } from '@/lib/types'
+import type { FamilyMember, Task, CalendarEvent, SmartList, ExtractedOutcome, FamilyMemory, GroceryItem } from '@/lib/types'
 
 interface GCalendar {
   id: string
@@ -53,6 +53,7 @@ export function CaptureProvider({ children }: { children: React.ReactNode }) {
   const { data: existingEvents, create: createEvent } = useFirestore<CalendarEvent>('events')
   const { data: lists, update: updateList, create: createList } = useFirestore<SmartList>('lists')
   const { create: createMemory } = useFirestore<FamilyMemory>('memories')
+  const { create: createGroceryItem } = useFirestore<GroceryItem>('groceryItems')
   const { toast } = useToast()
   const { isConnected, getFreshTokens } = useGoogleTokens()
 
@@ -269,23 +270,38 @@ export function CaptureProvider({ children }: { children: React.ReactNode }) {
           color: '#8B5CF6',
         } as CalendarEvent)
       } else if (o.kind === 'shopping_item' || o.kind === 'packing_item') {
-        const kind = o.kind === 'packing_item' ? 'packing' : 'grocery'
-        let target = lists.find((l) => l.kind === kind)
-        if (!target) {
-          target = await createList({
+        if (o.kind === 'shopping_item') {
+          // Add directly to the groceryItems subcollection used by GroceryView
+          await createGroceryItem({
             id: generateId(),
-            name: kind === 'packing' ? 'Packing' : 'Groceries',
-            kind,
-            emoji: kind === 'packing' ? '🧳' : '🛒',
-            colorHex: kind === 'packing' ? '#14B8A6' : '#22C55E',
+            name: o.title,
+            category: 'other',
+            frequency: 'sometimes',
+            status: 'need',
+            notes: o.notes,
+            addedBy: o.assigneeEmail,
             createdAt: new Date().toISOString(),
-            items: [],
-          } as SmartList)
+          } as GroceryItem)
+        } else {
+          // packing_item — add to legacy SmartList
+          const kind = 'packing'
+          let target = lists.find((l) => l.kind === kind)
+          if (!target) {
+            target = await createList({
+              id: generateId(),
+              name: 'Packing',
+              kind,
+              emoji: '🧳',
+              colorHex: '#14B8A6',
+              createdAt: new Date().toISOString(),
+              items: [],
+            } as SmartList)
+          }
+          await updateList({
+            ...target,
+            items: [...target.items, { id: generateId(), name: o.title, isComplete: false, notes: o.notes }],
+          })
         }
-        await updateList({
-          ...target,
-          items: [...target.items, { id: generateId(), name: o.title, isComplete: false, notes: o.notes }],
-        })
       } else if (o.kind === 'memory') {
         // Durable family knowledge — stored at the family level so the
         // assistant reasons through it in every briefing.
