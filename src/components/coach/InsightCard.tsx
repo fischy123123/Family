@@ -1,6 +1,7 @@
 'use client'
 
 import { X, Check, MessageCircle } from 'lucide-react'
+import { Markdown } from '@/components/ui/Markdown'
 import { INSIGHT_META, LIFE_AREAS } from '@/lib/types'
 import type { CoachingInsight } from '@/lib/types'
 
@@ -43,11 +44,13 @@ export function InsightCard({
             )}
           </div>
           <p className="text-sm font-semibold text-slate-900">{insight.title}</p>
-          <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">{insight.detail}</p>
+          <div className="text-xs text-slate-500 mt-0.5 leading-relaxed [&_p]:text-xs [&_p]:text-slate-500 [&_p]:leading-relaxed [&_strong]:font-semibold [&_strong]:text-slate-700">
+            <Markdown content={insight.detail} />
+          </div>
           {insight.question && (
-            <p className="text-xs text-slate-700 mt-2 italic leading-relaxed border-l-2 border-slate-200 pl-2.5">
-              {insight.question}
-            </p>
+            <div className="mt-2 italic border-l-2 border-slate-200 pl-2.5 [&_p]:text-xs [&_p]:text-slate-700 [&_p]:leading-relaxed">
+              <Markdown content={insight.question} />
+            </div>
           )}
           <div className="flex items-center gap-2 mt-3 flex-wrap">
             {onRespond && (
