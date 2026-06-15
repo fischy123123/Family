@@ -1,28 +1,18 @@
 'use client'
 
 import { useState, useRef, useEffect } from 'react'
-import { Send, Bot, Loader2, X, Sparkles } from 'lucide-react'
+import { Send, Bot, Loader2, X } from 'lucide-react'
 import { InsightCard } from './InsightCard'
 import { Markdown } from '@/components/ui/Markdown'
 import { useAuth } from '@/contexts/AuthContext'
 import { useFamily } from '@/contexts/FamilyContext'
 import { useFirestore } from '@/hooks/useFirestore'
 import { useGoogleTokens } from '@/hooks/useGoogleTokens'
-import { useCapture } from '@/contexts/CaptureContext'
 import { generateId } from '@/lib/utils'
 import type { CoachingInsight, FamilyMember, FamilyMemory } from '@/lib/types'
 
 interface ThreadMsg { role: 'user' | 'assistant'; content: string }
 
-// Pulls the first concrete action sentence out of a coach reply to pre-fill Capture.
-function extractActionHint(reply: string): string {
-  // Prefer a line that starts with a verb or "Try" or "Book" or "Plan"
-  const lines = reply.split('\n').map(l => l.replace(/\*\*/g, '').trim()).filter(Boolean)
-  const action = lines.find(l =>
-    /^(try|book|plan|add|schedule|set|make|reach out|send|block|protect|check)/i.test(l)
-  )
-  return action ?? lines[0] ?? reply.slice(0, 120)
-}
 
 export function InsightCardWithThread({
   insight, onDismiss, onAcknowledge, onAction,
@@ -36,8 +26,6 @@ export function InsightCardWithThread({
   const { familyId } = useFamily()
   const { data: members } = useFirestore<FamilyMember>('members')
   const { getFreshTokens } = useGoogleTokens()
-  const { open: openCapture } = useCapture()
-
   const { create: createMemory } = useFirestore<FamilyMemory>('memories')
 
   const [open, setOpen] = useState(false)
@@ -47,6 +35,21 @@ export function InsightCardWithThread({
   const [savedAt, setSavedAt] = useState<number | null>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
+
+  // For capture/copilot action types, open the thread with the coach already
+  // starting the conversation around the specific suggestion. This is much more
+  // natural than navigating to the Capture panel.
+  function handleAction(i: CoachingInsight) {
+    if (i.actionType === 'capture' || i.actionType === 'copilot' || !i.actionType) {
+      const opener = i.suggestedAction
+        ? `Let's do that — ${i.suggestedAction.toLowerCase().replace(/\.$/, '')}. What are you thinking so far?`
+        : `Let's dig into this. What's on your mind?`
+      setThread([{ role: 'assistant', content: opener }])
+      setOpen(true)
+    } else {
+      onAction?.(i)
+    }
+  }
 
   useEffect(() => {
     if (open) setTimeout(() => inputRef.current?.focus(), 80)
@@ -138,8 +141,8 @@ export function InsightCardWithThread({
         insight={insight}
         onDismiss={onDismiss}
         onAcknowledge={onAcknowledge}
-        onAction={onAction}
-        onRespond={() => setOpen(v => !v)}
+        onAction={handleAction}
+        onRespond={() => { setThread([]); setOpen(v => !v) }}
       />
 
       {open && (
@@ -179,13 +182,6 @@ export function InsightCardWithThread({
                       <div className="bg-slate-50 rounded-xl rounded-tl-sm px-3 py-2.5">
                         <Markdown content={msg.content} />
                       </div>
-                      <button
-                        onClick={() => openCapture({ text: extractActionHint(msg.content), autoAnalyze: true })}
-                        className="mt-1.5 inline-flex items-center gap-1 text-[10px] font-semibold text-rose-500 hover:text-rose-700 transition-colors"
-                      >
-                        <Sparkles size={10} />
-                        Capture this idea
-                      </button>
                     </div>
                   </div>
                 )
