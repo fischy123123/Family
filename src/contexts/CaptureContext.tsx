@@ -7,7 +7,7 @@ import { useFirestore } from '@/hooks/useFirestore'
 import { useToast } from '@/contexts/ToastContext'
 import { generateId } from '@/lib/utils'
 import { MicButton } from '@/components/ui/MicButton'
-import type { FamilyMember, Task, CalendarEvent, SmartList, ExtractedOutcome, MemoryEntry } from '@/lib/types'
+import type { FamilyMember, Task, CalendarEvent, SmartList, ExtractedOutcome, FamilyMemory } from '@/lib/types'
 
 interface CaptureContextValue {
   open: (opts?: { text?: string; autoAnalyze?: boolean }) => void
@@ -39,7 +39,7 @@ export function CaptureProvider({ children }: { children: React.ReactNode }) {
   const { create: createTask } = useFirestore<Task>('tasks')
   const { create: createEvent } = useFirestore<CalendarEvent>('events')
   const { data: lists, update: updateList, create: createList } = useFirestore<SmartList>('lists')
-  const { update: updateMember } = useFirestore<FamilyMember>('members')
+  const { create: createMemory } = useFirestore<FamilyMemory>('memories')
   const { toast } = useToast()
 
   const open = useCallback((opts?: { text?: string; autoAnalyze?: boolean }) => {
@@ -169,12 +169,15 @@ export function CaptureProvider({ children }: { children: React.ReactNode }) {
           items: [...target.items, { id: generateId(), name: o.title, isComplete: false, notes: o.notes }],
         })
       } else if (o.kind === 'memory') {
-        // attach to assignee member, or first parent
-        const member = members.find((m) => m.email === o.assigneeEmail) ?? members[0]
-        if (member) {
-          const memory: MemoryEntry = { id: generateId(), text: o.title, createdAt: new Date().toISOString() }
-          await updateMember({ ...member, memories: [...(member.memories ?? []), memory] })
-        }
+        // Durable family knowledge — stored at the family level so the
+        // assistant reasons through it in every briefing.
+        await createMemory({
+          id: generateId(),
+          text: o.notes ? `${o.title} — ${o.notes}` : o.title,
+          subjectEmail: o.assigneeEmail,
+          source: 'capture',
+          createdAt: new Date().toISOString(),
+        } as FamilyMemory)
       }
       setApplied((prev) => new Set(prev).add(idx))
       toast('Added', 'success')

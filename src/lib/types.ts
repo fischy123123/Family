@@ -34,6 +34,37 @@ export interface MemoryEntry {
   createdAt: string
 }
 
+// ============================================================
+// FAMILY BRAIN — household-level knowledge the assistant reasons through
+// ============================================================
+
+// The "lens": who this family is and what they care about. The assistant reads
+// this before every briefing so it can prioritize what matters to THIS family.
+export interface FamilyProfile {
+  id: string                          // fixed doc id, e.g. "household"
+  household?: string                  // free text: who we are, kids' ages, where we live, work
+  priorities?: string[]               // what matters most ("never miss the kids' events")
+  concerns?: string[]                 // stressors to watch ("money", "medical", "being late")
+  communicationStyle?: 'brief' | 'balanced' | 'detailed'
+  quietHours?: string                 // when not to surface non-urgent things
+  updatedAt?: string
+}
+
+export type MemoryCategory =
+  | 'fact' | 'preference' | 'routine' | 'health' | 'logistics' | 'relationship' | 'other'
+
+// A single thing the assistant knows and should remember indefinitely. These
+// accrete over time from onboarding, capture, copilot, and observed behavior.
+export interface FamilyMemory {
+  id: string
+  text: string
+  category?: MemoryCategory
+  subjectEmail?: string               // which family member this is about (optional)
+  source?: 'manual' | 'ai' | 'capture' | 'onboarding'
+  pinned?: boolean                    // always include in context, never auto-trim
+  createdAt: string
+}
+
 export interface TimelineMilestone {
   id: string
   title: string

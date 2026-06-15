@@ -11,7 +11,7 @@ import {
   type ToolContext,
   type PendingAction,
 } from '@/lib/agent/tools'
-import type { FamilyMember } from '@/lib/types'
+import type { FamilyMember, FamilyMemory, FamilyProfile } from '@/lib/types'
 
 const AI_MODEL = 'claude-sonnet-4-6'
 
@@ -54,7 +54,25 @@ export async function POST(request: NextRequest) {
     const today: string = context?.today ?? new Date().toISOString()
     const timezone: string | undefined = context?.timezone
 
-    const systemPrompt = buildSystemPrompt(members, today, !!googleTokens, userEmail, timezone)
+    // Load the family's durable memory + profile (the lens) so Copilot reasons
+    // with the same brain the home briefing uses. Degrades silently without admin.
+    let memories: FamilyMemory[] = []
+    let profile: FamilyProfile | null = null
+    if (db) {
+      try {
+        const famRef = db.collection('families').doc(familyId)
+        const [memSnap, profSnap] = await Promise.all([
+          famRef.collection('memories').get(),
+          famRef.collection('profile').get(),
+        ])
+        memories = memSnap.docs.map((d) => ({ id: d.id, ...d.data() }) as FamilyMemory)
+        profile = profSnap.docs[0] ? ({ id: profSnap.docs[0].id, ...profSnap.docs[0].data() } as FamilyProfile) : null
+      } catch {
+        // non-fatal — Copilot still works without the brain context
+      }
+    }
+
+    const systemPrompt = buildSystemPrompt(members, today, !!googleTokens, userEmail, timezone, memories, profile)
 
     const conversationMessages: Anthropic.MessageParam[] = (messages ?? []).map(
       (m: { role: 'user' | 'assistant'; content: string }) => ({

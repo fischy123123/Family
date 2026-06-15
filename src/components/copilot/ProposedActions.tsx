@@ -9,6 +9,7 @@ import {
   UtensilsCrossed,
   CheckCircle2,
   RefreshCw,
+  Brain,
   Check,
   X,
   Loader2,
@@ -185,6 +186,20 @@ function describe(action: PendingAction, members: FamilyMember[]): ActionView {
         label: 'Mark complete',
         title: 'Complete chore',
         details: [],
+      }
+    }
+    case 'remember': {
+      const details: { label: string; value: string }[] = []
+      const who = nameFor(input.subject_email, members)
+      if (who) details.push({ label: 'About', value: who })
+      if (input.category) details.push({ label: 'Type', value: String(input.category) })
+      return {
+        icon: Brain,
+        accent: 'text-amber-600',
+        bg: 'bg-amber-50',
+        label: 'Remember this',
+        title: input.text ?? 'New fact',
+        details,
       }
     }
     default:

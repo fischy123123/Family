@@ -3,7 +3,17 @@
 
 import type {
   FamilyMember, CalendarEvent, Task, Chore, Plan, SmartList,
+  FamilyProfile, FamilyMemory,
 } from '@/lib/types'
+
+// One actionable item the assistant noticed in the family's inbox. Folded into
+// the same reasoning as everything else — never shown as a separate silo.
+export interface InboxSignal {
+  title: string
+  date?: string | null
+  notes?: string
+  sourceEmailSubject?: string
+}
 
 export interface FamilyContextInput {
   members: FamilyMember[]
@@ -18,6 +28,12 @@ export interface FamilyContextInput {
   // by event title. Captured from the Command Center "help me understand your
   // calendar" prompt.
   eventContext?: { eventTitle: string; context: string }[]
+  // The "lens" — household identity and what this family cares about.
+  profile?: FamilyProfile | null
+  // Durable facts the assistant has learned and should reason through.
+  memories?: FamilyMemory[]
+  // Actionable signals pulled from the family's email inbox.
+  inbox?: InboxSignal[]
   // Who is signed in / asking right now, so the AI can address them as "you".
   currentUserEmail?: string
   currentUserName?: string
@@ -54,19 +70,53 @@ function fmtDate(iso: string, tz?: string): string {
   }
 }
 
+// Onboarding historically saved routines/importantInfo as free-text strings,
+// while the structured editors save arrays. Render either shape gracefully.
+function flattenRoutines(v: FamilyMember['routines']): string {
+  if (!v) return ''
+  if (typeof v === 'string') return v
+  return v.map((r) => `${r.title} [${r.schedule}]`).join('; ')
+}
+function flattenPrefs(v: FamilyMember['preferences']): string {
+  if (!v) return ''
+  if (typeof v === 'string') return v
+  return v.map((p) => p.text).join('; ')
+}
+function flattenInfo(v: FamilyMember['importantInfo']): string {
+  if (!v) return ''
+  if (typeof v === 'string') return v
+  return v.map((i) => `${i.label}=${i.value}`).join('; ')
+}
+
 function fmtMember(m: FamilyMember, currentUserEmail?: string): string {
   const isYou = !!currentUserEmail && m.email?.toLowerCase() === currentUserEmail.toLowerCase()
   const youTag = isYou ? ' ← THIS IS THE SIGNED-IN USER (address as "you")' : ''
   const parts = [`- ${m.name} (${m.role}${m.email ? `, ${m.email}` : ''})${youTag}`]
   if (m.summary) parts.push(`  summary: ${m.summary}`)
-  if (m.routines?.length) parts.push(`  routines: ${m.routines.map((r) => `${r.title} [${r.schedule}]`).join('; ')}`)
-  if (m.preferences?.length) parts.push(`  prefs: ${m.preferences.map((p) => p.text).join('; ')}`)
-  if (m.importantInfo?.length) parts.push(`  info: ${m.importantInfo.map((i) => `${i.label}=${i.value}`).join('; ')}`)
+  const routines = flattenRoutines(m.routines)
+  if (routines) parts.push(`  routines: ${routines}`)
+  const prefs = flattenPrefs(m.preferences)
+  if (prefs) parts.push(`  prefs: ${prefs}`)
+  const info = flattenInfo(m.importantInfo)
+  if (info) parts.push(`  info: ${info}`)
+  return parts.join('\n')
+}
+
+function fmtProfile(p: FamilyProfile): string {
+  const parts: string[] = []
+  if (p.household) parts.push(`Who they are: ${p.household}`)
+  if (p.priorities?.length) parts.push(`What matters most: ${p.priorities.join('; ')}`)
+  if (p.concerns?.length) parts.push(`Watch out for / stressors: ${p.concerns.join('; ')}`)
+  if (p.communicationStyle) parts.push(`Preferred tone: ${p.communicationStyle}`)
+  if (p.quietHours) parts.push(`Quiet hours (don't surface non-urgent things then): ${p.quietHours}`)
   return parts.join('\n')
 }
 
 export function buildFamilyContext(input: FamilyContextInput): string {
-  const { members, events, tasks, chores, plans, lists, now, timezone, eventContext, currentUserEmail, currentUserName } = input
+  const {
+    members, events, tasks, chores, plans, lists, now, timezone, eventContext,
+    profile, memories, inbox, currentUserEmail, currentUserName,
+  } = input
   const tz = timezone || undefined
   const nowDate = new Date(now)
   const horizon = new Date(nowDate.getTime() + 14 * 24 * 60 * 60 * 1000)
@@ -96,9 +146,35 @@ export function buildFamilyContext(input: FamilyContextInput): string {
       : 'unknown'
   sections.push(`SIGNED-IN USER (the person you are talking to right now — address them as "you"): ${selfDescriptor}`)
 
+  if (profile) {
+    const profileText = fmtProfile(profile)
+    if (profileText) {
+      sections.push(
+        `FAMILY PROFILE (THE LENS — read this first; it is how this family wants you to prioritize. Weight what matters to them, respect their concerns and tone):\n${profileText}`
+      )
+    }
+  }
+
   sections.push(
     `FAMILY MEMBERS:\n${members.length ? members.map((m) => fmtMember(m, currentUserEmail)).join('\n') : '(none yet)'}`
   )
+
+  if (memories?.length) {
+    // Pinned facts first, then most-recent, capped so context stays tight.
+    const ordered = [...memories].sort((a, b) => {
+      if (!!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1
+      return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    }).slice(0, 60)
+    sections.push(
+      `WHAT YOU KNOW ABOUT THIS FAMILY (durable memory — facts, preferences, routines you've learned. Use these to make the briefing feel personal and informed; never contradict them):\n${ordered
+        .map((m) => {
+          const who = m.subjectEmail ? ` (about ${m.subjectEmail})` : ''
+          const cat = m.category ? `[${m.category}] ` : ''
+          return `- ${cat}${m.text}${who}`
+        })
+        .join('\n')}`
+    )
+  }
 
   sections.push(
     `UPCOMING EVENTS (next 14 days):\n${
@@ -158,6 +234,19 @@ export function buildFamilyContext(input: FamilyContextInput): string {
         .map((l) => {
           const remaining = l.items.filter((i) => !i.isComplete).length
           return `- ${l.name} (${l.kind}): ${remaining} items remaining`
+        })
+        .join('\n')}`
+    )
+  }
+
+  if (inbox?.length) {
+    sections.push(
+      `FROM THE INBOX (actionable items the assistant found in the family's email — treat these as RAW SIGNALS, not facts. Fold the genuinely relevant ones into your briefing the same way you would a calendar event or task; decide what's worth surfacing and what's noise. Do NOT list these separately or tell the user to "check their inbox" — just inform them of what matters):\n${inbox
+        .map((s) => {
+          const when = s.date ? ` — ${fmtDate(s.date, tz)}` : ''
+          const note = s.notes ? ` (${s.notes})` : ''
+          const src = s.sourceEmailSubject ? ` [email: "${s.sourceEmailSubject}"]` : ''
+          return `- ${s.title}${when}${note}${src}`
         })
         .join('\n')}`
     )

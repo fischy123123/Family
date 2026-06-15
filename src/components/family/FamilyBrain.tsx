@@ -9,6 +9,8 @@ import { useToast } from '@/contexts/ToastContext'
 import { Button } from '@/components/ui/button'
 import { MemberDetail } from './MemberDetail'
 import { MemberForm } from './MemberForm'
+import { HouseholdProfile } from './HouseholdProfile'
+import { FamilyMemories } from './FamilyMemories'
 import type { FamilyMember } from '@/lib/types'
 
 function entryCount(m: FamilyMember): number {
@@ -67,6 +69,12 @@ export function FamilyBrain() {
           onAdd={() => setView({ kind: 'form' })}
         />
       )}
+
+      {/* Household-level brain: the lens + durable memory the assistant uses */}
+      <div className="mt-8">
+        <HouseholdProfile />
+        <FamilyMemories />
+      </div>
     </div>
   )
 }

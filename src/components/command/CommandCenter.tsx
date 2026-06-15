@@ -5,7 +5,6 @@ import { useRouter } from 'next/navigation'
 import {
   RefreshCw, AlertTriangle, Lightbulb, Clock,
   Calendar as CalIcon, Sparkles, Check, HelpCircle, X, MessageCircle,
-  Mail, Plus,
 } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { useFirestore } from '@/hooks/useFirestore'
@@ -18,6 +17,7 @@ import { BUCKET_META } from '@/lib/types'
 import type {
   FamilyMember, CalendarEvent, Task, Chore, Plan, SmartList,
   AttentionReport, AttentionItem, AttentionBucket, PotentialProblem,
+  FamilyMemory, FamilyProfile,
 } from '@/lib/types'
 
 type CalendarClarification = {
@@ -45,11 +45,6 @@ type EmailSuggestion = {
   sourceEmailSubject: string
 }
 
-// Stable key for dedupe/dismissal of an email suggestion.
-function suggestionKey(s: EmailSuggestion): string {
-  return `${s.sourceEmailSubject}::${s.title}`
-}
-
 const BUCKET_ORDER: AttentionBucket[] = ['now', 'next', 'later', 'upcoming']
 
 // ── Local cache (stale-while-revalidate) ────────────────────
@@ -59,7 +54,6 @@ const ATTN_PREFIX = 'fam-attn-'
 const GCAL_PREFIX = 'fam-gcal-'
 const CLAR_PREFIX = 'fam-clar-'
 const GMAIL_PREFIX = 'fam-gmail-'
-const GMAIL_DISM_PREFIX = 'fam-gmail-dismissed-'
 
 function readCache<T>(key: string | null): T | null {
   if (!key) return null
@@ -93,13 +87,16 @@ export function CommandCenter() {
   const { data: chores } = useFirestore<Chore>('chores')
   const { data: plans } = useFirestore<Plan>('plans')
   const { data: lists } = useFirestore<SmartList>('lists')
+  const { data: memories } = useFirestore<FamilyMemory>('memories')
+  const { data: profiles } = useFirestore<FamilyProfile>('profile')
   const { data: eventContexts, create: createEventContext } = useFirestore<EventContext>('eventContext')
+
+  const profile = profiles[0] ?? null
 
   const attnKey = familyId ? ATTN_PREFIX + familyId : null
   const gcalKey = familyId ? GCAL_PREFIX + familyId : null
   const clarKey = familyId ? CLAR_PREFIX + familyId : null
   const gmailKey = familyId ? GMAIL_PREFIX + familyId : null
-  const gmailDismKey = familyId ? GMAIL_DISM_PREFIX + familyId : null
 
   const [report, setReport] = useState<AttentionReport | null>(null)
   const [loading, setLoading] = useState(false)        // true cold start only (no report yet)
@@ -115,7 +112,6 @@ export function CommandCenter() {
   const [selfLinkDismissed, setSelfLinkDismissed] = useState(false)
   const clarificationsFetched = useRef(false)
   const [emailSuggestions, setEmailSuggestions] = useState<EmailSuggestion[]>([])
-  const [emailDismissed, setEmailDismissed] = useState<string[]>([])
   const emailFetched = useRef(false)
 
   // Hydrate everything from cache the moment the family id is known, so a
@@ -130,10 +126,8 @@ export function CommandCenter() {
     if (c?.length) setClarifications(c)
     const em = readCache<EmailSuggestion[]>(gmailKey)
     if (em?.length) setEmailSuggestions(em)
-    const dism = readCache<string[]>(gmailDismKey)
-    if (dism?.length) setEmailDismissed(dism)
     setHydrated(true)
-  }, [familyId, attnKey, gcalKey, clarKey, gmailKey, gmailDismKey])
+  }, [familyId, attnKey, gcalKey, clarKey, gmailKey])
 
   // Scan Gmail for actionable items — once per session, using the main Google
   // connection's token (it already includes the gmail.readonly scope). Results
@@ -164,14 +158,6 @@ export function CommandCenter() {
     return () => { cancelled = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isConnected, gmailKey])
-
-  function dismissEmail(key: string) {
-    setEmailDismissed((prev) => {
-      const next = prev.includes(key) ? prev : [...prev, key]
-      writeCache(gmailDismKey, next)
-      return next
-    })
-  }
 
   // Fetch fresh Google Calendar events when connected (updates the cache).
   useEffect(() => {
@@ -246,11 +232,18 @@ export function CommandCenter() {
     try {
       const eventContext = overrideContext ??
         eventContexts.map((e) => ({ eventTitle: e.eventTitle, context: e.context }))
+      const inbox = emailSuggestions.map((s) => ({
+        title: s.title,
+        date: s.date,
+        notes: s.notes,
+        sourceEmailSubject: s.sourceEmailSubject,
+      }))
       const res = await fetch('/api/ai/attention', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           members, events, tasks, chores, plans, lists, eventContext,
+          profile, memories, inbox,
           currentUserEmail: user?.email ?? undefined,
           currentUserName: user?.displayName ?? undefined,
           now: new Date().toISOString(),
@@ -266,7 +259,7 @@ export function CommandCenter() {
       setLoading(false)
       setRefreshing(false)
     }
-  }, [members, events, tasks, chores, plans, lists, eventContexts, attnKey])
+  }, [members, events, tasks, chores, plans, lists, eventContexts, profile, memories, emailSuggestions, attnKey])
 
   // Auto-run once the data we expect is loaded. Always silent when a report is
   // already on screen (cached or fresh) so content updates in place, never via a
@@ -281,6 +274,21 @@ export function CommandCenter() {
     runEngine(undefined, !!report)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hydrated, googleLoaded, members.length, events.length, tasks.length, googleEvents.length])
+
+  // The inbox scan, durable memory, and profile often arrive a beat after the
+  // first render. When they change, weave them into the briefing right away —
+  // bypassing the throttle — so the assistant stays current without a flash.
+  const ctxSignature = `${emailSuggestions.length}|${memories.length}|${profile?.updatedAt ?? ''}`
+  const lastCtxSig = useRef<string>('')
+  useEffect(() => {
+    if (!hydrated || !report) return
+    if (lastCtxSig.current === '') { lastCtxSig.current = ctxSignature; return }
+    if (lastCtxSig.current === ctxSignature) return
+    lastCtxSig.current = ctxSignature
+    lastRun.current = Date.now()
+    runEngine(undefined, true)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ctxSignature, hydrated])
 
   async function completeTaskFromItem(item: AttentionItem) {
     if (item.sourceType !== 'task' || !item.sourceId) return
@@ -317,9 +325,6 @@ export function CommandCenter() {
   // Hide events the family has already explained (in this or a past session).
   const answeredIds = new Set(eventContexts.map((e) => e.id))
   const visibleClarifications = clarifications.filter((c) => !answeredIds.has(c.eventId))
-
-  const dismissedSet = new Set(emailDismissed)
-  const visibleEmailSuggestions = emailSuggestions.filter((s) => !dismissedSet.has(suggestionKey(s)))
 
   // If the signed-in user isn't linked to a family-member profile, the AI can't
   // tell which person "you" are. Offer a one-tap link.
@@ -574,60 +579,6 @@ export function CommandCenter() {
                 )}
               </div>
             ))}
-          </div>
-        </section>
-      )}
-
-      {/* FROM YOUR INBOX (Gmail) */}
-      {visibleEmailSuggestions.length > 0 && (
-        <section>
-          <SectionLabel icon={Mail} color="#0891b2">From Your Inbox</SectionLabel>
-          <div className="space-y-2 stagger-children">
-            {visibleEmailSuggestions.map((s) => {
-              const key = suggestionKey(s)
-              const dateStr = s.date
-                ? new Date(s.date + 'T00:00:00').toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })
-                : null
-              return (
-                <div key={key} className="rounded-2xl p-4 bg-white shadow-card animate-slide-up flex items-start gap-3">
-                  <div className="w-8 h-8 rounded-lg bg-cyan-50 flex items-center justify-center shrink-0">
-                    <Mail size={15} className="text-cyan-600" />
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-slate-900">{s.title}</p>
-                    {s.notes && <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">{s.notes}</p>}
-                    <div className="flex items-center gap-2 mt-1.5 flex-wrap">
-                      {dateStr && (
-                        <span className="inline-flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-full bg-cyan-50 text-cyan-700">
-                          <Clock size={10} /> {dateStr}
-                        </span>
-                      )}
-                      <span className="text-[11px] text-slate-400 truncate">📧 {s.sourceEmailSubject}</span>
-                    </div>
-                  </div>
-                  <div className="flex gap-1 shrink-0">
-                    <button
-                      onClick={() => {
-                        const text = `${s.title}${s.date ? ` on ${s.date}` : ''}${s.notes ? `. ${s.notes}` : ''}`
-                        openCapture({ text, autoAnalyze: true })
-                        dismissEmail(key)
-                      }}
-                      className="p-1.5 rounded-lg bg-gradient-to-r from-cyan-600 to-blue-600 text-white hover:opacity-90 transition-opacity"
-                      title="Add to family"
-                    >
-                      <Plus size={14} />
-                    </button>
-                    <button
-                      onClick={() => dismissEmail(key)}
-                      className="p-1.5 rounded-lg text-slate-400 hover:bg-slate-100 transition-colors"
-                      title="Dismiss"
-                    >
-                      <X size={14} />
-                    </button>
-                  </div>
-                </div>
-              )
-            })}
           </div>
         </section>
       )}

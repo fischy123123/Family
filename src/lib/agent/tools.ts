@@ -1,7 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { generateId } from '@/lib/utils'
 import { getEvents, createEvent as createGoogleEvent } from '@/lib/google/calendar'
-import type { FamilyMember } from '@/lib/types'
+import type { FamilyMember, FamilyMemory, FamilyProfile } from '@/lib/types'
 
 // ---------------------------------------------------------------------------
 // Tool definitions
@@ -70,6 +70,14 @@ export const TOOLS: Anthropic.Tool[] = [
           description: '0 = this week, 1 = next week, -1 = last week (default 0)',
         },
       },
+    },
+  },
+  {
+    name: 'list_memories',
+    description: "Get the durable facts the assistant knows about this family (allergies, routines, preferences, relationships, logistics). Check this when answering questions about the family or before assuming you don't know something.",
+    input_schema: {
+      type: 'object' as const,
+      properties: {},
     },
   },
 
@@ -267,6 +275,23 @@ export const TOOLS: Anthropic.Tool[] = [
       required: ['title', 'start_datetime', 'end_datetime'],
     },
   },
+  {
+    name: 'remember',
+    description: "Store a durable fact about the family so it informs future briefings and answers. Use this whenever the user tells you something worth remembering long-term — an allergy, a routine, a preference, a relationship, a recurring logistic. Do NOT use it for one-off tasks or events (use create_reminder/create_event for those).",
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        text: { type: 'string', description: 'The fact to remember, phrased as a clear standalone statement (e.g. "Leo is allergic to peanuts")' },
+        category: {
+          type: 'string',
+          enum: ['fact', 'preference', 'routine', 'health', 'logistics', 'relationship', 'other'],
+          description: 'Best-fit category for the fact',
+        },
+        subject_email: { type: 'string', description: "Email of the family member this fact is about, if it's about a specific person" },
+      },
+      required: ['text'],
+    },
+  },
 ]
 
 // Tools that mutate data — these require explicit user confirmation before
@@ -284,6 +309,7 @@ export const WRITE_TOOLS = new Set<string>([
   'complete_reminder',
   'complete_chore',
   'create_google_event',
+  'remember',
 ])
 
 // ---------------------------------------------------------------------------
@@ -296,6 +322,8 @@ export function buildSystemPrompt(
   hasGoogleTokens: boolean,
   currentUserEmail?: string,
   timezone?: string,
+  memories?: FamilyMemory[],
+  profile?: FamilyProfile | null,
 ): string {
   const memberList = members
     .map((m) => {
@@ -317,6 +345,26 @@ export function buildSystemPrompt(
     ? 'Google Calendar is connected — prefer get_google_events and create_google_event for calendar operations. Use list_events / create_event only for Firestore-only storage.'
     : 'Google Calendar is not connected — use list_events and create_event for Firestore-based calendar.'
 
+  // The lens: how this family wants to be helped.
+  const profileBlock = profile && (profile.household || profile.priorities?.length || profile.concerns?.length || profile.quietHours)
+    ? `\nHOW THIS FAMILY WANTS TO BE HELPED (their lens — prioritize through it):\n${[
+        profile.household && `- Who they are: ${profile.household}`,
+        profile.priorities?.length && `- What matters most: ${profile.priorities.join('; ')}`,
+        profile.concerns?.length && `- Watch out for: ${profile.concerns.join('; ')}`,
+        profile.communicationStyle && `- Preferred tone: ${profile.communicationStyle}`,
+        profile.quietHours && `- Quiet hours: ${profile.quietHours}`,
+      ].filter(Boolean).join('\n')}\n`
+    : ''
+
+  // Durable knowledge already on file.
+  const memoryBlock = memories?.length
+    ? `\nWHAT YOU ALREADY KNOW ABOUT THIS FAMILY (durable memory — use it; don't ask for things you already know):\n${[...memories]
+        .sort((a, b) => (!!a.pinned !== !!b.pinned ? (a.pinned ? -1 : 1) : new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()))
+        .slice(0, 50)
+        .map((m) => `- ${m.category ? `[${m.category}] ` : ''}${m.text}${m.subjectEmail ? ` (about ${m.subjectEmail})` : ''}`)
+        .join('\n')}\n`
+    : ''
+
   return `You are Copilot, the family's AI chief of staff.
 Today is ${today}${timezone ? ` (user timezone: ${timezone})` : ''}.
 All times you display to the user should be in ${timezone ? `the user's timezone (${timezone})` : 'local time'}, not UTC.
@@ -327,6 +375,7 @@ ${signedInLine}
 
 Family members:
 ${memberList || '  (none yet)'}
+${profileBlock}${memoryBlock}
 
 NAME MATCHING (important for voice input):
 Messages are often dictated, and voice transcription mis-spells family names phonetically (e.g. "Jessy" becomes "Jesse", "Aoife" becomes "Eva"). When a name in the message sounds like one of the family members above, treat it as THAT member — use their real spelling and their email when assigning tasks/events/reminders. Possessives count too: "Jesse's cousin" refers to a relative of the family member Jessy. Only treat a name as someone outside the family if it clearly matches no one. If you make such a correction, reflect the corrected name naturally in your reply (e.g. "Added Jessy's haircut…") so the user can see you understood who they meant.
@@ -344,6 +393,7 @@ How to operate:
 - For write actions, queue the tool call(s) and then summarize them for confirmation as described above.
 - When listing events or data, be brief — use bullet points, not paragraphs.
 - When asked open-ended questions like "what needs my attention?" or "what am I forgetting?", gather the relevant context with the read tools first, then give a focused, prioritized answer.
+- REMEMBER what matters. When the user shares a durable fact about the family (an allergy, a routine, a preference, a relationship, a standing logistic), quietly queue a remember action so it informs every future briefing. Don't remember one-off tasks or events. Lean on what you already know above before asking the user to repeat themselves.
 
 Examples of what you can do:
 - "Add milk to shopping" → call list_shopping_lists to find the right list, then add_shopping_items (queued for confirmation)
@@ -479,6 +529,13 @@ export async function executeTool(
       return { meals, weekStart: mondayStr, weekEnd: sundayStr }
     }
 
+    case 'list_memories': {
+      if (!db) return { error: 'Firestore admin not configured', memories: [] }
+      const snap = await col('memories').get()
+      const memories = snap.docs.map((d) => ({ id: d.id, ...d.data() }))
+      return { memories }
+    }
+
     // -----------------------------------------------------------------------
     // WRITE TOOLS
     // -----------------------------------------------------------------------
@@ -517,6 +574,21 @@ export async function executeTool(
       await col('reminders').doc(id).set(reminder)
       actions.push(`Created reminder: ${reminder.title as string}`)
       return { success: true, id, reminder }
+    }
+
+    case 'remember': {
+      if (!db) return { error: 'Firestore admin not configured. Cannot save memory.' }
+      const id = generateId()
+      const memory: Record<string, unknown> = {
+        text: input.text as string,
+        source: 'ai',
+        createdAt: new Date().toISOString(),
+      }
+      if (input.category) memory.category = input.category
+      if (input.subject_email) memory.subjectEmail = input.subject_email
+      await col('memories').doc(id).set(memory)
+      actions.push(`Remembered: ${memory.text as string}`)
+      return { success: true, id, memory }
     }
 
     case 'create_chore': {
