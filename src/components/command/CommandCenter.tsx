@@ -174,6 +174,27 @@ export function CommandCenter() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isConnected, gmailKey])
 
+  // Trigger a server-side calendar sync once per session for any family member.
+  // This keeps events fresh in Firestore even if the person who connected their
+  // calendar hasn't opened the app recently — anyone's load triggers the refresh.
+  const calSyncedRef = useRef(false)
+  useEffect(() => {
+    if (!familyId || calSyncedRef.current) return
+    calSyncedRef.current = true
+    ;(async () => {
+      try {
+        const { auth: firebaseAuth } = await import('@/lib/firebase')
+        const idToken = await firebaseAuth.currentUser?.getIdToken()
+        if (idToken) {
+          await fetch('/api/calendar/sync', {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${idToken}` },
+          })
+        }
+      } catch { /* non-fatal */ }
+    })()
+  }, [familyId])
+
   // Fetch fresh Google Calendar events when connected (updates the cache).
   useEffect(() => {
     let cancelled = false
