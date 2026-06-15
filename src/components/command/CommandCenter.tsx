@@ -3,6 +3,10 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import {
+  collection, doc, setDoc, writeBatch, getDocs, query, where,
+} from 'firebase/firestore'
+import { db } from '@/lib/firebase'
+import {
   RefreshCw, AlertTriangle, Lightbulb, Clock,
   Calendar as CalIcon, Sparkles, Check, HelpCircle, X, MessageCircle,
 } from 'lucide-react'
@@ -174,7 +178,7 @@ export function CommandCenter() {
   useEffect(() => {
     let cancelled = false
     async function load() {
-      if (!isConnected) {
+      if (!isConnected || !familyId || !user?.email) {
         setGoogleEvents([])
         setGoogleLoaded(true)
         return
@@ -189,12 +193,28 @@ export function CommandCenter() {
         )
         const data = await res.json()
         if (!cancelled && res.ok) {
+          const ownerEmail = user.email
           const loadedEvents: CalendarEvent[] = (data.events ?? []).map((e: CalendarEvent) => ({
             ...e,
-            ownerEmail: e.ownerEmail || user?.email || '',
+            ownerEmail: e.ownerEmail || ownerEmail,
           }))
           setGoogleEvents(loadedEvents)
           writeCache(gcalKey, loadedEvents)
+
+          // Sync into Firestore so all family members see this person's events.
+          // Replace the owner's existing Google-sourced events with the fresh batch.
+          try {
+            const eventsCol = collection(db, 'families', familyId, 'events')
+            const oldSnap = await getDocs(
+              query(eventsCol, where('ownerEmail', '==', ownerEmail), where('source', '==', 'google'))
+            )
+            const batch = writeBatch(db)
+            oldSnap.docs.forEach((d) => batch.delete(d.ref))
+            loadedEvents.forEach((e) => {
+              batch.set(doc(eventsCol, e.id), { ...e, source: 'google' })
+            })
+            await batch.commit()
+          } catch { /* sync failure is non-fatal */ }
         }
       } catch { /* keep cached events */ } finally {
         if (!cancelled) setGoogleLoaded(true)
@@ -203,12 +223,13 @@ export function CommandCenter() {
     load()
     return () => { cancelled = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isConnected, gcalKey])
+  }, [isConnected, gcalKey, familyId])
 
   // Ask the AI which calendar events are ambiguous — once per session, skipping
   // events the family has already explained. Cached so it doesn't pop in again.
   useEffect(() => {
-    if (googleEvents.length === 0 || clarificationsFetched.current) return
+    const eventsForContext = googleEvents.length > 0 ? googleEvents : localEvents
+    if (eventsForContext.length === 0 || clarificationsFetched.current) return
     clarificationsFetched.current = true
     let cancelled = false
     ;(async () => {
@@ -217,7 +238,7 @@ export function CommandCenter() {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            events: googleEvents,
+            events: eventsForContext,
             members,
             now: new Date().toISOString(),
             knownEventIds: eventContexts.map((e) => e.id),
@@ -233,9 +254,13 @@ export function CommandCenter() {
     })()
     return () => { cancelled = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [googleEvents.length, eventContexts.length])
+  }, [googleEvents.length, localEvents.length, eventContexts.length])
 
-  const events = isConnected ? googleEvents : localEvents
+  // All family members read events from Firestore (which is kept in sync with
+  // Google Calendar by the fetch above). This means connected members' events
+  // are visible to everyone in the family, not just the person who connected.
+  // Fall back to live googleEvents only if Firestore hasn't populated yet.
+  const events = localEvents.length > 0 ? localEvents : googleEvents
 
   const runEngine = useCallback(async (overrideContext?: { eventTitle: string; context: string }[], silent?: boolean) => {
     if (silent) setRefreshing(true)
