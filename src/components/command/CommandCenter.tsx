@@ -91,7 +91,7 @@ export function CommandCenter() {
   const router = useRouter()
   const { user } = useAuth()
   const { open: openCapture } = useCapture()
-  const { isConnected, getFreshTokens } = useGoogleTokens()
+  const { isConnected, loading: tokensLoading, getFreshTokens } = useGoogleTokens()
   const { familyId } = useFamily()
   const { toast } = useToast()
 
@@ -668,7 +668,7 @@ export function CommandCenter() {
         </button>
       </div>
 
-      {!isConnected && <ConnectGooglePrompt onConnect={() => router.push(`/api/auth/google?email=${user?.email ?? ''}`)} />}
+      {!tokensLoading && !isConnected && <ConnectGooglePrompt onConnect={() => router.push(`/api/auth/google?email=${user?.email ?? ''}`)} />}
 
       {/* Self-link: tell the assistant which member you are */}
       {members.length > 0 && !selfLinked && !selfLinkDismissed && user?.email && (
