@@ -114,6 +114,11 @@ export function CommandCenter() {
   const [googleLoaded, setGoogleLoaded] = useState(false)
   const [hydrated, setHydrated] = useState(false)
   const lastRun = useRef<number>(0)
+  // Guards the background "deep" (Opus) pass: each fast run bumps this token, and
+  // a deep pass only applies its result if its token is still the latest — so a
+  // newer briefing never gets clobbered by a stale deep pass finishing late.
+  const deepToken = useRef<number>(0)
+  const [deepening, setDeepening] = useState(false)
   const [clarifications, setClarifications] = useState<CalendarClarification[]>([])
   const [clarificationAnswers, setClarificationAnswers] = useState<Record<string, string>>({})
   const [clarificationsDismissed, setClarificationsDismissed] = useState(false)
@@ -297,54 +302,90 @@ export function CommandCenter() {
   // Fall back to live googleEvents only if Firestore hasn't populated yet.
   const events = localEvents.length > 0 ? localEvents : googleEvents
 
+  // Build the request body shared by both the fast and deep passes.
+  const buildEngineBody = useCallback((
+    eventContext: { eventTitle: string; context: string }[],
+    tier: 'fast' | 'deep',
+  ) => {
+    const inbox = emailSuggestions.map((s) => ({
+      title: s.title,
+      date: s.date,
+      notes: s.notes,
+      sourceEmailSubject: s.sourceEmailSubject,
+    }))
+    // Merge Copilot-created reminders (legacy collection) with Capture tasks
+    // so the attention engine sees everything regardless of how it was added.
+    const reminderAsTask: Task[] = reminders.map((r) => ({
+      id: r.id,
+      title: r.title,
+      notes: r.notes,
+      isCompleted: r.isCompleted,
+      completedAt: r.completedAt,
+      dueDate: r.dueDate,
+      assigneeEmail: r.assigneeEmail,
+      priority: r.priority,
+      recurrence: r.recurrence,
+      source: 'ai' as const,
+      createdAt: r.dueDate ?? new Date().toISOString(),
+    }))
+    const allTasks = [
+      ...tasks,
+      ...reminderAsTask.filter((r) => !tasks.some((t) => t.id === r.id)),
+    ]
+    return {
+      members, events, tasks: allTasks, chores, plans, lists, eventContext,
+      profile, memories, inbox, tier,
+      currentUserEmail: user?.email ?? undefined,
+      currentUserName: user?.displayName ?? undefined,
+      now: new Date().toISOString(),
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    }
+  }, [members, events, tasks, reminders, chores, plans, lists, profile, memories, emailSuggestions, user])
+
   const runEngine = useCallback(async (overrideContext?: { eventTitle: string; context: string }[], silent?: boolean) => {
     if (silent) setRefreshing(true)
     else setLoading(true)
+    // Bump the token: this fast run is now the latest, so any in-flight deep pass
+    // from a previous run will be ignored when it returns.
+    const myToken = ++deepToken.current
     try {
       const eventContext = overrideContext ??
         eventContexts.map((e) => ({ eventTitle: e.eventTitle, context: e.context }))
-      const inbox = emailSuggestions.map((s) => ({
-        title: s.title,
-        date: s.date,
-        notes: s.notes,
-        sourceEmailSubject: s.sourceEmailSubject,
-      }))
-      // Merge Copilot-created reminders (legacy collection) with Capture tasks
-      // so the attention engine sees everything regardless of how it was added.
-      const reminderAsTask: Task[] = reminders.map((r) => ({
-        id: r.id,
-        title: r.title,
-        notes: r.notes,
-        isCompleted: r.isCompleted,
-        completedAt: r.completedAt,
-        dueDate: r.dueDate,
-        assigneeEmail: r.assigneeEmail,
-        priority: r.priority,
-        recurrence: r.recurrence,
-        source: 'ai' as const,
-        createdAt: r.dueDate ?? new Date().toISOString(),
-      }))
-      const allTasks = [
-        ...tasks,
-        ...reminderAsTask.filter((r) => !tasks.some((t) => t.id === r.id)),
-      ]
+
+      // Pass 1 — FAST (Sonnet): paint the briefing quickly.
       const res = await fetch('/api/ai/attention', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          members, events, tasks: allTasks, chores, plans, lists, eventContext,
-          profile, memories, inbox,
-          currentUserEmail: user?.email ?? undefined,
-          currentUserName: user?.displayName ?? undefined,
-          now: new Date().toISOString(),
-          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-        }),
+        body: JSON.stringify(buildEngineBody(eventContext, 'fast')),
       })
       const data = await res.json() as AttentionReport & { error?: string }
       if (res.ok) {
         setReport(data)
         setEngineError(null)
         writeCache(attnKey, data)
+
+        // Pass 2 — DEEP (Opus): silently sharpen the prioritization and update in
+        // place. Not awaited so the fast result shows immediately. Guarded by the
+        // token so a stale deep pass never overwrites a newer briefing.
+        setDeepening(true)
+        ;(async () => {
+          try {
+            const dRes = await fetch('/api/ai/attention', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(buildEngineBody(eventContext, 'deep')),
+            })
+            const dData = await dRes.json() as AttentionReport & { error?: string }
+            if (dRes.ok && deepToken.current === myToken) {
+              setReport(dData)
+              writeCache(attnKey, dData)
+            }
+          } catch {
+            /* deep pass is best-effort — the fast result already stands */
+          } finally {
+            if (deepToken.current === myToken) setDeepening(false)
+          }
+        })()
       } else {
         // Surface the error so it's visible instead of silently showing nothing.
         setEngineError(data.error ?? 'Something went wrong. Tap refresh to try again.')
@@ -358,7 +399,7 @@ export function CommandCenter() {
       setLoading(false)
       setRefreshing(false)
     }
-  }, [members, events, tasks, reminders, chores, plans, lists, eventContexts, profile, memories, emailSuggestions, attnKey])
+  }, [buildEngineBody, eventContexts, attnKey])
 
   // Auto-run once the data we expect is loaded. Always silent when a report is
   // already on screen (cached or fresh) so content updates in place, never via a
@@ -570,7 +611,7 @@ export function CommandCenter() {
 
   return (
     <div className="max-w-3xl mx-auto px-4 sm:px-6 py-6 space-y-6">
-      <TopProgressBar active={busy} />
+      <TopProgressBar active={busy || deepening} />
 
       {/* Header */}
       <div className="flex items-start justify-between">
@@ -659,6 +700,12 @@ export function CommandCenter() {
             <Sparkles size={18} className="mt-0.5 shrink-0 opacity-90" />
             <p className="text-[15px] leading-relaxed font-medium">{report.greeting}</p>
           </div>
+          {deepening && (
+            <div className="flex items-center gap-1.5 mt-3 text-[11px] text-white/70">
+              <span className="w-3 h-3 border-[1.5px] border-white/40 border-t-transparent rounded-full animate-spin" />
+              Sharpening priorities…
+            </div>
+          )}
         </div>
       )}
 

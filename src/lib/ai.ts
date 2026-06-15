@@ -1,6 +1,15 @@
 import Anthropic from '@anthropic-ai/sdk'
 
-export const AI_MODEL = 'claude-sonnet-4-6'
+// Tiered models — pick per task by what it actually needs:
+// - FAST (Haiku): high-volume / latency-sensitive / structured extraction.
+// - BALANCED (Sonnet): interactive chat and general generation.
+// - DEEP (Opus): low-frequency, high-value reasoning (planning, deep prioritization).
+export const MODEL_FAST = 'claude-haiku-4-5-20251001'
+export const MODEL_BALANCED = 'claude-sonnet-4-6'
+export const MODEL_DEEP = 'claude-opus-4-8'
+
+// Back-compat default for callers that don't specify a tier.
+export const AI_MODEL = MODEL_BALANCED
 
 export function getAnthropic(): Anthropic {
   const apiKey = process.env.ANTHROPIC_API_KEY
@@ -11,11 +20,12 @@ export function getAnthropic(): Anthropic {
 /**
  * Calls Claude with a prompt and returns the parsed JSON from the response.
  * Strips markdown fences and extracts the first JSON object/array found.
+ * Pass `model` to override the default (e.g. MODEL_FAST for cheap extraction).
  */
-export async function askClaudeJSON<T>(prompt: string, maxTokens = 1500): Promise<T> {
+export async function askClaudeJSON<T>(prompt: string, maxTokens = 1500, model: string = AI_MODEL): Promise<T> {
   const anthropic = getAnthropic()
   const response = await anthropic.messages.create({
-    model: AI_MODEL,
+    model,
     max_tokens: maxTokens,
     messages: [{ role: 'user', content: prompt }],
   })

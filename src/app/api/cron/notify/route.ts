@@ -20,7 +20,8 @@ async function generateBriefing(familyName: string, summary: string): Promise<st
   const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
   const response = await anthropic.messages.create({
-    model: 'claude-sonnet-4-6',
+    // Short daily notification text generated on a cron — Haiku keeps recurring cost down.
+    model: 'claude-haiku-4-5-20251001',
     max_tokens: 100,
     messages: [
       {

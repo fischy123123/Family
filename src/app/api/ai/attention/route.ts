@@ -2,7 +2,12 @@ import { NextRequest, NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
 import { buildFamilyContext, type FamilyContextInput } from '@/lib/familyContext'
 
-const AI_MODEL = 'claude-haiku-4-5-20251001'
+// Two-tier escalation:
+// - 'fast'  (Sonnet) paints the briefing quickly on load.
+// - 'deep'  (Opus) silently re-runs the same reasoning for sharper prioritization
+//   and updates the briefing in place when it returns.
+const FAST_MODEL = 'claude-sonnet-4-6'
+const DEEP_MODEL = 'claude-opus-4-8'
 
 // The Attention Engine + Timeline Intelligence Engine.
 // Takes full family context, returns a prioritized "what needs attention now" report.
@@ -11,7 +16,8 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'ANTHROPIC_API_KEY not configured' }, { status: 500 })
   }
 
-  const ctx: FamilyContextInput = await request.json()
+  const ctx: FamilyContextInput & { tier?: 'fast' | 'deep' } = await request.json()
+  const model = ctx.tier === 'deep' ? DEEP_MODEL : FAST_MODEL
   const contextBlock = buildFamilyContext(ctx)
 
   const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
@@ -107,7 +113,7 @@ For each problem, include an optional "actionType" field: "copilot" for conversa
 
   try {
     const response = await anthropic.messages.create({
-      model: AI_MODEL,
+      model,
       max_tokens: 2500,
       // The system prompt is large and static — cache it so repeated calls skip
       // re-processing it, which trims both latency and cost.
@@ -143,6 +149,7 @@ For each problem, include an optional "actionType" field: "copilot" for conversa
 
     return NextResponse.json({
       generatedAt: new Date().toISOString(),
+      tier: ctx.tier ?? 'fast',
       greeting: parsed.greeting ?? 'Here is what needs your attention.',
       items,
       problems,

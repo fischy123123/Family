@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { askClaudeJSON } from '@/lib/ai'
+import { askClaudeJSON, MODEL_FAST } from '@/lib/ai'
 
 interface MemberLite {
   name: string
@@ -40,7 +40,7 @@ Rules:
 
 Return only the JSON array, no other text.`
 
-    const actions = await askClaudeJSON<unknown[]>(prompt)
+    const actions = await askClaudeJSON<unknown[]>(prompt, 1500, MODEL_FAST)
     return NextResponse.json({ actions })
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : 'AI error'

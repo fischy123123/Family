@@ -46,7 +46,8 @@ export async function POST(request: NextRequest) {
   const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
   const response = await anthropic.messages.create({
-    model: 'claude-sonnet-4-6',
+    // Email extraction is high-volume structured work — Haiku is fast and cheap.
+    model: 'claude-haiku-4-5-20251001',
     max_tokens: 2048,
     messages: [{
       role: 'user',

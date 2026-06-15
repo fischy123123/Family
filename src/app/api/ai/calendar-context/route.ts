@@ -2,7 +2,9 @@ import { NextRequest, NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
 import type { CalendarEvent, FamilyMember } from '@/lib/types'
 
-const AI_MODEL = 'claude-sonnet-4-6'
+// Generating clarifying questions about ambiguous events is light classification
+// work that runs in the background — Haiku handles it fast and cheap.
+const AI_MODEL = 'claude-haiku-4-5-20251001'
 
 export async function POST(request: NextRequest) {
   if (!process.env.ANTHROPIC_API_KEY) {

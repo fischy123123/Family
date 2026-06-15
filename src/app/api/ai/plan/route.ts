@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getAnthropic, AI_MODEL } from '@/lib/ai'
+import { getAnthropic, MODEL_DEEP } from '@/lib/ai'
 
 interface Member {
   name?: string
@@ -86,7 +86,7 @@ Return ONLY valid JSON in exactly this shape:
 {"milestones":[{"title":"...","date":"YYYY-MM-DD"}],"tasks":[{"title":"..."}],"shopping":[{"name":"...","quantity":1}],"summary":"..."}`
 
       const response = await anthropic.messages.create({
-        model: AI_MODEL,
+        model: MODEL_DEEP,
         max_tokens: 2000,
         messages: [{ role: 'user', content: prompt }],
       })
@@ -172,7 +172,7 @@ Return ONLY valid JSON in exactly this shape:
 readiness reflects overall preparedness given completion and time remaining. Provide 1-4 risks and 1-4 insights. If everything looks complete, risks may be an empty array.`
 
     const response = await anthropic.messages.create({
-      model: AI_MODEL,
+      model: MODEL_DEEP,
       max_tokens: 1500,
       messages: [{ role: 'user', content: prompt }],
     })

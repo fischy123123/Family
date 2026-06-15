@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
 
-const AI_MODEL = 'claude-sonnet-4-6'
+// Extraction is structured pattern work and latency-sensitive (user is capturing
+// something quickly) — Haiku is fast, cheap, and more than capable here.
+const AI_MODEL = 'claude-haiku-4-5-20251001'
 
 interface MemberLite {
   name: string
