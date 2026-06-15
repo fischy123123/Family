@@ -50,6 +50,7 @@ type EmailSuggestion = {
   notes?: string
   confidence: number
   sourceEmailSubject: string
+  messageId?: string
 }
 
 const BUCKET_ORDER: AttentionBucket[] = ['now', 'next', 'later', 'upcoming']
@@ -325,6 +326,7 @@ export function CommandCenter() {
       date: s.date,
       notes: s.notes,
       sourceEmailSubject: s.sourceEmailSubject,
+      messageId: s.messageId,
     }))
     // Merge Copilot-created reminders (legacy collection) with Capture tasks
     // so the attention engine sees everything regardless of how it was added.
@@ -1170,6 +1172,19 @@ function AttentionCard({
         <div className="flex-1 min-w-0">
           <p className="text-sm font-semibold text-slate-900">{item.title}</p>
           <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">{item.reason}</p>
+          {item.sourceEmailId && (
+            <a
+              href={`https://mail.google.com/mail/u/0/#inbox/${item.sourceEmailId}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 mt-1 text-[11px] font-medium text-blue-600 hover:text-blue-800 hover:underline"
+            >
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor" className="shrink-0">
+                <path d="M20 18h-2V9.25L12 13 6 9.25V18H4V6h1.2l6.8 4.25L18.8 6H20v12z"/>
+              </svg>
+              View email
+            </a>
+          )}
           <div className="flex items-center gap-2 mt-1.5 flex-wrap">
             {startStr && (
               <span className="inline-flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-full" style={{ background: `${accent}15`, color: accent }}>

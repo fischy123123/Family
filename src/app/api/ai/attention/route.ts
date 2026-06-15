@@ -65,6 +65,7 @@ Given the family context, produce a JSON report with this exact shape:
       "forEmails": ["emails of who this is FOR or ABOUT — often the kids or a pet. Can differ from the responsible person. Optional array."],
       "sourceType": "event" | "task" | "chore" | "plan" | "reminder" | "inferred",
       "sourceId": "for task/reminder sourceType: the raw id from [id:xxx] in the tasks list (omit the 'id:' prefix). Omit for other types.",
+      "sourceEmailId": "if this item derives from an inbox signal with a [msgid:ID] label, copy that ID here verbatim (omit otherwise)",
       "priority": 0-100
     }
   ],

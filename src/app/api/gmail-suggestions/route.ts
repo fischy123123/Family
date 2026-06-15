@@ -29,7 +29,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ suggestions: [] })
   }
 
-  // Fetch subject + snippet for each message
+  // Fetch subject + snippet for each message (keep the id for deep-linking back to Gmail)
   const emails = await Promise.all(
     messages.slice(0, 40).map(async ({ id }) => {
       const res = await fetch(
@@ -38,7 +38,7 @@ export async function POST(request: NextRequest) {
       )
       const data = await res.json()
       const subject = data.payload?.headers?.find((h: { name: string }) => h.name === 'Subject')?.value ?? '(no subject)'
-      return { subject, snippet: data.snippet ?? '' }
+      return { id, subject, snippet: data.snippet ?? '' }
     })
   )
 
@@ -82,6 +82,7 @@ Return ONLY a valid JSON array — no markdown, no explanation, no code fences:
   "notes": "optional short note with key details",
   "confidence": 0.0-1.0,
   "sourceEmailSubject": "exact subject line",
+  "messageId": "the ID from the [msgid:ID] prefix of the source email",
   "details": {
     "confirmationNumber": "only if present",
     "deliveryWindow": "only for deliveries",
@@ -95,10 +96,11 @@ Rules:
 - Map bills and personal follow-ups to type "reminder", reservations to "event", school items to "school"
 - Confidence: 0.9+ for explicit dates/confirmed bookings, 0.7-0.8 for inferred, below 0.7 skip it
 - When in doubt, leave it out. 3 high-quality signals beat 10 noisy ones.
+- Each email is prefixed with [msgid:ID] — include that ID verbatim in the "messageId" field of your output
 - If nothing passes the filter, return []
 
 Emails:
-${emails.map((e) => `Subject: ${e.subject}\nSnippet: ${e.snippet}`).join('\n---\n')}`
+${emails.map((e) => `[msgid:${e.id}] Subject: ${e.subject}\nSnippet: ${e.snippet}`).join('\n---\n')}`
     }]
   })
 

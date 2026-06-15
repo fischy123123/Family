@@ -13,6 +13,7 @@ export interface InboxSignal {
   date?: string | null
   notes?: string
   sourceEmailSubject?: string
+  messageId?: string
 }
 
 export interface FamilyContextInput {
@@ -288,7 +289,8 @@ export function buildFamilyContext(input: FamilyContextInput): string {
           const when = s.date ? ` — ${fmtDate(s.date, tz)}` : ''
           const note = s.notes ? ` (${s.notes})` : ''
           const src = s.sourceEmailSubject ? ` [email: "${s.sourceEmailSubject}"]` : ''
-          return `- ${s.title}${when}${note}${src}`
+          const mid = s.messageId ? ` [msgid:${s.messageId}]` : ''
+          return `- ${s.title}${when}${note}${src}${mid}`
         })
         .join('\n')}`
     )

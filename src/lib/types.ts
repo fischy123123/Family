@@ -174,6 +174,7 @@ export interface AttentionItem {
   forEmails?: string[]          // who it concerns / is about (often kids)
   sourceType: 'event' | 'task' | 'chore' | 'plan' | 'reminder' | 'inferred'
   sourceId?: string
+  sourceEmailId?: string        // Gmail message ID — present when item derives from an inbox email
   priority: number              // 0-100, higher = more urgent
 }
 
