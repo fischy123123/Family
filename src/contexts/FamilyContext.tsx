@@ -14,6 +14,8 @@ interface FamilyContextType {
   joinFamily: (code: string) => Promise<boolean>
   resetFamily: () => Promise<void>
   deleteFamily: () => Promise<void>
+  /** Re-runs the Firestore + auto-join lookup. Call when you suspect the initial load raced. */
+  retryLoad: () => void
 }
 
 const FamilyContext = createContext<FamilyContextType>({
@@ -25,6 +27,7 @@ const FamilyContext = createContext<FamilyContextType>({
   joinFamily: async () => false,
   resetFamily: async () => {},
   deleteFamily: async () => {},
+  retryLoad: () => {},
 })
 
 // Subcollections under families/{id} that hold family data.
@@ -43,6 +46,8 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
   const [inviteCode, setInviteCode] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
+  // Incrementing this triggers a fresh load without unmounting the provider.
+  const [loadTrigger, setLoadTrigger] = useState(0)
 
   useEffect(() => {
     if (!user) {
@@ -57,6 +62,7 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
     // the root page would see user+familyId=null+loading=false and jump to /setup
     // before loadFamily() finishes — a race that surfaces on iOS PWA.
     setLoading(true)
+    setLoadError(null)
 
     let cancelled = false
 
@@ -119,7 +125,8 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
 
     loadFamily()
     return () => { cancelled = true }
-  }, [user])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user, loadTrigger])
 
   async function createFamily() {
     if (!user) return
@@ -187,8 +194,12 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
     setInviteCode(null)
   }
 
+  function retryLoad() {
+    if (user) setLoadTrigger((n) => n + 1)
+  }
+
   return (
-    <FamilyContext.Provider value={{ familyId, inviteCode, loading, loadError, createFamily, joinFamily, resetFamily, deleteFamily }}>
+    <FamilyContext.Provider value={{ familyId, inviteCode, loading, loadError, createFamily, joinFamily, resetFamily, deleteFamily, retryLoad }}>
       {children}
     </FamilyContext.Provider>
   )
