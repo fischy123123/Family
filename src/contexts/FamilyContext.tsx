@@ -52,6 +52,12 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
       return
     }
 
+    // Reset loading to true before the async work so the root page waits.
+    // Without this, if the prior render had loading=false (from the !user branch),
+    // the root page would see user+familyId=null+loading=false and jump to /setup
+    // before loadFamily() finishes — a race that surfaces on iOS PWA.
+    setLoading(true)
+
     let cancelled = false
 
     // Retry the lookup a few times: in Safari/Firefox the first Firestore
