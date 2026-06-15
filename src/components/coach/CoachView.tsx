@@ -1,16 +1,18 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import {
-  Compass, Sparkles, RefreshCw, Plus, Trash2, Target, X, Check, PenLine,
+  Compass, Sparkles, RefreshCw, Plus, Trash2, Target, X, Check, PenLine, Send,
 } from 'lucide-react'
 import { InsightCardWithThread } from './InsightCardWithThread'
 import { useCoaching } from '@/hooks/useCoaching'
+import { useFirestore } from '@/hooks/useFirestore'
 import { useCapture } from '@/contexts/CaptureContext'
 import { MicButton } from '@/components/ui/MicButton'
+import { generateId } from '@/lib/utils'
 import { LIFE_AREAS } from '@/lib/types'
-import type { LifeArea, CoachingInsight } from '@/lib/types'
+import type { LifeArea, CoachingInsight, FamilyMemory } from '@/lib/types'
 
 function startOfWeekISO(): string {
   const d = new Date()
@@ -22,6 +24,7 @@ function startOfWeekISO(): string {
 export function CoachView() {
   const router = useRouter()
   const { open: openCapture } = useCapture()
+  const { create: createMemory } = useFirestore<FamilyMemory>('memories')
   const {
     goals, reflections, insights, summary, generating, error,
     generate, dismissInsight, acknowledgeInsight,
@@ -30,12 +33,30 @@ export function CoachView() {
 
   const [showGoalForm, setShowGoalForm] = useState(false)
   const [showReflection, setShowReflection] = useState(false)
+  const [quickNote, setQuickNote] = useState('')
+  const [noteSaved, setNoteSaved] = useState(false)
+  const noteRef = useRef<HTMLInputElement>(null)
 
   const week = startOfWeekISO()
   const activeInsights = insights
     .filter((i) => !i.dismissed)
     .sort((a, b) => new Date(b.generatedAt).getTime() - new Date(a.generatedAt).getTime())
   const reflectedThisWeek = reflections.some((r) => r.weekOf === week)
+
+  async function saveQuickNote() {
+    const note = quickNote.trim()
+    if (!note) return
+    await createMemory({
+      id: generateId(),
+      text: `Coach context: ${note}`,
+      category: 'other',
+      source: 'ai',
+      createdAt: new Date().toISOString(),
+    })
+    setQuickNote('')
+    setNoteSaved(true)
+    setTimeout(() => setNoteSaved(false), 4000)
+  }
 
   function handleAction(insight: CoachingInsight) {
     if (insight.actionType === 'capture' && insight.suggestedAction) {
@@ -81,6 +102,40 @@ export function CoachView() {
           </div>
         </div>
       )}
+
+      {/* Quick note to coach */}
+      <div className="rounded-2xl bg-white shadow-card overflow-hidden">
+        <div className="flex items-center gap-2 px-4 py-3">
+          <input
+            ref={noteRef}
+            value={quickNote}
+            onChange={e => setQuickNote(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') saveQuickNote() }}
+            placeholder="Tell the coach something real-time…"
+            className="flex-1 text-sm text-slate-700 placeholder:text-slate-400 bg-transparent focus:outline-none"
+          />
+          <MicButton size={30} onText={s => setQuickNote(p => (p ? p.trim() + ' ' : '') + s)} />
+          <button
+            onClick={saveQuickNote}
+            disabled={!quickNote.trim()}
+            className="p-1.5 rounded-lg disabled:opacity-30 text-rose-500 hover:bg-rose-50 transition-colors"
+          >
+            <Send size={14} />
+          </button>
+        </div>
+        {noteSaved && (
+          <div className="px-4 pb-3 flex items-center gap-3">
+            <p className="text-xs text-green-600 font-medium">✓ Saved — will factor into next check-in</p>
+            <button
+              onClick={() => { setNoteSaved(false); generate() }}
+              disabled={generating}
+              className="text-xs text-rose-500 font-semibold hover:underline disabled:opacity-40"
+            >
+              Refresh now
+            </button>
+          </div>
+        )}
+      </div>
 
       {/* Insights */}
       {activeInsights.length > 0 ? (

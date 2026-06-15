@@ -9,7 +9,8 @@ import { useFamily } from '@/contexts/FamilyContext'
 import { useFirestore } from '@/hooks/useFirestore'
 import { useGoogleTokens } from '@/hooks/useGoogleTokens'
 import { useCapture } from '@/contexts/CaptureContext'
-import type { CoachingInsight, FamilyMember } from '@/lib/types'
+import { generateId } from '@/lib/utils'
+import type { CoachingInsight, FamilyMember, FamilyMemory } from '@/lib/types'
 
 interface ThreadMsg { role: 'user' | 'assistant'; content: string }
 
@@ -37,10 +38,13 @@ export function InsightCardWithThread({
   const { getFreshTokens } = useGoogleTokens()
   const { open: openCapture } = useCapture()
 
+  const { create: createMemory } = useFirestore<FamilyMemory>('memories')
+
   const [open, setOpen] = useState(false)
   const [thread, setThread] = useState<ThreadMsg[]>([])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
+  const [savedAt, setSavedAt] = useState<number | null>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
 
@@ -106,6 +110,20 @@ export function InsightCardWithThread({
 
       const data = await res.json()
       setThread(prev => [...prev, { role: 'assistant', content: data.reply || 'Got it.' }])
+
+      // Persist the user's clarification as a memory so future coaching sessions
+      // know about it and don't repeat the same assumption.
+      try {
+        await createMemory({
+          id: generateId(),
+          text: `Re coaching insight "${insight.title}": ${content}`,
+          category: 'other',
+          source: 'ai',
+          createdAt: new Date().toISOString(),
+        })
+        setSavedAt(Date.now())
+        setTimeout(() => setSavedAt(null), 3000)
+      } catch { /* non-fatal */ }
     } catch {
       setThread(prev => [...prev, { role: 'assistant', content: 'Sorry, something went wrong.' }])
     } finally {
@@ -127,7 +145,14 @@ export function InsightCardWithThread({
       {open && (
         <div className="mt-1 rounded-2xl bg-white shadow-card border border-slate-100 overflow-hidden animate-slide-up">
           <div className="flex items-center justify-between px-4 pt-3 pb-1">
-            <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Reply to your coach</p>
+            <div className="flex items-center gap-2">
+              <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Reply to your coach</p>
+              {savedAt && (
+                <span className="text-[10px] text-green-600 font-medium animate-slide-up">
+                  ✓ Saved to memory
+                </span>
+              )}
+            </div>
             <button
               onClick={() => setOpen(false)}
               className="p-1 rounded-lg text-slate-300 hover:text-slate-500 transition-colors"
