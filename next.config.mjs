@@ -1,10 +1,13 @@
 import withPWAInit from 'next-pwa'
 
+// next-pwa v5 always calls skipWaiting() regardless of the config option,
+// which causes blank screens in standalone PWA mode after deploys (new SW
+// deletes old cached chunks the running page still needs). We disable SW
+// generation entirely and use a hand-written sw.js instead.
 const withPWA = withPWAInit({
   dest: 'public',
-  disable: process.env.NODE_ENV === 'development',
-  register: true,
-  skipWaiting: true,
+  disable: true,
+  register: false,
 })
 
 /** @type {import('next').NextConfig} */

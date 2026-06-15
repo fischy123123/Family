@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from 'next'
 import { Inter } from 'next/font/google'
+import Script from 'next/script'
 import { AuthProvider } from '@/contexts/AuthContext'
 import { FamilyProvider } from '@/contexts/FamilyContext'
 import { ToastProvider } from '@/contexts/ToastContext'
@@ -35,6 +36,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <meta name="mobile-web-app-capable" content="yes" />
       </head>
       <body className={inter.className}>
+        {/* Register our hand-written SW (replaces the next-pwa generated one) */}
+        <Script id="sw-register" strategy="afterInteractive">{`
+          if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch(() => {});
+          }
+        `}</Script>
         <AuthProvider>
           <FamilyProvider>
             <ToastProvider>

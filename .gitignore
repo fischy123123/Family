@@ -29,8 +29,7 @@ yarn-error.log*
 .env*.local
 .env
 
-# PWA generated service worker files (generated at build time)
-/public/sw.js
+# Workbox generated files (next-pwa artefacts — no longer used)
 /public/workbox-*.js
 
 # vercel
