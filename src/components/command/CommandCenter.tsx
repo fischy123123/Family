@@ -85,7 +85,7 @@ export function CommandCenter() {
   const { data: members, update: updateMember } = useFirestore<FamilyMember>('members')
   const { data: localEvents } = useFirestore<CalendarEvent>('events')
   const { data: tasks, update: updateTask } = useFirestore<Task>('tasks')
-  const { data: reminders } = useFirestore<FamilyReminder>('reminders')
+  const { data: reminders, update: updateReminder } = useFirestore<FamilyReminder>('reminders')
   const { data: chores } = useFirestore<Chore>('chores')
   const { data: plans } = useFirestore<Plan>('plans')
   const { data: lists } = useFirestore<SmartList>('lists')
@@ -308,7 +308,8 @@ export function CommandCenter() {
   // The inbox scan, durable memory, and profile often arrive a beat after the
   // first render. When they change, weave them into the briefing right away —
   // bypassing the throttle — so the assistant stays current without a flash.
-  const ctxSignature = `${emailSuggestions.length}|${memories.length}|${profile?.updatedAt ?? ''}`
+  const completedCount = tasks.filter((t) => t.isCompleted).length + reminders.filter((r) => r.isCompleted).length
+  const ctxSignature = `${emailSuggestions.length}|${memories.length}|${profile?.updatedAt ?? ''}|${completedCount}`
   const lastCtxSig = useRef<string>('')
   useEffect(() => {
     if (!hydrated || !report) return
@@ -321,9 +322,22 @@ export function CommandCenter() {
   }, [ctxSignature, hydrated])
 
   async function completeTaskFromItem(item: AttentionItem) {
-    if (item.sourceType !== 'task' || !item.sourceId) return
-    const t = tasks.find((x) => x.id === item.sourceId)
-    if (t) await updateTask({ ...t, isCompleted: true, completedAt: new Date().toISOString() })
+    const now = new Date().toISOString()
+    if (item.sourceType === 'task' || (!item.sourceId && item.sourceType !== 'reminder')) {
+      const byId = item.sourceId ? tasks.find((x) => x.id === item.sourceId) : undefined
+      const t = byId ?? tasks.find((x) => x.title.toLowerCase() === item.title.toLowerCase())
+      if (t) { await updateTask({ ...t, isCompleted: true, completedAt: now }); return }
+    }
+    if (item.sourceType === 'reminder' || item.sourceType === 'inferred') {
+      const byId = item.sourceId ? reminders.find((x) => x.id === item.sourceId) : undefined
+      const r = byId ?? reminders.find((x) => x.title.toLowerCase() === item.title.toLowerCase())
+      if (r) { await updateReminder({ ...r, isCompleted: true, completedAt: now }); return }
+    }
+    // Last resort: try both collections by title
+    const t2 = tasks.find((x) => item.title.toLowerCase().includes(x.title.toLowerCase()) || x.title.toLowerCase().includes(item.title.toLowerCase()))
+    if (t2) { await updateTask({ ...t2, isCompleted: true, completedAt: now }); return }
+    const r2 = reminders.find((x) => item.title.toLowerCase().includes(x.title.toLowerCase()) || x.title.toLowerCase().includes(item.title.toLowerCase()))
+    if (r2) await updateReminder({ ...r2, isCompleted: true, completedAt: now })
   }
 
   // Save one clarification, then immediately re-run the engine with it included.

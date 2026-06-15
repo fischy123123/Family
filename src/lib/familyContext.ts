@@ -234,7 +234,7 @@ export function buildFamilyContext(input: FamilyContextInput): string {
         ? openTasks
             .map(
               (t) =>
-                `- ${t.title}${t.dueDate ? ` (due ${fmtDate(t.dueDate, tz)})` : ''}${
+                `- [id:${t.id}] ${t.title}${t.dueDate ? ` (due ${fmtDate(t.dueDate, tz)})` : ''}${
                   t.assigneeEmail ? ` [${t.assigneeEmail}]` : ''
                 } priority=${t.priority}`
             )

@@ -57,6 +57,7 @@ Given the family context, produce a JSON report with this exact shape:
       "dueAt": "ISO datetime the underlying thing happens (optional)",
       "assigneeEmail": "matched family member email (optional)",
       "sourceType": "event" | "task" | "chore" | "plan" | "reminder" | "inferred",
+      "sourceId": "for task/reminder sourceType: the raw id from [id:xxx] in the tasks list (omit the 'id:' prefix). Omit for other types.",
       "priority": 0-100
     }
   ],
