@@ -146,11 +146,49 @@ export function buildFamilyContext(input: FamilyContextInput): string {
       : 'unknown'
   sections.push(`SIGNED-IN USER (the person you are talking to right now — address them as "you"): ${selfDescriptor}`)
 
+  // Split memories: family-wide vs personal to the current user.
+  // Personal memories are tagged with subjectEmail = currentUserEmail.
+  const familyMemories = (memories ?? []).filter(
+    (m) => !m.subjectEmail || m.subjectEmail.toLowerCase() !== (currentUserEmail ?? '').toLowerCase()
+  )
+  const personalMemories = (memories ?? []).filter(
+    (m) => m.subjectEmail && m.subjectEmail.toLowerCase() === (currentUserEmail ?? '').toLowerCase()
+  )
+
+  // The personal lens: what this individual has told us they care about (or
+  // don't care about). Combine their member preferences + personal memories.
+  // This is the HIGHEST priority filter — the AI personalises the briefing
+  // through it, without any hardcoded rules.
+  const personalPrefs = matchedSelf ? flattenPrefs(matchedSelf?.preferences) : ''
+  const hasPersonalLens = personalPrefs || personalMemories.length > 0
+  if (hasPersonalLens) {
+    const lensLines: string[] = []
+    if (personalPrefs) lensLines.push(`Stated preferences: ${personalPrefs}`)
+    if (personalMemories.length) {
+      const sorted = [...personalMemories].sort((a, b) => {
+        if (!!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1
+        return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+      }).slice(0, 30)
+      lensLines.push(
+        `What I have learned about this person specifically:\n${sorted
+          .map((m) => `  - ${m.category ? `[${m.category}] ` : ''}${m.text}`)
+          .join('\n')}`
+      )
+    }
+    sections.push(
+      `PERSONAL LENS FOR ${matchedSelf?.name ?? 'THE SIGNED-IN USER'} ` +
+      `(READ THIS FIRST — apply it as the primary filter on what you surface in this briefing. ` +
+      `Do not show them things that contradict their stated preferences or that they have ` +
+      `previously indicated they don't want to see. No hardcoded rules — use your judgment ` +
+      `about what this person would actually want to know):\n${lensLines.join('\n')}`
+    )
+  }
+
   if (profile) {
     const profileText = fmtProfile(profile)
     if (profileText) {
       sections.push(
-        `FAMILY PROFILE (THE LENS — read this first; it is how this family wants you to prioritize. Weight what matters to them, respect their concerns and tone):\n${profileText}`
+        `HOUSEHOLD PROFILE (secondary lens — shared family priorities. Apply after the personal lens above):\n${profileText}`
       )
     }
   }
@@ -159,14 +197,13 @@ export function buildFamilyContext(input: FamilyContextInput): string {
     `FAMILY MEMBERS:\n${members.length ? members.map((m) => fmtMember(m, currentUserEmail)).join('\n') : '(none yet)'}`
   )
 
-  if (memories?.length) {
-    // Pinned facts first, then most-recent, capped so context stays tight.
-    const ordered = [...memories].sort((a, b) => {
+  if (familyMemories.length) {
+    const ordered = [...familyMemories].sort((a, b) => {
       if (!!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1
       return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
     }).slice(0, 60)
     sections.push(
-      `WHAT YOU KNOW ABOUT THIS FAMILY (durable memory — facts, preferences, routines you've learned. Use these to make the briefing feel personal and informed; never contradict them):\n${ordered
+      `WHAT YOU KNOW ABOUT THIS FAMILY (shared durable memory — facts, routines, preferences that apply to everyone):\n${ordered
         .map((m) => {
           const who = m.subjectEmail ? ` (about ${m.subjectEmail})` : ''
           const cat = m.category ? `[${m.category}] ` : ''

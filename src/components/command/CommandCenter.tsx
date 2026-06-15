@@ -380,10 +380,14 @@ export function CommandCenter() {
   async function teachAssistant(title: string, feedback: string) {
     if (!feedback.trim()) { setTeachPrompt(null); return }
     try {
+      // Tag this to the current user — it is their personal preference,
+      // not a family-wide one. The attention engine reads these separately
+      // and filters each person's briefing through their own learned model.
       await createMemory({
         id: generateId(),
-        text: `User feedback: Don't surface "${title}" type of thing — ${feedback}`,
+        text: `Don't surface "${title}" type of thing — ${feedback}`,
         category: 'preference',
+        subjectEmail: user?.email ?? undefined,
         source: 'manual',
         createdAt: new Date().toISOString(),
       } as FamilyMemory)
