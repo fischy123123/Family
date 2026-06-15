@@ -112,14 +112,19 @@ For each problem, include an optional "actionType" field: "copilot" for conversa
 
     const text = response.content[0].type === 'text' ? response.content[0].text : '{}'
     const match = text.match(/\{[\s\S]*\}/)
-    let parsed: Record<string, unknown> = {}
+    let parsed: {
+      greeting?: string
+      items?: Record<string, unknown>[]
+      problems?: Record<string, unknown>[]
+      recommendations?: Record<string, unknown>[]
+    } = {}
     if (match) {
       try {
         parsed = JSON.parse(match[0])
       } catch {
         // Response was truncated mid-JSON (stop_reason === 'max_tokens').
         // Salvage whatever fields were fully written before the cutoff.
-        const greetingMatch = match[0].match(/"greeting"\s*:\s*"((?:[^"\\]|\\.)*)"/s)
+        const greetingMatch = match[0].match(/"greeting"\s*:\s*"((?:[^"\\]|\\[\s\S])*)"/)
         parsed = { greeting: greetingMatch?.[1] ?? 'Here is what needs your attention.', items: [], problems: [], recommendations: [] }
       }
     }
