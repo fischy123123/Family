@@ -17,7 +17,7 @@ import { BUCKET_META } from '@/lib/types'
 import type {
   FamilyMember, CalendarEvent, Task, Chore, Plan, SmartList,
   AttentionReport, AttentionItem, AttentionBucket, PotentialProblem,
-  FamilyMemory, FamilyProfile,
+  FamilyMemory, FamilyProfile, FamilyReminder,
 } from '@/lib/types'
 
 type CalendarClarification = {
@@ -84,6 +84,7 @@ export function CommandCenter() {
   const { data: members, update: updateMember } = useFirestore<FamilyMember>('members')
   const { data: localEvents } = useFirestore<CalendarEvent>('events')
   const { data: tasks, update: updateTask } = useFirestore<Task>('tasks')
+  const { data: reminders } = useFirestore<FamilyReminder>('reminders')
   const { data: chores } = useFirestore<Chore>('chores')
   const { data: plans } = useFirestore<Plan>('plans')
   const { data: lists } = useFirestore<SmartList>('lists')
@@ -238,11 +239,30 @@ export function CommandCenter() {
         notes: s.notes,
         sourceEmailSubject: s.sourceEmailSubject,
       }))
+      // Merge Copilot-created reminders (legacy collection) with Capture tasks
+      // so the attention engine sees everything regardless of how it was added.
+      const reminderAsTask: Task[] = reminders.map((r) => ({
+        id: r.id,
+        title: r.title,
+        notes: r.notes,
+        isCompleted: r.isCompleted,
+        completedAt: r.completedAt,
+        dueDate: r.dueDate,
+        assigneeEmail: r.assigneeEmail,
+        priority: r.priority,
+        recurrence: r.recurrence,
+        source: 'ai' as const,
+        createdAt: r.dueDate ?? new Date().toISOString(),
+      }))
+      const allTasks = [
+        ...tasks,
+        ...reminderAsTask.filter((r) => !tasks.some((t) => t.id === r.id)),
+      ]
       const res = await fetch('/api/ai/attention', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          members, events, tasks, chores, plans, lists, eventContext,
+          members, events, tasks: allTasks, chores, plans, lists, eventContext,
           profile, memories, inbox,
           currentUserEmail: user?.email ?? undefined,
           currentUserName: user?.displayName ?? undefined,
@@ -259,7 +279,7 @@ export function CommandCenter() {
       setLoading(false)
       setRefreshing(false)
     }
-  }, [members, events, tasks, chores, plans, lists, eventContexts, profile, memories, emailSuggestions, attnKey])
+  }, [members, events, tasks, reminders, chores, plans, lists, eventContexts, profile, memories, emailSuggestions, attnKey])
 
   // Auto-run once the data we expect is loaded. Always silent when a report is
   // already on screen (cached or fresh) so content updates in place, never via a
@@ -273,7 +293,7 @@ export function CommandCenter() {
     lastRun.current = now
     runEngine(undefined, !!report)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hydrated, googleLoaded, members.length, events.length, tasks.length, googleEvents.length])
+  }, [hydrated, googleLoaded, members.length, events.length, tasks.length, reminders.length, googleEvents.length])
 
   // The inbox scan, durable memory, and profile often arrive a beat after the
   // first render. When they change, weave them into the briefing right away —

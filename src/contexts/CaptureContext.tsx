@@ -11,9 +11,10 @@ import type { FamilyMember, Task, CalendarEvent, SmartList, ExtractedOutcome, Fa
 
 interface CaptureContextValue {
   open: (opts?: { text?: string; autoAnalyze?: boolean }) => void
+  isOpen: boolean
 }
 
-const CaptureContext = createContext<CaptureContextValue>({ open: () => {} })
+const CaptureContext = createContext<CaptureContextValue>({ open: () => {}, isOpen: false })
 export const useCapture = () => useContext(CaptureContext)
 
 const OUTCOME_META: Record<string, { icon: typeof Calendar; color: string; label: string }> = {
@@ -193,7 +194,7 @@ export function CaptureProvider({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <CaptureContext.Provider value={{ open }}>
+    <CaptureContext.Provider value={{ open, isOpen }}>
       {children}
       {isOpen && (
         <div className="fixed inset-0 z-[60] flex items-end sm:items-center justify-center p-0 sm:p-4">
@@ -215,7 +216,7 @@ export function CaptureProvider({ children }: { children: React.ReactNode }) {
               </button>
             </div>
 
-            {/* Body */}
+            {/* Body — scrollable; no action buttons so keyboard can't bury them */}
             <div className="flex-1 overflow-auto p-5 space-y-4">
               {imageData && (
                 <div className="relative inline-block">
@@ -232,9 +233,8 @@ export function CaptureProvider({ children }: { children: React.ReactNode }) {
                   value={text}
                   onChange={(e) => setText(e.target.value)}
                   placeholder="Speak or type… e.g. 'Soccer signup due Friday, bring snacks for 12 kids'"
-                  rows={4}
+                  rows={3}
                   className="w-full input-premium px-4 py-3 pr-14 text-sm text-slate-800 resize-none"
-                  autoFocus
                 />
                 <div className="absolute top-2.5 right-2.5">
                   <MicButton
@@ -245,27 +245,9 @@ export function CaptureProvider({ children }: { children: React.ReactNode }) {
                 </div>
               </div>
 
-              <div className="flex gap-2">
-                <input ref={fileRef} type="file" accept="image/*" onChange={handleImage} className="hidden" />
-                <button
-                  onClick={() => fileRef.current?.click()}
-                  className="flex items-center gap-2 px-3 py-2 rounded-xl border border-slate-200 text-sm text-slate-600 hover:bg-slate-50 transition-colors"
-                >
-                  <Camera size={15} /> Photo / Screenshot
-                </button>
-                <button
-                  onClick={process}
-                  disabled={loading || (!text.trim() && !imageData)}
-                  className="flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-white bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-500 hover:to-purple-500 disabled:opacity-40 transition-all"
-                >
-                  {loading ? <Loader2 size={15} className="animate-spin" /> : <Sparkles size={15} />}
-                  {loading ? 'Analyzing…' : 'Analyze'}
-                </button>
-              </div>
-
               {/* Outcomes */}
               {summary && (
-                <div className="pt-2">
+                <div className="pt-1">
                   <p className="text-xs text-slate-400 mb-3 italic">{summary}</p>
                   <div className="space-y-2">
                     {outcomes.map((o, i) => {
@@ -315,6 +297,26 @@ export function CaptureProvider({ children }: { children: React.ReactNode }) {
                   )}
                 </div>
               )}
+            </div>
+
+            {/* Sticky footer — stays above the keyboard on mobile */}
+            <div className="shrink-0 border-t border-slate-100 px-5 py-3 flex gap-2">
+              <input ref={fileRef} type="file" accept="image/*" onChange={handleImage} className="hidden" />
+              <button
+                onClick={() => fileRef.current?.click()}
+                className="flex items-center gap-2 px-3 py-2.5 rounded-xl border border-slate-200 text-sm text-slate-600 hover:bg-slate-50 transition-colors shrink-0"
+              >
+                <Camera size={15} />
+                <span className="hidden sm:inline">Photo</span>
+              </button>
+              <button
+                onClick={process}
+                disabled={loading || (!text.trim() && !imageData)}
+                className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold text-white bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-500 hover:to-purple-500 disabled:opacity-40 transition-all"
+              >
+                {loading ? <Loader2 size={15} className="animate-spin" /> : <Sparkles size={15} />}
+                {loading ? 'Analyzing…' : 'Analyze'}
+              </button>
             </div>
           </div>
         </div>
