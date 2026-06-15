@@ -355,7 +355,12 @@ export function CommandCenter() {
   // first render. When they change, weave them into the briefing right away —
   // bypassing the throttle — so the assistant stays current without a flash.
   const completedCount = tasks.filter((t) => t.isCompleted).length + reminders.filter((r) => r.isCompleted).length
-  const ctxSignature = `${emailSuggestions.length}|${memories.length}|${profile?.updatedAt ?? ''}|${completedCount}`
+  // Include a fingerprint of the events so calendar data that syncs in AFTER the
+  // first render (e.g. another family member's Google events arriving via the
+  // server sync) immediately refreshes the briefing instead of waiting out the
+  // 60s throttle. Using ids+starts catches replacements, not just count changes.
+  const eventsFingerprint = events.map((e) => `${e.id}:${e.start}`).sort().join(',')
+  const ctxSignature = `${emailSuggestions.length}|${memories.length}|${profile?.updatedAt ?? ''}|${completedCount}|${eventsFingerprint}`
   const lastCtxSig = useRef<string>('')
   useEffect(() => {
     if (!hydrated || !report) return
