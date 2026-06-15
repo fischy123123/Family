@@ -8,7 +8,7 @@ import {
 import { db } from '@/lib/firebase'
 import {
   RefreshCw, AlertTriangle, Lightbulb, Clock,
-  Calendar as CalIcon, Sparkles, Check, HelpCircle, X, MessageCircle, Users,
+  Calendar as CalIcon, Sparkles, Check, HelpCircle, X, MessageCircle, Users, Bookmark,
 } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { useFirestore } from '@/hooks/useFirestore'
@@ -97,7 +97,7 @@ export function CommandCenter() {
 
   const { data: members, update: updateMember } = useFirestore<FamilyMember>('members')
   const { data: localEvents } = useFirestore<CalendarEvent>('events')
-  const { data: tasks, update: updateTask } = useFirestore<Task>('tasks')
+  const { data: tasks, update: updateTask, create: createTask } = useFirestore<Task>('tasks')
   const { data: reminders, update: updateReminder } = useFirestore<FamilyReminder>('reminders')
   const { data: chores } = useFirestore<Chore>('chores')
   const { data: plans } = useFirestore<Plan>('plans')
@@ -546,6 +546,20 @@ export function CommandCenter() {
     if (r2) await updateReminder({ ...r2, isCompleted: true, completedAt: now })
   }
 
+  async function saveItemAsTask(title: string, detail?: string) {
+    if (!familyId) return
+    await createTask({
+      id: generateId(),
+      title,
+      notes: detail,
+      isCompleted: false,
+      priority: 'high',
+      source: 'ai',
+      createdAt: new Date().toISOString(),
+    } as Task)
+    toast(`Saved "${title}" as a task`, 'success')
+  }
+
   // Save one clarification, then immediately re-run the engine with it included.
   async function saveClarification(c: CalendarClarification) {
     const answer = clarificationAnswers[c.id]?.trim()
@@ -896,6 +910,7 @@ export function CommandCenter() {
                           forMembers={forMembers}
                           onComplete={() => completeTaskFromItem(item)}
                           onDismiss={() => dismissItem(item.title)}
+                          onSaveTask={() => saveItemAsTask(item.title, item.reason)}
                           onAssign={(f, r) => assignItem(item, f, r)}
                           onAddContext={(context) => {
                             // Re-run the engine with the added context so it appears immediately
@@ -936,8 +951,8 @@ export function CommandCenter() {
                   key={p.id}
                   problem={p}
                   onCapture={(text) => openCapture({ text, autoAnalyze: true })}
-                  onCopilot={() => router.push('/copilot')}
                   onCalendar={() => router.push('/calendar')}
+                  onSaveTask={() => saveItemAsTask(p.title, p.detail)}
                   onDismiss={() => dismissItem(p.title)}
                 />
               ))}
@@ -1036,25 +1051,32 @@ export function CommandCenter() {
 function ProblemCard({
   problem: p,
   onCapture,
-  onCopilot,
   onCalendar,
+  onSaveTask,
   onDismiss,
 }: {
   problem: PotentialProblem
   onCapture: (text: string) => void
-  onCopilot: () => void
   onCalendar: () => void
+  onSaveTask: () => void
   onDismiss: () => void
 }) {
+  const [saved, setSaved] = useState(false)
   const severityBg = p.severity === 'high' ? '#fee2e2' : p.severity === 'medium' ? '#ffedd5' : '#fef9c3'
   const severityColor = p.severity === 'high' ? '#dc2626' : p.severity === 'medium' ? '#ea580c' : '#a16207'
   const borderColor = p.severity === 'high' ? '#dc2626' : p.severity === 'medium' ? '#f97316' : '#eab308'
-  const actionText = p.suggestedAction ? `${p.title}. ${p.suggestedAction}` : p.title
+  const actionText = p.suggestedAction ? `${p.title}. ${p.detail}` : p.title
 
   function handleAction() {
     if (p.actionType === 'calendar') { onCalendar(); return }
-    if (p.actionType === 'capture') { onCapture(actionText); return }
-    onCopilot() // default: open Copilot to discuss / handle it
+    // For capture and copilot types, use Capture pre-filled so the AI can create
+    // the right item (event, task, or reminder) based on what's needed.
+    onCapture(actionText)
+  }
+
+  function handleSave() {
+    setSaved(true)
+    onSaveTask()
   }
 
   return (
@@ -1066,10 +1088,23 @@ function ProblemCard({
         <div className="flex-1 min-w-0">
           <p className="text-sm font-semibold text-slate-900">{p.title}</p>
           <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">{p.detail}</p>
+          {p.sourceEmailId && (
+            <a
+              href={`https://mail.google.com/mail/u/0/#inbox/${p.sourceEmailId}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 mt-1 text-[11px] font-medium text-blue-600 hover:text-blue-800 hover:underline"
+            >
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor" className="shrink-0">
+                <path d="M20 18h-2V9.25L12 13 6 9.25V18H4V6h1.2l6.8 4.25L18.8 6H20v12z"/>
+              </svg>
+              View email
+            </a>
+          )}
           {p.suggestedAction && (
             <button
               onClick={handleAction}
-              className="inline-flex items-center gap-1.5 text-xs text-blue-600 hover:text-blue-700 mt-2 font-medium group"
+              className="inline-flex items-center gap-1.5 text-xs text-blue-600 hover:text-blue-700 mt-2 font-medium"
             >
               <MessageCircle size={11} className="shrink-0" />
               {p.suggestedAction}
@@ -1083,6 +1118,15 @@ function ProblemCard({
           >
             {p.severity}
           </span>
+          <button
+            onClick={handleSave}
+            disabled={saved}
+            className="p-1.5 rounded-lg transition-colors"
+            style={{ color: saved ? '#22c55e' : '#cbd5e1' }}
+            title={saved ? 'Saved as task' : 'Save as task'}
+          >
+            <Bookmark size={14} fill={saved ? 'currentColor' : 'none'} />
+          </button>
           <button
             onClick={onDismiss}
             className="p-1.5 rounded-lg text-slate-300 hover:text-slate-500 hover:bg-slate-50 transition-colors"
@@ -1124,7 +1168,7 @@ function SectionLabel({ icon: Icon, color, children }: { icon: typeof Clock; col
 }
 
 function AttentionCard({
-  item, accent, allMembers, responsible, forMembers, onComplete, onDismiss, onAddContext, onAssign,
+  item, accent, allMembers, responsible, forMembers, onComplete, onDismiss, onSaveTask, onAddContext, onAssign,
 }: {
   item: AttentionItem
   accent: string
@@ -1133,10 +1177,12 @@ function AttentionCard({
   forMembers: FamilyMember[]
   onComplete: () => void
   onDismiss: () => void
+  onSaveTask: () => void
   onAddContext: (context: string) => void
   onAssign: (forIds: string[], responsibleId?: string) => void
 }) {
   const [done, setDone] = useState(false)
+  const [saved, setSaved] = useState(false)
   const [expanded, setExpanded] = useState(false)
   const [assigning, setAssigning] = useState(false)
   const [contextDraft, setContextDraft] = useState('')
@@ -1247,6 +1293,15 @@ function AttentionCard({
             title="Add context"
           >
             <HelpCircle size={14} />
+          </button>
+          <button
+            onClick={() => { setSaved(true); onSaveTask() }}
+            disabled={saved}
+            className="p-1.5 rounded-lg transition-colors"
+            style={{ color: saved ? '#22c55e' : '#cbd5e1' }}
+            title={saved ? 'Saved as task' : 'Save as task'}
+          >
+            <Bookmark size={14} fill={saved ? 'currentColor' : 'none'} />
           </button>
           <button
             onClick={onDismiss}

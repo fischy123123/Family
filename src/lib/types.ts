@@ -200,6 +200,7 @@ export interface PotentialProblem {
   suggestedAction?: string
   actionType?: 'copilot' | 'capture' | 'calendar'
   relatedDate?: string
+  sourceEmailId?: string        // Gmail message ID — present when problem derives from an inbox email
 }
 
 export interface Recommendation {

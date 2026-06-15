@@ -75,7 +75,8 @@ Given the family context, produce a JSON report with this exact shape:
       "detail": "explanation",
       "severity": "low" | "medium" | "high",
       "suggestedAction": "what to do about it (optional)",
-      "relatedDate": "ISO date (optional)"
+      "relatedDate": "ISO date (optional)",
+      "sourceEmailId": "if this problem derives from an inbox signal with a [msgid:ID] label, copy that ID here verbatim (omit otherwise)"
     }
   ],
   "recommendations": [
