@@ -1,13 +1,21 @@
 'use client'
 
-import { createContext, useContext, useState, useCallback, useRef } from 'react'
-import { X, Sparkles, Camera, Loader2, Check, Calendar, ShoppingCart, ListTodo, Brain, CornerUpRight, Plane } from 'lucide-react'
+import { createContext, useContext, useState, useCallback, useRef, useEffect } from 'react'
+import { X, Sparkles, Camera, Loader2, Check, Calendar, ShoppingCart, ListTodo, Brain, CornerUpRight, Plane, ChevronDown } from 'lucide-react'
 import { useFamily } from '@/contexts/FamilyContext'
 import { useFirestore } from '@/hooks/useFirestore'
 import { useToast } from '@/contexts/ToastContext'
+import { useGoogleTokens } from '@/hooks/useGoogleTokens'
 import { generateId } from '@/lib/utils'
 import { MicButton } from '@/components/ui/MicButton'
 import type { FamilyMember, Task, CalendarEvent, SmartList, ExtractedOutcome, FamilyMemory } from '@/lib/types'
+
+interface GCalendar {
+  id: string
+  name: string
+  primary: boolean
+  backgroundColor?: string
+}
 
 interface CaptureContextValue {
   open: (opts?: { text?: string; autoAnalyze?: boolean }) => void
@@ -34,6 +42,10 @@ export function CaptureProvider({ children }: { children: React.ReactNode }) {
   const [summary, setSummary] = useState('')
   const [outcomes, setOutcomes] = useState<ExtractedOutcome[]>([])
   const [applied, setApplied] = useState<Set<number>>(new Set())
+  // Calendar picker: null = not yet loaded; [] = not connected
+  const [calendars, setCalendars] = useState<GCalendar[] | null>(null)
+  // Per-outcome selected calendar id (default: primary)
+  const [calendarSelections, setCalendarSelections] = useState<Record<number, string>>({})
   const fileRef = useRef<HTMLInputElement>(null)
 
   const { data: members } = useFirestore<FamilyMember>('members')
@@ -42,6 +54,38 @@ export function CaptureProvider({ children }: { children: React.ReactNode }) {
   const { data: lists, update: updateList, create: createList } = useFirestore<SmartList>('lists')
   const { create: createMemory } = useFirestore<FamilyMemory>('memories')
   const { toast } = useToast()
+  const { isConnected, getFreshTokens } = useGoogleTokens()
+
+  // Fetch writable Google Calendars once when connected and the panel opens.
+  // Cached in state so reopening the panel within the same session is instant.
+  useEffect(() => {
+    if (!isOpen || !isConnected || calendars !== null) return
+    ;(async () => {
+      try {
+        const tokens = await getFreshTokens()
+        if (!tokens) return
+        const res = await fetch(
+          `/api/calendar/calendars?accessToken=${encodeURIComponent(tokens.accessToken)}&refreshToken=${encodeURIComponent(tokens.refreshToken)}`
+        )
+        const data = await res.json()
+        if (res.ok && Array.isArray(data.calendars)) {
+          setCalendars(data.calendars)
+          // Default each event outcome to the primary calendar
+          const primary = data.calendars.find((c: GCalendar) => c.primary)?.id ?? data.calendars[0]?.id
+          if (primary) {
+            setCalendarSelections((prev) => {
+              const next = { ...prev }
+              outcomes.forEach((o, i) => {
+                if (o.kind === 'event' && !next[i]) next[i] = primary
+              })
+              return next
+            })
+          }
+        }
+      } catch { /* non-fatal — user can still add to Firestore */ }
+    })()
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen, isConnected])
 
   const open = useCallback((opts?: { text?: string; autoAnalyze?: boolean }) => {
     const prefill = opts?.text ?? ''
@@ -51,6 +95,7 @@ export function CaptureProvider({ children }: { children: React.ReactNode }) {
     setSummary('')
     setOutcomes([])
     setApplied(new Set())
+    setCalendarSelections({})
 
     // If pre-filled text is provided and autoAnalyze is requested, immediately
     // call the extraction API so the user sees results right away.
@@ -111,10 +156,22 @@ export function CaptureProvider({ children }: { children: React.ReactNode }) {
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error ?? 'Extraction failed')
+      const newOutcomes: ExtractedOutcome[] = data.outcomes ?? []
       setSummary(data.summary ?? '')
-      setOutcomes(data.outcomes ?? [])
-      if ((data.outcomes ?? []).length === 0) {
+      setOutcomes(newOutcomes)
+      if (newOutcomes.length === 0) {
         toast('Nothing actionable found', 'info')
+      }
+      // Pre-select the primary calendar for any event outcomes
+      if (newOutcomes.some((o) => o.kind === 'event') && calendars?.length) {
+        const primary = calendars.find((c) => c.primary)?.id ?? calendars[0]?.id
+        if (primary) {
+          setCalendarSelections((prev) => {
+            const next = { ...prev }
+            newOutcomes.forEach((o, i) => { if (o.kind === 'event' && !next[i]) next[i] = primary })
+            return next
+          })
+        }
       }
     } catch (e: unknown) {
       toast(e instanceof Error ? e.message : 'Extraction failed', 'error')
@@ -140,6 +197,46 @@ export function CaptureProvider({ children }: { children: React.ReactNode }) {
       } else if (o.kind === 'event') {
         const start = o.date ?? new Date().toISOString()
         const end = new Date(new Date(start).getTime() + 60 * 60 * 1000).toISOString()
+        const selectedCalendarId = calendarSelections[idx] ?? 'primary'
+
+        if (isConnected) {
+          // Add directly to Google Calendar so it syncs across all the user's devices.
+          const tokens = await getFreshTokens()
+          if (tokens) {
+            await fetch('/api/calendar/events', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                accessToken: tokens.accessToken,
+                refreshToken: tokens.refreshToken,
+                event: {
+                  title: o.title,
+                  start,
+                  end,
+                  isAllDay: false,
+                  notes: o.notes ?? '',
+                  calendarId: selectedCalendarId,
+                },
+              }),
+            })
+            // Also write to Firestore so the family sees it immediately without
+            // waiting for the next calendar sync.
+            await createEvent({
+              id: generateId(),
+              title: o.title,
+              start,
+              end,
+              isAllDay: false,
+              notes: o.notes ?? '',
+              calendarId: selectedCalendarId,
+              ownerEmail: o.assigneeEmail ?? '',
+              color: '#8B5CF6',
+              source: 'google',
+            } as CalendarEvent)
+            return
+          }
+        }
+        // Fallback: save to Firestore only
         await createEvent({
           id: generateId(),
           title: o.title,
@@ -147,10 +244,10 @@ export function CaptureProvider({ children }: { children: React.ReactNode }) {
           end,
           isAllDay: false,
           notes: o.notes ?? '',
-          calendarId: 'primary',
+          calendarId: selectedCalendarId,
           ownerEmail: o.assigneeEmail ?? '',
           color: '#8B5CF6',
-        })
+        } as CalendarEvent)
       } else if (o.kind === 'shopping_item' || o.kind === 'packing_item') {
         const kind = o.kind === 'packing_item' ? 'packing' : 'grocery'
         let target = lists.find((l) => l.kind === kind)
@@ -254,35 +351,64 @@ export function CaptureProvider({ children }: { children: React.ReactNode }) {
                       const meta = OUTCOME_META[o.kind] ?? OUTCOME_META.task
                       const Icon = meta.icon
                       const isApplied = applied.has(i)
+                      const isEventKind = o.kind === 'event'
+                      const selectedCalId = calendarSelections[i]
+                      const selectedCal = calendars?.find((c) => c.id === selectedCalId)
                       return (
                         <div
                           key={i}
-                          className="flex items-center gap-3 p-3 rounded-xl border border-slate-100 bg-white shadow-card"
+                          className="rounded-xl border border-slate-100 bg-white shadow-card overflow-hidden"
                           style={{ borderLeftWidth: 3, borderLeftColor: meta.color }}
                         >
-                          <div className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0" style={{ background: `${meta.color}18` }}>
-                            <Icon size={15} style={{ color: meta.color }} />
+                          <div className="flex items-center gap-3 p-3">
+                            <div className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0" style={{ background: `${meta.color}18` }}>
+                              <Icon size={15} style={{ color: meta.color }} />
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm font-medium text-slate-800 truncate">{o.title}</p>
+                              <p className="text-xs text-slate-400">
+                                {meta.label}
+                                {o.date ? ` · ${new Date(o.date).toLocaleDateString()}` : ''}
+                                {o.assigneeEmail ? ` · ${members.find((m) => m.email === o.assigneeEmail)?.name ?? o.assigneeEmail}` : ''}
+                              </p>
+                            </div>
+                            <button
+                              onClick={() => applyOutcome(o, i)}
+                              disabled={isApplied}
+                              className="shrink-0 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors"
+                              style={
+                                isApplied
+                                  ? { background: '#dcfce7', color: '#16a34a' }
+                                  : { background: meta.color, color: 'white' }
+                              }
+                            >
+                              {isApplied ? <Check size={14} /> : 'Add'}
+                            </button>
                           </div>
-                          <div className="flex-1 min-w-0">
-                            <p className="text-sm font-medium text-slate-800 truncate">{o.title}</p>
-                            <p className="text-xs text-slate-400">
-                              {meta.label}
-                              {o.date ? ` · ${new Date(o.date).toLocaleDateString()}` : ''}
-                              {o.assigneeEmail ? ` · ${members.find((m) => m.email === o.assigneeEmail)?.name ?? o.assigneeEmail}` : ''}
-                            </p>
-                          </div>
-                          <button
-                            onClick={() => applyOutcome(o, i)}
-                            disabled={isApplied}
-                            className="shrink-0 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors"
-                            style={
-                              isApplied
-                                ? { background: '#dcfce7', color: '#16a34a' }
-                                : { background: meta.color, color: 'white' }
-                            }
-                          >
-                            {isApplied ? <Check size={14} /> : 'Add'}
-                          </button>
+                          {/* Calendar picker — only for event outcomes when Google is connected */}
+                          {isEventKind && isConnected && calendars && calendars.length > 1 && !isApplied && (
+                            <div className="px-3 pb-3 -mt-1">
+                              <div className="relative">
+                                <select
+                                  value={selectedCalId ?? ''}
+                                  onChange={(e) => setCalendarSelections((prev) => ({ ...prev, [i]: e.target.value }))}
+                                  className="w-full text-xs pl-2.5 pr-7 py-1.5 rounded-lg border border-slate-200 bg-slate-50 text-slate-600 appearance-none focus:outline-none focus:border-blue-300"
+                                >
+                                  {calendars.map((c) => (
+                                    <option key={c.id} value={c.id}>
+                                      {c.name}{c.primary ? ' (default)' : ''}
+                                    </option>
+                                  ))}
+                                </select>
+                                <ChevronDown size={12} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+                              </div>
+                              {selectedCal && (
+                                <p className="text-[10px] text-slate-400 mt-1">
+                                  Adding to <span className="font-medium">{selectedCal.name}</span>
+                                </p>
+                              )}
+                            </div>
+                          )}
                         </div>
                       )
                     })}

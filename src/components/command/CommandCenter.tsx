@@ -60,6 +60,11 @@ const ATTN_PREFIX = 'fam-attn-'
 const GCAL_PREFIX = 'fam-gcal-'
 const CLAR_PREFIX = 'fam-clar-'
 const GMAIL_PREFIX = 'fam-gmail-'
+const LAST_RUN_PREFIX = 'fam-lastrun-'
+
+// 5-minute throttle: if nothing has changed, don't re-run the attention engine
+// just because the user navigated back to the screen or reopened the PWA.
+const ENGINE_THROTTLE_MS = 5 * 60 * 1000
 
 function readCache<T>(key: string | null): T | null {
   if (!key) return null
@@ -105,6 +110,7 @@ export function CommandCenter() {
   const gcalKey = familyId ? GCAL_PREFIX + familyId : null
   const clarKey = familyId ? CLAR_PREFIX + familyId : null
   const gmailKey = familyId ? GMAIL_PREFIX + familyId : null
+  const lastRunKey = familyId ? LAST_RUN_PREFIX + familyId : null
 
   const [report, setReport] = useState<AttentionReport | null>(null)
   const [engineError, setEngineError] = useState<string | null>(null)
@@ -162,8 +168,12 @@ export function CommandCenter() {
     if (em?.length) setEmailSuggestions(em)
     const dism = readCache<string[]>(dismissKey)
     if (dism?.length) setDismissedTitles(new Set(dism))
+    // Restore when the engine last ran so reopening the PWA within the throttle
+    // window doesn't re-run the engine if nothing has changed.
+    const savedLastRun = readCache<number>(lastRunKey)
+    if (savedLastRun) lastRun.current = savedLastRun
     setHydrated(true)
-  }, [familyId, attnKey, gcalKey, clarKey, gmailKey, dismissKey])
+  }, [familyId, attnKey, gcalKey, clarKey, gmailKey, dismissKey, lastRunKey])
 
   // Scan Gmail for actionable items — once per session, using the main Google
   // connection's token (it already includes the gmail.readonly scope). Results
@@ -365,6 +375,9 @@ export function CommandCenter() {
         setReport(data)
         setEngineError(null)
         writeCache(attnKey, data)
+        // Persist so the PWA reopening within the throttle window skips a
+        // pointless re-run when nothing has changed.
+        writeCache(lastRunKey, lastRun.current)
 
         // Pass 2 — DEEP (Opus): silently sharpen the prioritization and update in
         // place. Not awaited so the fast result shows immediately. Guarded by the
@@ -415,7 +428,7 @@ export function CommandCenter() {
     if (isConnected && !googleLoaded && events.length === 0) return
     if (members.length === 0 && events.length === 0 && tasks.length === 0) return
     const now = Date.now()
-    if (now - lastRun.current < 60000) return
+    if (now - lastRun.current < ENGINE_THROTTLE_MS) return
     lastRun.current = now
     runEngine(undefined, !!report)
     // eslint-disable-next-line react-hooks/exhaustive-deps

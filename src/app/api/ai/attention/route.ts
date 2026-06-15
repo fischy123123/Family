@@ -86,15 +86,17 @@ Given the family context, produce a JSON report with this exact shape:
   ]
 }
 
-Bucket guidance:
-- "now": needs action in the next ~1 hour, or is happening imminently
-- "next": needs attention in the next few hours
-- "later": should happen later today
-- "upcoming": future days that need preparation now
+Bucket guidance — ALWAYS verify the actual date before assigning a bucket:
+- "now": happening or due within the next ~1 hour (must be confirmed as TODAY in UPCOMING EVENTS)
+- "next": happening or due in the next 2–4 hours (must be confirmed as TODAY in UPCOMING EVENTS)
+- "later": happening later TODAY only — only assign this bucket if you can confirm the event appears in UPCOMING EVENTS with today's date
+- "upcoming": anything on a FUTURE DATE (tomorrow or beyond); use this for inbox signals too
+
+CRITICAL — Inbox signals and memories do NOT have confirmed dates unless the event also appears in UPCOMING EVENTS. If something comes only from the INBOX or from MEMORY (not from UPCOMING EVENTS), do NOT assign it a "now", "next", or "later" bucket based on a time mentioned in the text (e.g. "therapy at 2:00 PM" might be Wednesday, not today). Use "upcoming" for all inbox signals that lack a calendar entry, and flag them in "problems" as not yet on the calendar.
 
 Rules:
 - Return 0-8 items, ordered by priority (highest first within natural reading order). Most should be informational awareness; few should be hard instructions.
-- "problems" are for genuine risks/conflicts/gaps worth flagging — not routine reminders. Return 0-4, and none if things look fine.
+- "problems" are for genuine risks/conflicts/gaps worth flagging — not routine reminders. Return 0-4, and none if things look fine. IMPORTANT: if an inbox signal or memory mentions a specific appointment/event with a date/time that does NOT appear in UPCOMING EVENTS, flag it as a problem with suggestedAction "Add to calendar" and actionType "capture".
 - "recommendations" are optional, low-pressure ideas that reduce future stress. Return 0-3. Do not invent busywork; if there's nothing genuinely helpful, return an empty array.
 - Honor the family's preferred tone and quiet hours from the FAMILY PROFILE.
 - If the family has little data, give a warm greeting and ONE gentle recommendation to tell you about themselves or connect their calendar — never a wall of setup tasks.
