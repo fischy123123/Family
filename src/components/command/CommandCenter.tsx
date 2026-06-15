@@ -142,8 +142,10 @@ export function CommandCenter() {
   const [contextSaved, setContextSaved] = useState<{ eventTitle: string; context: string } | null>(null)
   // Optimistic assignment overrides keyed by item title, so the "for" / responsible
   // chips update instantly on assign without waiting for the engine to re-run.
+  // Keyed by member ID (not email) because kids/pets often have no email — emails
+  // collide on '' and would select multiple members at once.
   const [assignmentOverrides, setAssignmentOverrides] = useState<
-    Record<string, { assigneeEmail?: string; forEmails?: string[] }>
+    Record<string, { responsibleId?: string; forIds?: string[] }>
   >({})
 
   // Hydrate everything from cache the moment the family id is known, so a
@@ -448,23 +450,26 @@ export function CommandCenter() {
     return () => clearTimeout(t)
   }, [contextSaved])
 
-  // Assign an item to people. Two-sided: `forEmails` is who it concerns (e.g. the
-  // kids); `responsibleEmail` is who handles it (e.g. a parent). We persist this
-  // three ways so it sticks across engine re-runs:
+  // Assign an item to people. Two-sided: `forIds` is who it concerns (e.g. the
+  // kids); `responsibleId` is who handles it (e.g. a parent). Keyed by member ID
+  // because kids/pets often have no email. We persist this three ways so it sticks
+  // across engine re-runs:
   //  1. Optimistic on-screen override so the chips update instantly.
   //  2. Update the underlying task/reminder's assigneeEmail (the responsible person).
   //  3. A family-wide memory capturing the full nuance, deduped per item title,
   //     so the AI re-emits the assignment on every future briefing.
-  async function assignItem(item: AttentionItem, forEmails: string[], responsibleEmail?: string) {
+  async function assignItem(item: AttentionItem, forIds: string[], responsibleId?: string) {
     setAssignmentOverrides((prev) => ({
       ...prev,
-      [item.title]: { assigneeEmail: responsibleEmail, forEmails },
+      [item.title]: { responsibleId, forIds },
     }))
 
-    const nameFor = (email?: string) =>
-      members.find((m) => m.email?.toLowerCase() === email?.toLowerCase())?.name ?? email
-    const forNames = forEmails.map((e) => nameFor(e)).filter(Boolean).join(', ')
-    const respName = responsibleEmail ? nameFor(responsibleEmail) : ''
+    const memberById = (id?: string) => members.find((m) => m.id === id)
+    const forMembers = forIds.map(memberById).filter(Boolean) as FamilyMember[]
+    const responsible = memberById(responsibleId)
+    const forNames = forMembers.map((m) => m.name).join(', ')
+    const respName = responsible?.name ?? ''
+    const responsibleEmail = responsible?.email
 
     // 2. Update underlying task/reminder assignee, if this item maps to one.
     if (responsibleEmail) {
@@ -852,20 +857,27 @@ export function CommandCenter() {
                   </div>
                   <div className="space-y-2 stagger-children">
                     {items.map((item) => {
-                      // Apply any optimistic assignment override the user just made.
+                      // Resolve who it's for / who's responsible. A user override
+                      // (keyed by member id) wins; otherwise fall back to the AI's
+                      // email-based assignment.
                       const ov = assignmentOverrides[item.title]
-                      const assigneeEmail = ov?.assigneeEmail ?? item.assigneeEmail
-                      const forEmails = ov?.forEmails ?? item.forEmails ?? []
-                      const findMember = (email?: string) =>
-                        members.find((m) => m.email?.toLowerCase() === email?.toLowerCase())
+                      const byEmail = (email?: string) =>
+                        email ? members.find((m) => m.email?.toLowerCase() === email.toLowerCase()) : undefined
+                      const byId = (id?: string) => members.find((m) => m.id === id)
+                      const responsible = ov
+                        ? byId(ov.responsibleId)
+                        : byEmail(item.assigneeEmail)
+                      const forMembers = ov
+                        ? (ov.forIds ?? []).map(byId).filter(Boolean) as FamilyMember[]
+                        : (item.forEmails ?? []).map(byEmail).filter(Boolean) as FamilyMember[]
                       return (
                         <AttentionCard
                           key={item.id}
                           item={item}
                           accent={meta.color}
                           allMembers={members}
-                          responsible={findMember(assigneeEmail)}
-                          forMembers={forEmails.map(findMember).filter(Boolean) as FamilyMember[]}
+                          responsible={responsible}
+                          forMembers={forMembers}
                           onComplete={() => completeTaskFromItem(item)}
                           onDismiss={() => dismissItem(item.title)}
                           onAssign={(f, r) => assignItem(item, f, r)}
@@ -1103,7 +1115,7 @@ function AttentionCard({
   onComplete: () => void
   onDismiss: () => void
   onAddContext: (context: string) => void
-  onAssign: (forEmails: string[], responsibleEmail?: string) => void
+  onAssign: (forIds: string[], responsibleId?: string) => void
 }) {
   const [done, setDone] = useState(false)
   const [expanded, setExpanded] = useState(false)
@@ -1217,8 +1229,8 @@ function AttentionCard({
       {assigning && (
         <AssignPanel
           allMembers={allMembers}
-          initialFor={forMembers.map((m) => m.email)}
-          initialResponsible={responsible?.email}
+          initialFor={forMembers.map((m) => m.id)}
+          initialResponsible={responsible?.id}
           onCancel={() => setAssigning(false)}
           onSave={(f, r) => { onAssign(f, r); setAssigning(false) }}
         />
@@ -1262,16 +1274,16 @@ function AssignPanel({
   allMembers, initialFor, initialResponsible, onCancel, onSave,
 }: {
   allMembers: FamilyMember[]
-  initialFor: string[]
-  initialResponsible?: string
+  initialFor: string[]                                  // member IDs
+  initialResponsible?: string                           // member ID
   onCancel: () => void
-  onSave: (forEmails: string[], responsibleEmail?: string) => void
+  onSave: (forIds: string[], responsibleId?: string) => void  // member IDs
 }) {
-  const [forEmails, setForEmails] = useState<string[]>(initialFor)
+  const [forIds, setForIds] = useState<string[]>(initialFor)
   const [responsible, setResponsible] = useState<string | undefined>(initialResponsible)
 
-  const toggleFor = (email: string) =>
-    setForEmails((prev) => (prev.includes(email) ? prev.filter((e) => e !== email) : [...prev, email]))
+  const toggleFor = (id: string) =>
+    setForIds((prev) => (prev.includes(id) ? prev.filter((e) => e !== id) : [...prev, id]))
 
   const Chip = ({ m, selected, onClick }: { m: FamilyMember; selected: boolean; onClick: () => void }) => (
     <button
@@ -1298,7 +1310,7 @@ function AssignPanel({
         <p className="text-xs font-medium text-slate-600 mb-1.5">Who&apos;s this for?</p>
         <div className="flex flex-wrap gap-1.5">
           {allMembers.map((m) => (
-            <Chip key={m.id} m={m} selected={forEmails.includes(m.email)} onClick={() => toggleFor(m.email)} />
+            <Chip key={m.id} m={m} selected={forIds.includes(m.id)} onClick={() => toggleFor(m.id)} />
           ))}
         </div>
       </div>
@@ -1311,8 +1323,8 @@ function AssignPanel({
               <Chip
                 key={m.id}
                 m={m}
-                selected={responsible === m.email}
-                onClick={() => setResponsible((prev) => (prev === m.email ? undefined : m.email))}
+                selected={responsible === m.id}
+                onClick={() => setResponsible((prev) => (prev === m.id ? undefined : m.id))}
               />
             ))}
         </div>
@@ -1325,8 +1337,8 @@ function AssignPanel({
           Cancel
         </button>
         <button
-          onClick={() => onSave(forEmails, responsible)}
-          disabled={forEmails.length === 0 && !responsible}
+          onClick={() => onSave(forIds, responsible)}
+          disabled={forIds.length === 0 && !responsible}
           className="px-3 py-1.5 rounded-lg text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-40 transition-colors"
         >
           Save assignment
