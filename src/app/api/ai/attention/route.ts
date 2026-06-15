@@ -94,6 +94,8 @@ Bucket guidance — ALWAYS verify the actual date before assigning a bucket:
 
 CRITICAL — Inbox signals and memories do NOT have confirmed dates unless the event also appears in UPCOMING EVENTS. If something comes only from the INBOX or from MEMORY (not from UPCOMING EVENTS), do NOT assign it a "now", "next", or "later" bucket based on a time mentioned in the text (e.g. "therapy at 2:00 PM" might be Wednesday, not today). Use "upcoming" for all inbox signals that lack a calendar entry, and flag them in "problems" as not yet on the calendar.
 
+CRITICAL — Inbox signal dates are pre-verified as future dates (the system strips past events before sending them to you). However, ALWAYS verify an inbox signal's date makes sense relative to CURRENT TIME before surfacing it. If an email mentions "Thursday June 11" and today is June 15, that date is in the past — do NOT surface it. And do NOT infer a future date from a past-dated signal (do not assume "they probably meant next Thursday"). If an inbox signal's date is unclear or seems past, drop it silently.
+
 Rules:
 - Return 0-8 items, ordered by priority (highest first within natural reading order). Most should be informational awareness; few should be hard instructions.
 - "problems" are for genuine risks/conflicts/gaps worth flagging — not routine reminders. Return 0-4, and none if things look fine. IMPORTANT: if an inbox signal or memory mentions a specific appointment/event with a date/time that does NOT appear in UPCOMING EVENTS, flag it as a problem with suggestedAction "Add to calendar" and actionType "capture".

@@ -104,7 +104,16 @@ ${emails.map((e) => `Subject: ${e.subject}\nSnippet: ${e.snippet}`).join('\n---\
 
   const text = response.content[0].type === 'text' ? response.content[0].text : '[]'
   const match = text.match(/\[[\s\S]*\]/)
-  const suggestions = match ? JSON.parse(match[0]) : []
+  const raw: Array<{ date?: string | null; confidence?: number; [key: string]: unknown }> = match ? JSON.parse(match[0]) : []
+
+  // Drop suggestions with dates that have already passed — stale appointment
+  // reminders are noise and cause the attention engine to misidentify past
+  // appointments as upcoming problems.
+  const today = new Date().toISOString().split('T')[0]
+  const suggestions = raw.filter((s) => {
+    if (!s.date) return true            // no date = timeless signal, keep it
+    return s.date >= today              // only keep future or today's dates
+  })
 
   return NextResponse.json({ suggestions })
 }

@@ -276,9 +276,14 @@ export function buildFamilyContext(input: FamilyContextInput): string {
     )
   }
 
-  if (inbox?.length) {
+  // Filter out inbox signals with dates that have already passed — stale
+  // appointment reminders are noise that confuse the attention engine.
+  const todayStr = nowDate.toISOString().split('T')[0]
+  const freshInbox = (inbox ?? []).filter((s) => !s.date || s.date >= todayStr)
+
+  if (freshInbox.length > 0) {
     sections.push(
-      `FROM THE INBOX (actionable items the assistant found in the family's email — treat these as RAW SIGNALS, not facts. Fold the genuinely relevant ones into your briefing the same way you would a calendar event or task; decide what's worth surfacing and what's noise. Do NOT list these separately or tell the user to "check their inbox" — just inform them of what matters):\n${inbox
+      `FROM THE INBOX (actionable items the assistant found in the family's email — treat these as RAW SIGNALS, not facts. Fold the genuinely relevant ones into your briefing the same way you would a calendar event or task; decide what's worth surfacing and what's noise. Do NOT list these separately or tell the user to "check their inbox" — just inform them of what matters):\n${freshInbox
         .map((s) => {
           const when = s.date ? ` — ${fmtDate(s.date, tz)}` : ''
           const note = s.notes ? ` (${s.notes})` : ''
@@ -288,6 +293,7 @@ export function buildFamilyContext(input: FamilyContextInput): string {
         .join('\n')}`
     )
   }
+
 
   if (eventContext?.length) {
     sections.push(
