@@ -13,6 +13,7 @@ import { useCapture } from '@/contexts/CaptureContext'
 import { useFamily } from '@/contexts/FamilyContext'
 import { ConnectGooglePrompt } from '@/components/dashboard/ConnectGooglePrompt'
 import { MicButton } from '@/components/ui/MicButton'
+import { generateId } from '@/lib/utils'
 import { BUCKET_META } from '@/lib/types'
 import type {
   FamilyMember, CalendarEvent, Task, Chore, Plan, SmartList,
@@ -88,7 +89,7 @@ export function CommandCenter() {
   const { data: chores } = useFirestore<Chore>('chores')
   const { data: plans } = useFirestore<Plan>('plans')
   const { data: lists } = useFirestore<SmartList>('lists')
-  const { data: memories } = useFirestore<FamilyMemory>('memories')
+  const { data: memories, create: createMemory } = useFirestore<FamilyMemory>('memories')
   const { data: profiles } = useFirestore<FamilyProfile>('profile')
   const { data: eventContexts, create: createEventContext } = useFirestore<EventContext>('eventContext')
 
@@ -114,6 +115,13 @@ export function CommandCenter() {
   const clarificationsFetched = useRef(false)
   const [emailSuggestions, setEmailSuggestions] = useState<EmailSuggestion[]>([])
   const emailFetched = useRef(false)
+  // Titles of items the user has dismissed this session. Persisted to localStorage
+  // so they survive a page refresh (cleared when a fresh briefing arrives).
+  const DISMISS_PREFIX = 'fam-dismissed-'
+  const dismissKey = familyId ? DISMISS_PREFIX + familyId : null
+  const [dismissedTitles, setDismissedTitles] = useState<Set<string>>(new Set())
+  // When a user dismisses something, offer to teach the assistant once.
+  const [teachPrompt, setTeachPrompt] = useState<{ title: string; reason: string } | null>(null)
 
   // Hydrate everything from cache the moment the family id is known, so a
   // returning visit paints a complete page on the first frame.
@@ -127,8 +135,10 @@ export function CommandCenter() {
     if (c?.length) setClarifications(c)
     const em = readCache<EmailSuggestion[]>(gmailKey)
     if (em?.length) setEmailSuggestions(em)
+    const dism = readCache<string[]>(dismissKey)
+    if (dism?.length) setDismissedTitles(new Set(dism))
     setHydrated(true)
-  }, [familyId, attnKey, gcalKey, clarKey, gmailKey])
+  }, [familyId, attnKey, gcalKey, clarKey, gmailKey, dismissKey])
 
   // Scan Gmail for actionable items — once per session, using the main Google
   // connection's token (it already includes the gmail.readonly scope). Results
@@ -357,6 +367,30 @@ export function CommandCenter() {
     runEngine(undefined, true)
   }
 
+  function dismissItem(title: string) {
+    setDismissedTitles((prev) => {
+      const next = new Set(prev).add(title)
+      writeCache(dismissKey, Array.from(next))
+      return next
+    })
+    // Surface the teach prompt briefly so they can give feedback
+    setTeachPrompt({ title, reason: '' })
+  }
+
+  async function teachAssistant(title: string, feedback: string) {
+    if (!feedback.trim()) { setTeachPrompt(null); return }
+    try {
+      await createMemory({
+        id: generateId(),
+        text: `User feedback: Don't surface "${title}" type of thing — ${feedback}`,
+        category: 'preference',
+        source: 'manual',
+        createdAt: new Date().toISOString(),
+      } as FamilyMemory)
+    } catch { /* non-fatal */ }
+    setTeachPrompt(null)
+  }
+
   const firstName = user?.displayName?.split(' ')[0] ?? 'there'
   const todayEvents = events
     .filter((e) => new Date(e.start).toDateString() === new Date().toDateString())
@@ -519,13 +553,22 @@ export function CommandCenter() {
         </div>
       )}
 
+      {/* Teach prompt — brief inline nudge when an item is dismissed */}
+      {teachPrompt && (
+        <TeachPrompt
+          title={teachPrompt.title}
+          onTeach={(feedback) => teachAssistant(teachPrompt.title, feedback)}
+          onDismiss={() => setTeachPrompt(null)}
+        />
+      )}
+
       {/* NEXT UP */}
       {report && (report.items?.length ?? 0) > 0 && (
         <section>
           <SectionLabel icon={Clock} color="#0f172a">Next Up</SectionLabel>
           <div className="space-y-4">
             {BUCKET_ORDER.map((bucket) => {
-              const items = itemsByBucket(bucket)
+              const items = itemsByBucket(bucket).filter((i) => !dismissedTitles.has(i.title))
               if (items.length === 0) return null
               const meta = BUCKET_META[bucket]
               return (
@@ -544,6 +587,21 @@ export function CommandCenter() {
                         accent={meta.color}
                         member={members.find((m) => m.email === item.assigneeEmail)}
                         onComplete={() => completeTaskFromItem(item)}
+                        onDismiss={() => dismissItem(item.title)}
+                        onAddContext={(context) => {
+                          // Re-run the engine with the added context so it appears immediately
+                          const merged = [
+                            ...eventContexts.map((e) => ({ eventTitle: e.eventTitle, context: e.context })),
+                            { eventTitle: item.title, context },
+                          ]
+                          createEventContext({
+                            id: generateId(),
+                            eventTitle: item.title,
+                            context,
+                            savedAt: new Date().toISOString(),
+                          } as EventContext)
+                          runEngine(merged, true)
+                        }}
                       />
                     ))}
                   </div>
@@ -559,15 +617,18 @@ export function CommandCenter() {
         <section>
           <SectionLabel icon={AlertTriangle} color="#dc2626">Potential Problems</SectionLabel>
           <div className="space-y-2 stagger-children">
-            {report.problems.map((p) => (
-              <ProblemCard
-                key={p.id}
-                problem={p}
-                onCapture={(text) => openCapture({ text, autoAnalyze: true })}
-                onCopilot={() => router.push('/copilot')}
-                onCalendar={() => router.push('/calendar')}
-              />
-            ))}
+            {report.problems
+              .filter((p) => !dismissedTitles.has(p.title))
+              .map((p) => (
+                <ProblemCard
+                  key={p.id}
+                  problem={p}
+                  onCapture={(text) => openCapture({ text, autoAnalyze: true })}
+                  onCopilot={() => router.push('/copilot')}
+                  onCalendar={() => router.push('/calendar')}
+                  onDismiss={() => dismissItem(p.title)}
+                />
+              ))}
           </div>
         </section>
       )}
@@ -577,28 +638,36 @@ export function CommandCenter() {
         <section>
           <SectionLabel icon={Lightbulb} color="#7c3aed">Copilot Recommendations</SectionLabel>
           <div className="space-y-2 stagger-children">
-            {report.recommendations.map((r) => (
-              <div key={r.id} className="rounded-2xl p-4 bg-white shadow-card animate-slide-up flex items-start gap-3">
-                <div className="w-8 h-8 rounded-lg bg-purple-50 flex items-center justify-center shrink-0">
-                  <Lightbulb size={15} className="text-purple-500" />
+            {report.recommendations
+              .filter((r) => !dismissedTitles.has(r.title))
+              .map((r) => (
+                <div key={r.id} className="rounded-2xl p-4 bg-white shadow-card animate-slide-up flex items-start gap-3">
+                  <div className="w-8 h-8 rounded-lg bg-purple-50 flex items-center justify-center shrink-0">
+                    <Lightbulb size={15} className="text-purple-500" />
+                  </div>
+                  <div className="flex-1">
+                    <p className="text-sm font-medium text-slate-900">{r.title}</p>
+                    <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">{r.rationale}</p>
+                  </div>
+                  <div className="flex items-start gap-1 shrink-0">
+                    {r.actionLabel && (
+                      <button
+                        onClick={() => openCapture({ text: `${r.title}. ${r.rationale}`, autoAnalyze: true })}
+                        className="mt-0.5 px-3 py-1.5 rounded-xl text-xs font-semibold text-white bg-gradient-to-r from-purple-600 to-purple-700 hover:from-purple-500 hover:to-purple-600 transition-all"
+                      >
+                        {r.actionLabel}
+                      </button>
+                    )}
+                    <button
+                      onClick={() => dismissItem(r.title)}
+                      className="p-1.5 rounded-lg text-slate-300 hover:text-slate-500 hover:bg-slate-100 transition-colors"
+                      title="Dismiss"
+                    >
+                      <X size={14} />
+                    </button>
+                  </div>
                 </div>
-                <div className="flex-1">
-                  <p className="text-sm font-medium text-slate-900">{r.title}</p>
-                  <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">{r.rationale}</p>
-                </div>
-                {r.actionLabel && (
-                  <button
-                    onClick={() => openCapture({
-                      text: `${r.title}. ${r.rationale}`,
-                      autoAnalyze: true,
-                    })}
-                    className="shrink-0 mt-0.5 px-3 py-1.5 rounded-xl text-xs font-semibold text-white bg-gradient-to-r from-purple-600 to-purple-700 hover:from-purple-500 hover:to-purple-600 transition-all"
-                  >
-                    {r.actionLabel}
-                  </button>
-                )}
-              </div>
-            ))}
+              ))}
           </div>
         </section>
       )}
@@ -654,11 +723,13 @@ function ProblemCard({
   onCapture,
   onCopilot,
   onCalendar,
+  onDismiss,
 }: {
   problem: PotentialProblem
   onCapture: (text: string) => void
   onCopilot: () => void
   onCalendar: () => void
+  onDismiss: () => void
 }) {
   const severityBg = p.severity === 'high' ? '#fee2e2' : p.severity === 'medium' ? '#ffedd5' : '#fef9c3'
   const severityColor = p.severity === 'high' ? '#dc2626' : p.severity === 'medium' ? '#ea580c' : '#a16207'
@@ -690,12 +761,21 @@ function ProblemCard({
             </button>
           )}
         </div>
-        <span
-          className="text-[10px] font-bold uppercase px-2 py-0.5 rounded-full shrink-0"
-          style={{ background: severityBg, color: severityColor }}
-        >
-          {p.severity}
-        </span>
+        <div className="flex items-center gap-1 shrink-0">
+          <span
+            className="text-[10px] font-bold uppercase px-2 py-0.5 rounded-full"
+            style={{ background: severityBg, color: severityColor }}
+          >
+            {p.severity}
+          </span>
+          <button
+            onClick={onDismiss}
+            className="p-1.5 rounded-lg text-slate-300 hover:text-slate-500 hover:bg-slate-50 transition-colors"
+            title="Dismiss"
+          >
+            <X size={14} />
+          </button>
+        </div>
       </div>
     </div>
   )
@@ -729,50 +809,146 @@ function SectionLabel({ icon: Icon, color, children }: { icon: typeof Clock; col
 }
 
 function AttentionCard({
-  item, accent, member, onComplete,
+  item, accent, member, onComplete, onDismiss, onAddContext,
 }: {
   item: AttentionItem
   accent: string
   member?: FamilyMember
   onComplete: () => void
+  onDismiss: () => void
+  onAddContext: (context: string) => void
 }) {
   const [done, setDone] = useState(false)
+  const [expanded, setExpanded] = useState(false)
+  const [contextDraft, setContextDraft] = useState('')
   const startStr = item.startBy
     ? new Date(item.startBy).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
     : null
 
+  function submitContext() {
+    const v = contextDraft.trim()
+    if (!v) return
+    onAddContext(v)
+    setContextDraft('')
+    setExpanded(false)
+  }
+
   return (
     <div
-      className="rounded-2xl p-4 bg-white shadow-card animate-slide-up flex items-start gap-3 transition-opacity"
+      className="rounded-2xl bg-white shadow-card animate-slide-up transition-opacity"
       style={{ borderLeft: `3px solid ${accent}`, opacity: done ? 0.5 : 1 }}
     >
-      {item.sourceType === 'task' && (
-        <button
-          onClick={() => { setDone(true); onComplete() }}
-          className="mt-0.5 w-5 h-5 rounded-md border-2 flex items-center justify-center shrink-0 transition-colors"
-          style={{ borderColor: done ? '#22c55e' : '#cbd5e1', background: done ? '#22c55e' : 'transparent' }}
-        >
-          {done && <Check size={12} className="text-white" />}
-        </button>
-      )}
-      <div className="flex-1 min-w-0">
-        <p className="text-sm font-semibold text-slate-900">{item.title}</p>
-        <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">{item.reason}</p>
-        <div className="flex items-center gap-2 mt-1.5 flex-wrap">
-          {startStr && (
-            <span className="inline-flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-full" style={{ background: `${accent}15`, color: accent }}>
-              <Clock size={10} /> Start by {startStr}
-            </span>
-          )}
-          {member && (
-            <span className="inline-flex items-center gap-1 text-[11px] text-slate-500">
-              <span className="w-4 h-4 rounded-full flex items-center justify-center text-[9px]" style={{ background: `${member.colorHex}25` }}>
-                {member.emoji}
+      <div className="flex items-start gap-3 p-4">
+        {(item.sourceType === 'task' || item.sourceType === 'reminder') && (
+          <button
+            onClick={() => { setDone(true); onComplete() }}
+            className="mt-0.5 w-5 h-5 rounded-md border-2 flex items-center justify-center shrink-0 transition-colors"
+            style={{ borderColor: done ? '#22c55e' : '#cbd5e1', background: done ? '#22c55e' : 'transparent' }}
+          >
+            {done && <Check size={12} className="text-white" />}
+          </button>
+        )}
+        <div className="flex-1 min-w-0">
+          <p className="text-sm font-semibold text-slate-900">{item.title}</p>
+          <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">{item.reason}</p>
+          <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+            {startStr && (
+              <span className="inline-flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-full" style={{ background: `${accent}15`, color: accent }}>
+                <Clock size={10} /> Start by {startStr}
               </span>
-              {member.name}
-            </span>
-          )}
+            )}
+            {member && (
+              <span className="inline-flex items-center gap-1 text-[11px] text-slate-500">
+                <span className="w-4 h-4 rounded-full flex items-center justify-center text-[9px]" style={{ background: `${member.colorHex}25` }}>
+                  {member.emoji}
+                </span>
+                {member.name}
+              </span>
+            )}
+          </div>
         </div>
+        <div className="flex gap-0.5 shrink-0">
+          <button
+            onClick={() => setExpanded((v) => !v)}
+            className="p-1.5 rounded-lg text-slate-300 hover:text-slate-500 hover:bg-slate-50 transition-colors"
+            title="Add context"
+          >
+            <HelpCircle size={14} />
+          </button>
+          <button
+            onClick={onDismiss}
+            className="p-1.5 rounded-lg text-slate-300 hover:text-slate-500 hover:bg-slate-50 transition-colors"
+            title="Dismiss"
+          >
+            <X size={14} />
+          </button>
+        </div>
+      </div>
+
+      {expanded && (
+        <div className="px-4 pb-4 border-t border-slate-50 pt-3">
+          <p className="text-xs text-slate-500 mb-2">Add context so the assistant understands this better:</p>
+          <div className="flex gap-2">
+            <input
+              value={contextDraft}
+              onChange={(e) => setContextDraft(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') submitContext() }}
+              placeholder={`e.g. "This is a work thing, not family"`}
+              className="flex-1 text-xs rounded-lg px-3 py-2 border border-slate-200 focus:outline-none focus:border-blue-300 bg-slate-50"
+              autoFocus
+            />
+            <MicButton
+              size={34}
+              onText={(spoken) => setContextDraft((p) => (p ? p.trim() + ' ' : '') + spoken)}
+            />
+            <button
+              onClick={submitContext}
+              disabled={!contextDraft.trim()}
+              className="shrink-0 px-3 py-2 rounded-lg text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-40 transition-colors"
+            >
+              Save
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function TeachPrompt({
+  title, onTeach, onDismiss,
+}: {
+  title: string
+  onTeach: (feedback: string) => void
+  onDismiss: () => void
+}) {
+  const [feedback, setFeedback] = useState('')
+  return (
+    <div className="rounded-2xl p-4 bg-slate-50 border border-slate-200 animate-slide-up">
+      <p className="text-xs font-medium text-slate-700 mb-2">
+        Want to teach your assistant not to show things like this?
+      </p>
+      <div className="flex gap-2 mb-2">
+        {["It's work-related, not family", "Not relevant to us", "Already handled"].map((opt) => (
+          <button
+            key={opt}
+            onClick={() => onTeach(opt)}
+            className="text-[11px] px-2.5 py-1.5 rounded-lg bg-white border border-slate-200 text-slate-600 hover:border-blue-300 hover:text-blue-700 transition-colors"
+          >
+            {opt}
+          </button>
+        ))}
+      </div>
+      <div className="flex gap-2">
+        <input
+          value={feedback}
+          onChange={(e) => setFeedback(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') onTeach(feedback) }}
+          placeholder="Or type your own reason…"
+          className="flex-1 text-xs rounded-lg px-3 py-2 border border-slate-200 focus:outline-none focus:border-blue-300 bg-white"
+        />
+        <button onClick={() => onTeach(feedback)} className="text-xs px-3 py-2 rounded-lg bg-blue-600 text-white font-medium hover:bg-blue-700 disabled:opacity-40 transition-colors" disabled={!feedback.trim()}>Save</button>
+        <button onClick={onDismiss} className="text-xs px-3 py-2 rounded-lg text-slate-400 hover:text-slate-600 transition-colors">Skip</button>
       </div>
     </div>
   )

@@ -50,23 +50,33 @@ export async function POST(request: NextRequest) {
     max_tokens: 2048,
     messages: [{
       role: 'user',
-      content: `You are a helpful family assistant. Review these recent email subjects and snippets.
-Extract anything a family should track, across these categories:
+      content: `You are a family assistant. Your job is to find things a FAMILY needs to track in their shared life.
 
-- appointments: doctor, dentist, school meetings, therapist, specialist visits
-- deliveries: Amazon, UPS, FedEx, USPS — extract expected delivery date from snippet
-- travel: flight confirmations, hotel bookings, rental cars — extract dates and confirmation numbers
-- school: newsletters with term dates, picture day, permission slips, school events
-- reservations: restaurants, activities, tickets, classes — extract date and time
-- bills: due dates for utilities, subscriptions, credit cards, rent
-- follow-ups: anything with a clear deadline or action needed by a specific date
+INCLUDE (only these categories):
+- Medical / health: doctor, dentist, therapist, specialist appointments, prescription pickups, test results
+- School: events, permission slips, picture day, term dates, teacher meetings, school newsletters with real dates
+- Deliveries: Amazon, UPS, FedEx, USPS packages — extract expected delivery date
+- Travel: flight confirmations, hotel bookings, car rentals — extract dates and confirmation numbers
+- Family activities: restaurants, events, tickets, kids' activities, classes with a specific date/time
+- Bills with an imminent due date: utilities, insurance, credit cards, rent (only if due within 2 weeks)
+- Important personal follow-ups with a clear deadline that affects the family
 
-Ignore: generic marketing/promotions, spam, newsletters without specific dates or actions, anything that isn't actionable.
+EXCLUDE EVERYTHING ELSE — be ruthless:
+- Anything work/professional: Vercel, GitHub, CI/CD, deployment notifications, code review, JIRA, Slack, enterprise SaaS
+- Security/auth emails: "verify your email", "sign in attempt", "2-factor", "unusual activity", password resets
+- Developer tools and services: any hosting, logging, monitoring, analytics, cloud platform notification
+- General marketing, promotions, sales, newsletters without a specific family action
+- Social media notifications
+- Receipts for past purchases (only future deliveries count)
+- Any automated system notification without a concrete family-relevant date or action
+- Work meetings, work conferences, professional events (only personal/family events count)
+
+THE TEST: would a stay-at-home parent with no work context find this useful for running the family? If no, exclude it.
 
 Return ONLY a valid JSON array — no markdown, no explanation, no code fences:
 [{
   "type": "event" | "reminder" | "delivery" | "travel" | "school",
-  "title": "concise title",
+  "title": "concise title (do not include work/tech jargon)",
   "date": "YYYY-MM-DD or null",
   "notes": "optional short note with key details",
   "confidence": 0.0-1.0,
@@ -79,11 +89,12 @@ Return ONLY a valid JSON array — no markdown, no explanation, no code fences:
 }]
 
 Rules:
-- Only include the "details" fields that are relevant for that item (omit empty/null fields within details)
+- Only include the "details" fields that are relevant (omit empty/null fields within details)
 - If details has no relevant fields, omit the details key entirely
-- Map bills and follow-ups to type "reminder", reservations to "event", school items to "school"
-- Confidence: 0.9+ for explicit dates/confirmed bookings, 0.6-0.8 for inferred, below 0.6 skip it
-- If nothing relevant found, return []
+- Map bills and personal follow-ups to type "reminder", reservations to "event", school items to "school"
+- Confidence: 0.9+ for explicit dates/confirmed bookings, 0.7-0.8 for inferred, below 0.7 skip it
+- When in doubt, leave it out. 3 high-quality signals beat 10 noisy ones.
+- If nothing passes the filter, return []
 
 Emails:
 ${emails.map((e) => `Subject: ${e.subject}\nSnippet: ${e.snippet}`).join('\n---\n')}`
