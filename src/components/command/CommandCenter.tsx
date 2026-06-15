@@ -124,6 +124,9 @@ export function CommandCenter() {
   const DISMISS_PREFIX = 'fam-dismissed-'
   const dismissKey = familyId ? DISMISS_PREFIX + familyId : null
   const [dismissedTitles, setDismissedTitles] = useState<Set<string>>(new Set())
+  // Titles checked off this session. Hidden from view immediately so the card
+  // disappears on tap, rather than waiting for the engine to re-run and drop it.
+  const [completedTitles, setCompletedTitles] = useState<Set<string>>(new Set())
   // When a user dismisses something, offer to teach the assistant once.
   const [teachPrompt, setTeachPrompt] = useState<{ title: string; reason: string } | null>(null)
 
@@ -373,6 +376,8 @@ export function CommandCenter() {
   }, [ctxSignature, hydrated])
 
   async function completeTaskFromItem(item: AttentionItem) {
+    // Hide it from view right away — don't wait for the engine to re-run.
+    setCompletedTitles((prev) => new Set(prev).add(item.title))
     const now = new Date().toISOString()
     if (item.sourceType === 'task' || (!item.sourceId && item.sourceType !== 'reminder')) {
       const byId = item.sourceId ? tasks.find((x) => x.id === item.sourceId) : undefined
@@ -632,12 +637,16 @@ export function CommandCenter() {
       )}
 
       {/* NEXT UP */}
-      {report && (report.items?.length ?? 0) > 0 && (
+      {report && (report.items ?? []).some(
+        (i) => !dismissedTitles.has(i.title) && !completedTitles.has(i.title)
+      ) && (
         <section>
           <SectionLabel icon={Clock} color="#0f172a">Next Up</SectionLabel>
           <div className="space-y-4">
             {BUCKET_ORDER.map((bucket) => {
-              const items = itemsByBucket(bucket).filter((i) => !dismissedTitles.has(i.title))
+              const items = itemsByBucket(bucket).filter(
+                (i) => !dismissedTitles.has(i.title) && !completedTitles.has(i.title)
+              )
               if (items.length === 0) return null
               const meta = BUCKET_META[bucket]
               return (
