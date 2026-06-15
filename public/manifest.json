@@ -2,7 +2,7 @@
   "name": "Family Command Center",
   "short_name": "FamilyCC",
   "description": "Your family organization hub — calendar, lists, reminders, chores, and meals",
-  "start_url": "/dashboard",
+  "start_url": "/",
   "scope": "/",
   "display": "standalone",
   "background_color": "#ffffff",
