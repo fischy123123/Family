@@ -2,7 +2,7 @@
 
 import { createContext, useContext, useEffect, useState } from 'react'
 import { doc, getDoc, setDoc, deleteDoc, collection, query, where, getDocs } from 'firebase/firestore'
-import { db } from '@/lib/firebase'
+import { db, auth } from '@/lib/firebase'
 import { useAuth } from './AuthContext'
 
 interface FamilyContextType {
@@ -70,6 +70,29 @@ export function FamilyProvider({ children }: { children: React.ReactNode }) {
             if (!cancelled && fsnap.exists()) setInviteCode(fsnap.data().inviteCode ?? null)
           } catch {
             // Non-fatal: invite code unavailable but family ID is set
+          }
+        } else {
+          // No family yet — check if the user's email matches an existing
+          // family member profile so they can be auto-linked (skipping invite codes).
+          try {
+            const idToken = await auth.currentUser?.getIdToken()
+            if (idToken) {
+              const res = await fetch('/api/auth/auto-join', {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${idToken}` },
+              })
+              const data = await res.json()
+              if (!cancelled && data.familyId) {
+                setFamilyId(data.familyId)
+                setLoadError(null)
+                try {
+                  const fsnap = await getDoc(doc(db, 'families', data.familyId))
+                  if (!cancelled && fsnap.exists()) setInviteCode(fsnap.data().inviteCode ?? null)
+                } catch { /* non-fatal */ }
+              }
+            }
+          } catch {
+            // Auto-join failed — user proceeds to manual setup
           }
         }
         if (!cancelled) setLoading(false)
