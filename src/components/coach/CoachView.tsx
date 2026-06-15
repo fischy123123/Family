@@ -45,6 +45,14 @@ export function CoachView() {
     }
   }
 
+  function handleRespond(insight: CoachingInsight) {
+    const prompt = insight.question
+      ? `Coach insight — "${insight.title}": ${insight.detail}\n\nMy response to the question "${insight.question}":`
+      : `I want to respond to a coaching insight: "${insight.title}". ${insight.detail}`
+    sessionStorage.setItem('copilot-prefill', prompt)
+    router.push('/copilot')
+  }
+
   return (
     <div className="max-w-2xl mx-auto px-4 sm:px-6 py-6 space-y-6">
       {/* Header */}
@@ -92,6 +100,7 @@ export function CoachView() {
               onDismiss={() => dismissInsight(i)}
               onAcknowledge={() => acknowledgeInsight(i)}
               onAction={handleAction}
+              onRespond={handleRespond}
             />
           ))}
         </div>

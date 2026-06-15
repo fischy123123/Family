@@ -1,16 +1,17 @@
 'use client'
 
-import { X, Check } from 'lucide-react'
+import { X, Check, MessageCircle } from 'lucide-react'
 import { INSIGHT_META, LIFE_AREAS } from '@/lib/types'
 import type { CoachingInsight } from '@/lib/types'
 
 export function InsightCard({
-  insight, onDismiss, onAcknowledge, onAction,
+  insight, onDismiss, onAcknowledge, onAction, onRespond,
 }: {
   insight: CoachingInsight
   onDismiss?: () => void
   onAcknowledge?: () => void
   onAction?: (insight: CoachingInsight) => void
+  onRespond?: (insight: CoachingInsight) => void
 }) {
   const meta = INSIGHT_META[insight.type] ?? INSIGHT_META.pattern
   const area = insight.area ? LIFE_AREAS.find((a) => a.area === insight.area) : null
@@ -48,15 +49,27 @@ export function InsightCard({
               {insight.question}
             </p>
           )}
-          {insight.suggestedAction && onAction && (
-            <button
-              onClick={() => onAction(insight)}
-              className="mt-2.5 inline-flex items-center px-3 py-1.5 rounded-xl text-xs font-semibold text-white transition-all"
-              style={{ background: meta.color }}
-            >
-              {insight.suggestedAction}
-            </button>
-          )}
+          <div className="flex items-center gap-2 mt-3 flex-wrap">
+            {onRespond && (
+              <button
+                onClick={() => onRespond(insight)}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all"
+                style={{ borderColor: `${meta.color}40`, color: meta.color, background: `${meta.color}08` }}
+              >
+                <MessageCircle size={12} />
+                Respond
+              </button>
+            )}
+            {insight.suggestedAction && onAction && (
+              <button
+                onClick={() => onAction(insight)}
+                className="inline-flex items-center px-3 py-1.5 rounded-xl text-xs font-semibold text-white transition-all"
+                style={{ background: meta.color }}
+              >
+                {insight.suggestedAction}
+              </button>
+            )}
+          </div>
         </div>
         <div className="flex items-start gap-0.5 shrink-0">
           {onAcknowledge && !insight.acknowledged && (

@@ -1,6 +1,7 @@
 'use client'
 
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import { Compass, Sparkles, RefreshCw, ChevronRight, Target } from 'lucide-react'
 import { InsightCard } from './InsightCard'
 import { useCoaching } from '@/hooks/useCoaching'
@@ -22,6 +23,7 @@ export function CoachingSection({
 }: {
   onCapture?: (text: string) => void
 }) {
+  const router = useRouter()
   const {
     goals, insights, summary, generating, generate, dismissInsight, acknowledgeInsight,
   } = useCoaching()
@@ -38,6 +40,14 @@ export function CoachingSection({
     if (insight.actionType === 'capture' && insight.suggestedAction && onCapture) {
       onCapture(`${insight.title}. ${insight.suggestedAction}`)
     }
+  }
+
+  function handleRespond(insight: CoachingInsight) {
+    const prompt = insight.question
+      ? `Coach insight — "${insight.title}": ${insight.detail}\n\nMy response to the question "${insight.question}":`
+      : `I want to respond to a coaching insight: "${insight.title}". ${insight.detail}`
+    sessionStorage.setItem('copilot-prefill', prompt)
+    router.push('/copilot')
   }
 
   const hasContent = shown.length > 0 || !!summary
@@ -123,6 +133,7 @@ export function CoachingSection({
               onDismiss={() => dismissInsight(i)}
               onAcknowledge={() => acknowledgeInsight(i)}
               onAction={handleAction}
+              onRespond={handleRespond}
             />
           ))}
         </div>
