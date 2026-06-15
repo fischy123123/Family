@@ -15,6 +15,10 @@ import { db } from '@/lib/firebase'
 import { useFamily } from '@/contexts/FamilyContext'
 import { generateId } from '@/lib/utils'
 
+function stripUndefined(obj: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== undefined))
+}
+
 export function useFirestore<T extends { id: string }>(collectionName: string) {
   const { familyId } = useFamily()
   const [data, setData] = useState<T[]>([])
@@ -40,14 +44,14 @@ export function useFirestore<T extends { id: string }>(collectionName: string) {
     const id = (item as { id?: string }).id ?? generateId()
     const { id: _id, ...rest } = item as T
     const docRef = doc(db, 'families', familyId, collectionName, id)
-    await setDoc(docRef, rest)
+    await setDoc(docRef, stripUndefined(rest as Record<string, unknown>))
     return { id, ...rest } as T
   }
 
   async function update(item: T): Promise<void> {
     if (!familyId) return
     const { id, ...rest } = item
-    await setDoc(doc(db, 'families', familyId, collectionName, id), rest)
+    await setDoc(doc(db, 'families', familyId, collectionName, id), stripUndefined(rest as Record<string, unknown>))
   }
 
   async function remove(id: string): Promise<void> {
