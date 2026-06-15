@@ -355,7 +355,11 @@ export function CommandCenter() {
   // skeleton flash. We wait for Google to settle first to avoid an empty run.
   useEffect(() => {
     if (!hydrated) return
-    if (isConnected && !googleLoaded) return
+    // If connected but no events at all yet, wait for Google Calendar to load
+    // so we don't generate a "nothing happening" briefing that's immediately stale.
+    // If we have cached events (local or google), fire immediately; a silent
+    // re-run will follow when fresh Google data arrives via ctxSignature.
+    if (isConnected && !googleLoaded && events.length === 0) return
     if (members.length === 0 && events.length === 0 && tasks.length === 0) return
     const now = Date.now()
     if (now - lastRun.current < 60000) return

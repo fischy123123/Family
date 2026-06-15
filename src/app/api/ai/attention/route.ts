@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
 import { buildFamilyContext, type FamilyContextInput } from '@/lib/familyContext'
 
-const AI_MODEL = 'claude-sonnet-4-6'
+const AI_MODEL = 'claude-haiku-4-5-20251001'
 
 // The Attention Engine + Timeline Intelligence Engine.
 // Takes full family context, returns a prioritized "what needs attention now" report.
@@ -101,7 +101,7 @@ For each problem, include an optional "actionType" field: "copilot" for conversa
   try {
     const response = await anthropic.messages.create({
       model: AI_MODEL,
-      max_tokens: 1600,
+      max_tokens: 2500,
       // The system prompt is large and static — cache it so repeated calls skip
       // re-processing it, which trims both latency and cost.
       system: [
@@ -112,7 +112,17 @@ For each problem, include an optional "actionType" field: "copilot" for conversa
 
     const text = response.content[0].type === 'text' ? response.content[0].text : '{}'
     const match = text.match(/\{[\s\S]*\}/)
-    const parsed = match ? JSON.parse(match[0]) : {}
+    let parsed: Record<string, unknown> = {}
+    if (match) {
+      try {
+        parsed = JSON.parse(match[0])
+      } catch {
+        // Response was truncated mid-JSON (stop_reason === 'max_tokens').
+        // Salvage whatever fields were fully written before the cutoff.
+        const greetingMatch = match[0].match(/"greeting"\s*:\s*"((?:[^"\\]|\\.)*)"/s)
+        parsed = { greeting: greetingMatch?.[1] ?? 'Here is what needs your attention.', items: [], problems: [], recommendations: [] }
+      }
+    }
 
     // Assign stable-ish ids
     const items = (parsed.items ?? []).map((it: Record<string, unknown>, i: number) => ({ id: `att-${i}`, ...it }))
