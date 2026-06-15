@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation'
 import {
   Compass, Sparkles, RefreshCw, Plus, Trash2, Target, X, Check, PenLine,
 } from 'lucide-react'
-import { InsightCard } from './InsightCard'
+import { InsightCardWithThread } from './InsightCardWithThread'
 import { useCoaching } from '@/hooks/useCoaching'
 import { useCapture } from '@/contexts/CaptureContext'
 import { MicButton } from '@/components/ui/MicButton'
@@ -43,14 +43,6 @@ export function CoachView() {
     } else if (insight.actionType === 'goal') {
       setShowGoalForm(true)
     }
-  }
-
-  function handleRespond(insight: CoachingInsight) {
-    const prompt = insight.question
-      ? `Coach insight — "${insight.title}": ${insight.detail}\n\nMy response to the question "${insight.question}":`
-      : `I want to respond to a coaching insight: "${insight.title}". ${insight.detail}`
-    sessionStorage.setItem('copilot-prefill', prompt)
-    router.push('/copilot')
   }
 
   return (
@@ -94,13 +86,12 @@ export function CoachView() {
       {activeInsights.length > 0 ? (
         <div className="space-y-2 stagger-children">
           {activeInsights.map((i) => (
-            <InsightCard
+            <InsightCardWithThread
               key={i.id}
               insight={i}
               onDismiss={() => dismissInsight(i)}
               onAcknowledge={() => acknowledgeInsight(i)}
               onAction={handleAction}
-              onRespond={handleRespond}
             />
           ))}
         </div>

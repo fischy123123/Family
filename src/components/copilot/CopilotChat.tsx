@@ -190,15 +190,6 @@ export function CopilotChat() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, loading])
 
-  // Pick up a pre-filled prompt from the coach (stored in sessionStorage before navigating here)
-  useEffect(() => {
-    const prefill = sessionStorage.getItem('copilot-prefill')
-    if (prefill) {
-      sessionStorage.removeItem('copilot-prefill')
-      setInput(prefill)
-      setTimeout(() => inputRef.current?.focus(), 50)
-    }
-  }, [])
 
   const handleSend = useCallback(
     async (text?: string) => {
