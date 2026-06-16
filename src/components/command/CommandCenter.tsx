@@ -664,6 +664,13 @@ export function CommandCenter() {
     setTeachPrompt({ title, reason: '' })
   }
 
+  // An item stays in its list slot while its teach prompt is open, so the
+  // feedback box appears exactly where the dismissed card was — not at the top.
+  function showInList(title: string) {
+    if (teachPrompt?.title === title) return true
+    return !dismissedTitles.has(title) && !completedTitles.has(title)
+  }
+
   async function teachAssistant(title: string, feedback: string) {
     if (!feedback.trim()) { setTeachPrompt(null); return }
     try {
@@ -902,26 +909,13 @@ export function CommandCenter() {
         </div>
       )}
 
-      {/* Teach prompt — brief inline nudge when an item is dismissed */}
-      {teachPrompt && (
-        <TeachPrompt
-          title={teachPrompt.title}
-          onTeach={(feedback) => teachAssistant(teachPrompt.title, feedback)}
-          onDismiss={() => setTeachPrompt(null)}
-        />
-      )}
-
       {/* NEXT UP */}
-      {report && (report.items ?? []).some(
-        (i) => !dismissedTitles.has(i.title) && !completedTitles.has(i.title)
-      ) && (
+      {report && (report.items ?? []).some((i) => showInList(i.title)) && (
         <section>
           <SectionLabel icon={Clock} color="#0f172a">Next Up</SectionLabel>
           <div className="space-y-4">
             {BUCKET_ORDER.map((bucket) => {
-              const items = itemsByBucket(bucket).filter(
-                (i) => !dismissedTitles.has(i.title) && !completedTitles.has(i.title)
-              )
+              const items = itemsByBucket(bucket).filter((i) => showInList(i.title))
               if (items.length === 0) return null
               const meta = BUCKET_META[bucket]
               return (
@@ -934,6 +928,18 @@ export function CommandCenter() {
                   </div>
                   <div className="space-y-2 stagger-children">
                     {items.map((item) => {
+                      // While this item's teach prompt is open, show the feedback
+                      // box right here in the card's slot instead of the card.
+                      if (teachPrompt?.title === item.title) {
+                        return (
+                          <TeachPrompt
+                            key={item.id}
+                            title={item.title}
+                            onTeach={(feedback) => teachAssistant(item.title, feedback)}
+                            onDismiss={() => setTeachPrompt(null)}
+                          />
+                        )
+                      }
                       // Resolve who it's for / who's responsible. A user override
                       // (keyed by member id) wins; otherwise fall back to the AI's
                       // email-based assignment.
@@ -992,17 +998,26 @@ export function CommandCenter() {
           <SectionLabel icon={AlertTriangle} color="#dc2626">Potential Problems</SectionLabel>
           <div className="space-y-2 stagger-children">
             {report.problems
-              .filter((p) => !dismissedTitles.has(p.title))
-              .map((p) => (
-                <ProblemCard
-                  key={p.id}
-                  problem={p}
-                  onCapture={(text) => openCapture({ text, autoAnalyze: true })}
-                  onCalendar={() => router.push('/calendar')}
-                  onSaveTask={() => saveItemAsTask(p.title, p.detail)}
-                  onDismiss={() => dismissItem(p.title)}
-                />
-              ))}
+              .filter((p) => showInList(p.title))
+              .map((p) =>
+                teachPrompt?.title === p.title ? (
+                  <TeachPrompt
+                    key={p.id}
+                    title={p.title}
+                    onTeach={(feedback) => teachAssistant(p.title, feedback)}
+                    onDismiss={() => setTeachPrompt(null)}
+                  />
+                ) : (
+                  <ProblemCard
+                    key={p.id}
+                    problem={p}
+                    onCapture={(text) => openCapture({ text, autoAnalyze: true })}
+                    onCalendar={() => router.push('/calendar')}
+                    onSaveTask={() => saveItemAsTask(p.title, p.detail)}
+                    onDismiss={() => dismissItem(p.title)}
+                  />
+                ),
+              )}
           </div>
         </section>
       )}
@@ -1013,8 +1028,16 @@ export function CommandCenter() {
           <SectionLabel icon={Lightbulb} color="#7c3aed">Copilot Recommendations</SectionLabel>
           <div className="space-y-2 stagger-children">
             {report.recommendations
-              .filter((r) => !dismissedTitles.has(r.title))
-              .map((r) => (
+              .filter((r) => showInList(r.title))
+              .map((r) =>
+                teachPrompt?.title === r.title ? (
+                  <TeachPrompt
+                    key={r.id}
+                    title={r.title}
+                    onTeach={(feedback) => teachAssistant(r.title, feedback)}
+                    onDismiss={() => setTeachPrompt(null)}
+                  />
+                ) : (
                 <div key={r.id} className="rounded-2xl p-4 bg-white shadow-card animate-slide-up flex items-start gap-3">
                   <div className="w-8 h-8 rounded-lg bg-purple-50 flex items-center justify-center shrink-0">
                     <Lightbulb size={15} className="text-purple-500" />
@@ -1041,7 +1064,8 @@ export function CommandCenter() {
                     </button>
                   </div>
                 </div>
-              ))}
+                ),
+              )}
           </div>
         </section>
       )}
@@ -1231,6 +1255,14 @@ function AttentionCard({
   const [expanded, setExpanded] = useState(false)
   const [assigning, setAssigning] = useState(false)
   const [contextDraft, setContextDraft] = useState('')
+  // When an inline panel opens, bring it into view so the user isn't left
+  // staring at the same spot while the response area appears off-screen.
+  const panelRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if ((expanded || assigning) && panelRef.current) {
+      panelRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    }
+  }, [expanded, assigning])
   const startStr = item.startBy
     ? new Date(item.startBy).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
     : null
@@ -1357,17 +1389,19 @@ function AttentionCard({
       </div>
 
       {assigning && (
-        <AssignPanel
-          allMembers={allMembers}
-          initialFor={forMembers.map((m) => m.id)}
-          initialResponsible={responsible?.id}
-          onCancel={() => setAssigning(false)}
-          onSave={(f, r) => { onAssign(f, r); setAssigning(false) }}
-        />
+        <div ref={panelRef}>
+          <AssignPanel
+            allMembers={allMembers}
+            initialFor={forMembers.map((m) => m.id)}
+            initialResponsible={responsible?.id}
+            onCancel={() => setAssigning(false)}
+            onSave={(f, r) => { onAssign(f, r); setAssigning(false) }}
+          />
+        </div>
       )}
 
       {expanded && (
-        <div className="px-4 pb-4 border-t border-slate-50 pt-3">
+        <div ref={panelRef} className="px-4 pb-4 border-t border-slate-50 pt-3">
           <p className="text-xs text-slate-500 mb-2">Add context so the assistant understands this better:</p>
           <div className="flex gap-2">
             <input
