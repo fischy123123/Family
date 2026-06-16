@@ -1,11 +1,13 @@
 'use client'
 
 import { useState, useRef, useEffect } from 'react'
-import { Plus, CheckCircle2, Circle, Trash2, Flag, Pencil, X, Check } from 'lucide-react'
+import { Plus, CheckCircle2, Circle, Trash2, Pencil, X, Check, Repeat } from 'lucide-react'
 import { useFirestore } from '@/hooks/useFirestore'
 import { useFamily } from '@/contexts/FamilyContext'
 import { generateId } from '@/lib/utils'
-import type { Task, FamilyReminder } from '@/lib/types'
+import type { Task, FamilyReminder, Chore, FamilyMember } from '@/lib/types'
+import { isChoreDueToday, recurrenceLabel } from '@/lib/recurrence'
+import { ChoreForm } from './chores/ChoreForm'
 
 type Priority = Task['priority']
 const PRIORITY_ORDER: Priority[] = ['high', 'medium', 'low', 'none']
@@ -55,6 +57,8 @@ export function TasksView() {
   const { familyId } = useFamily()
   const { data: tasks, create: createTask, update: updateTask, remove: removeTask } = useFirestore<Task>('tasks')
   const { data: reminders, update: updateReminder, remove: removeReminder } = useFirestore<FamilyReminder>('reminders')
+  const { data: chores, create: createChore, update: updateChore, remove: removeChore } = useFirestore<Chore>('chores')
+  const { data: members } = useFirestore<FamilyMember>('members')
 
   const [showCompleted, setShowCompleted] = useState(false)
   const [addTitle, setAddTitle] = useState('')
@@ -120,7 +124,7 @@ export function TasksView() {
   return (
     <div className="max-w-2xl mx-auto px-4 py-6">
       <div className="mb-6">
-        <h1 className="text-xl font-bold text-slate-900">Tasks</h1>
+        <h1 className="text-xl font-bold text-slate-900">To Do</h1>
         <p className="text-sm text-slate-400 mt-0.5">{open.length} open · {done.length} done</p>
       </div>
 
@@ -196,6 +200,132 @@ export function TasksView() {
           )}
         </div>
       )}
+
+      {/* Recurring chores — distinct from one-off tasks (streaks + recurrence) */}
+      <ChoresSection
+        chores={chores}
+        members={members}
+        onCreate={createChore}
+        onUpdate={updateChore}
+        onDelete={removeChore}
+      />
+    </div>
+  )
+}
+
+function ChoresSection({ chores, members, onCreate, onUpdate, onDelete }: {
+  chores: Chore[]
+  members: FamilyMember[]
+  onCreate: (c: Chore) => Promise<unknown>
+  onUpdate: (c: Chore) => Promise<unknown>
+  onDelete: (id: string) => Promise<unknown>
+}) {
+  const [formOpen, setFormOpen] = useState(false)
+  const [editing, setEditing] = useState<Chore>()
+
+  const today = new Date().toISOString().split('T')[0]
+
+  function memberName(email: string) {
+    return members.find((m) => m.email === email)?.name ?? email.split('@')[0] ?? 'Anyone'
+  }
+  function memberEmoji(email: string) {
+    return members.find((m) => m.email === email)?.emoji ?? '👤'
+  }
+
+  async function markDone(chore: Chore) {
+    const newStreak = chore.lastCompletedDate === today ? chore.streak : chore.streak + 1
+    await onUpdate({ ...chore, lastCompletedDate: today, streak: newStreak })
+  }
+
+  // Show due-today chores first, then the rest.
+  const sorted = [...chores].sort((a, b) => {
+    const ad = isChoreDueToday(a) ? 0 : 1
+    const bd = isChoreDueToday(b) ? 0 : 1
+    return ad - bd
+  })
+
+  return (
+    <div className="mt-8">
+      <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center gap-2">
+          <Repeat size={15} className="text-slate-400" />
+          <h2 className="text-sm font-semibold text-slate-700">Chores</h2>
+          <span className="text-xs text-slate-400">{chores.length}</span>
+        </div>
+        <button
+          onClick={() => { setEditing(undefined); setFormOpen(true) }}
+          className="flex items-center gap-1 text-xs font-medium text-blue-600 hover:text-blue-700 transition-colors"
+        >
+          <Plus size={14} /> Add chore
+        </button>
+      </div>
+
+      {chores.length === 0 ? (
+        <div className="text-center py-8 rounded-2xl bg-slate-50 border border-slate-100">
+          <Repeat size={28} className="mx-auto mb-2 text-slate-200" />
+          <p className="text-xs text-slate-400">Add recurring chores for family members</p>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {sorted.map((chore) => {
+            const doneToday = chore.lastCompletedDate === today
+            const dueToday = isChoreDueToday(chore)
+            return (
+              <div
+                key={chore.id}
+                className="flex items-center gap-3 p-3.5 bg-white rounded-2xl shadow-card border border-slate-50"
+                style={{ borderLeft: `3px solid ${chore.colorHex}` }}
+              >
+                <div className="text-xl shrink-0">{memberEmoji(chore.assigneeEmail)}</div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <p className="text-sm font-medium text-slate-900">{chore.name}</p>
+                    {chore.streak > 0 && (
+                      <span className="text-[11px] text-orange-500 font-medium">🔥{chore.streak}</span>
+                    )}
+                    {dueToday && !doneToday && (
+                      <span className="text-[10px] font-semibold uppercase px-1.5 py-0.5 rounded-full bg-amber-50 text-amber-600">Due today</span>
+                    )}
+                    {doneToday && (
+                      <span className="text-[10px] font-semibold uppercase px-1.5 py-0.5 rounded-full bg-green-50 text-green-600">Done today</span>
+                    )}
+                  </div>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    {memberName(chore.assigneeEmail)} · {recurrenceLabel(chore.recurrence)}
+                  </p>
+                </div>
+                <div className="flex items-center gap-1 shrink-0">
+                  {!doneToday && (
+                    <button
+                      onClick={() => markDone(chore)}
+                      className="flex items-center gap-1 text-xs text-green-600 font-medium px-2 py-1.5 rounded-lg hover:bg-green-50 transition-colors"
+                      title="Mark done"
+                    >
+                      <CheckCircle2 size={15} /> Done
+                    </button>
+                  )}
+                  <button
+                    onClick={() => { setEditing(chore); setFormOpen(true) }}
+                    className="p-1.5 rounded-lg text-slate-300 hover:text-slate-600 hover:bg-slate-50 transition-colors"
+                    title="Edit"
+                  >
+                    <Pencil size={14} />
+                  </button>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      <ChoreForm
+        open={formOpen}
+        onClose={() => setFormOpen(false)}
+        chore={editing}
+        members={members}
+        onSave={async (c) => { editing ? await onUpdate(c) : await onCreate(c) }}
+        onDelete={editing ? async () => { await onDelete(editing.id) } : undefined}
+      />
     </div>
   )
 }
