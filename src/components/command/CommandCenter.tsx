@@ -654,6 +654,13 @@ export function CommandCenter() {
     runEngine(undefined, true)
   }
 
+  // Tapping the briefing carries it into Copilot as the opening message so the
+  // user can ask follow-ups or have the assistant act on what it just told them.
+  function openBriefingInCopilot(greetingText: string) {
+    try { sessionStorage.setItem('copilot-seed', greetingText) } catch { /* non-fatal */ }
+    router.push('/copilot')
+  }
+
   function dismissItem(title: string) {
     setDismissedTitles((prev) => {
       const next = new Set(prev).add(title)
@@ -785,15 +792,26 @@ export function CommandCenter() {
 
       {report?.greeting && (
         <div className="rounded-2xl p-5 bg-gradient-to-br from-blue-600 to-purple-700 text-white shadow-elevated animate-scale-in">
-          <div className="flex items-start gap-3">
+          <button
+            onClick={() => openBriefingInCopilot(report.greeting!)}
+            className="flex items-start gap-3 text-left w-full"
+          >
             <Sparkles size={18} className="mt-0.5 shrink-0 opacity-90" />
             <p className="text-[15px] leading-relaxed font-medium">{report.greeting}</p>
-          </div>
-          {deepening && (
+          </button>
+          {deepening ? (
             <div className="flex items-center gap-1.5 mt-3 text-[11px] text-white/70">
               <span className="w-3 h-3 border-[1.5px] border-white/40 border-t-transparent rounded-full animate-spin" />
               Sharpening priorities…
             </div>
+          ) : (
+            <button
+              onClick={() => openBriefingInCopilot(report.greeting!)}
+              className="flex items-center gap-1.5 mt-3 text-[12px] font-semibold text-white/90 hover:text-white transition-colors"
+            >
+              <MessageCircle size={13} className="shrink-0" />
+              Ask a follow-up
+            </button>
           )}
         </div>
       )}

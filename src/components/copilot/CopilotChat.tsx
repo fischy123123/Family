@@ -185,6 +185,19 @@ export function CopilotChat() {
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
 
+  // Seed the conversation from another screen (e.g. tapping the Home briefing).
+  // The briefing prose lands as the opening assistant message so the user can
+  // immediately ask follow-ups or have the assistant act on it.
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const seed = sessionStorage.getItem('copilot-seed')
+    if (seed) {
+      sessionStorage.removeItem('copilot-seed')
+      setMessages([{ role: 'assistant', content: seed }])
+      setTimeout(() => inputRef.current?.focus(), 80)
+    }
+  }, [])
+
   // Auto-scroll to bottom on new messages / loading
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
