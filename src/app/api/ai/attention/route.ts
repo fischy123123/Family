@@ -121,9 +121,11 @@ For each problem, include an optional "actionType" field: "copilot" for conversa
   try {
     const response = await anthropic.messages.create({
       model: MODEL,
-      // Briefing JSON typically uses 800-1200 tokens. 1500 is a comfortable
-      // ceiling that avoids truncation while not over-allocating.
-      max_tokens: 1500,
+      // A full briefing (greeting + several items, each with reason/timing/
+      // assignee, plus problems and recommendations) can run 1500-2200 tokens.
+      // 2500 leaves headroom so the JSON is never truncated — a truncated
+      // response salvages only the greeting and drops every status card.
+      max_tokens: 2500,
       // System prompt: static → cache it (saves ~600 tokens on every cache hit).
       system: [
         { type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } },

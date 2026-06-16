@@ -17,7 +17,6 @@ import { useCapture } from '@/contexts/CaptureContext'
 import { useFamily } from '@/contexts/FamilyContext'
 import { useToast } from '@/contexts/ToastContext'
 import { ConnectGooglePrompt } from '@/components/dashboard/ConnectGooglePrompt'
-import { CoachingSection } from '@/components/coach/CoachingSection'
 import { MicButton } from '@/components/ui/MicButton'
 import { generateId } from '@/lib/utils'
 import { resolveMemberRef } from '@/lib/members'
@@ -1137,9 +1136,6 @@ export function CommandCenter() {
           </div>
         </section>
       )}
-
-      {/* FAMILY COACH — the "how are we really doing" layer */}
-      <CoachingSection onCapture={(text) => openCapture({ text, autoAnalyze: true })} />
 
       {/* TODAY */}
       <section>
