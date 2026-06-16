@@ -1089,17 +1089,15 @@ function ProblemCard({
           <p className="text-sm font-semibold text-slate-900">{p.title}</p>
           <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">{p.detail}</p>
           {p.sourceEmailId && (
-            <a
-              href={`https://mail.google.com/mail/u/0/#inbox/${p.sourceEmailId}`}
-              target="_blank"
-              rel="noopener noreferrer"
+            <button
+              onClick={() => window.open(`https://mail.google.com/mail/u/0/#inbox/${p.sourceEmailId}`, '_blank', 'noopener,noreferrer')}
               className="inline-flex items-center gap-1 mt-1 text-[11px] font-medium text-blue-600 hover:text-blue-800 hover:underline"
             >
               <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor" className="shrink-0">
                 <path d="M20 18h-2V9.25L12 13 6 9.25V18H4V6h1.2l6.8 4.25L18.8 6H20v12z"/>
               </svg>
               View email
-            </a>
+            </button>
           )}
           {p.suggestedAction && (
             <button
@@ -1219,17 +1217,15 @@ function AttentionCard({
           <p className="text-sm font-semibold text-slate-900">{item.title}</p>
           <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">{item.reason}</p>
           {item.sourceEmailId && (
-            <a
-              href={`https://mail.google.com/mail/u/0/#inbox/${item.sourceEmailId}`}
-              target="_blank"
-              rel="noopener noreferrer"
+            <button
+              onClick={() => window.open(`https://mail.google.com/mail/u/0/#inbox/${item.sourceEmailId}`, '_blank', 'noopener,noreferrer')}
               className="inline-flex items-center gap-1 mt-1 text-[11px] font-medium text-blue-600 hover:text-blue-800 hover:underline"
             >
               <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor" className="shrink-0">
                 <path d="M20 18h-2V9.25L12 13 6 9.25V18H4V6h1.2l6.8 4.25L18.8 6H20v12z"/>
               </svg>
               View email
-            </a>
+            </button>
           )}
           <div className="flex items-center gap-2 mt-1.5 flex-wrap">
             {startStr && (
