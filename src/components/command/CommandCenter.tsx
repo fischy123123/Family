@@ -147,6 +147,9 @@ export function CommandCenter() {
   const ctxSigKey = familyId ? CTX_SIG_PREFIX + familyId : null
 
   const [report, setReport] = useState<AttentionReport | null>(null)
+  // Buffered result from a background run. Applied only when the user taps the
+  // "Briefing updated" banner — prevents content jumping mid-scroll.
+  const [pendingReport, setPendingReport] = useState<AttentionReport | null>(null)
   const [engineError, setEngineError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)        // true cold start only (no report yet)
   const [refreshing, setRefreshing] = useState(false)  // silent background update
@@ -399,6 +402,11 @@ export function CommandCenter() {
     // Bump the token: this fast run is now the latest, so any in-flight deep pass
     // from a previous run will be ignored when it returns.
     const myToken = ++deepToken.current
+    // Background runs (silent + already have a report) are buffered into
+    // pendingReport so content doesn't shift while the user is scrolling.
+    // The user applies the update by tapping the "Briefing updated" banner.
+    // Foreground runs (cold start or manual refresh) update report immediately.
+    const isPending = !!(silent && report)
     try {
       const eventContext = overrideContext ??
         eventContexts.map((e) => ({ eventTitle: e.eventTitle, context: e.context }))
@@ -411,7 +419,12 @@ export function CommandCenter() {
       })
       const data = await res.json() as AttentionReport & { error?: string }
       if (res.ok) {
-        setReport(data)
+        if (isPending) {
+          setPendingReport(data)
+        } else {
+          setReport(data)
+          setPendingReport(null)
+        }
         setEngineError(null)
         writeCache(attnKey, data)
         // Persist so the PWA reopening within the throttle window skips a
@@ -431,7 +444,12 @@ export function CommandCenter() {
             })
             const dData = await dRes.json() as AttentionReport & { error?: string }
             if (dRes.ok && deepToken.current === myToken) {
-              setReport(dData)
+              // Follow the same pending/direct path as the fast pass for this run.
+              if (isPending) {
+                setPendingReport(dData)
+              } else {
+                setReport(dData)
+              }
               writeCache(attnKey, dData)
             }
           } catch {
@@ -453,7 +471,7 @@ export function CommandCenter() {
       setLoading(false)
       setRefreshing(false)
     }
-  }, [buildEngineBody, eventContexts, attnKey])
+  }, [buildEngineBody, eventContexts, attnKey, report])
 
   // Auto-run once the data we expect is loaded. Always silent when a report is
   // already on screen (cached or fresh) so content updates in place, never via a
@@ -734,7 +752,7 @@ export function CommandCenter() {
           </h1>
         </div>
         <button
-          onClick={() => runEngine(undefined, !!report)}
+          onClick={() => { setPendingReport(null); runEngine(undefined, false) }}
           disabled={busy}
           className="mt-1 p-2.5 rounded-xl bg-white border border-slate-200 text-slate-500 hover:text-blue-600 hover:border-blue-200 transition-colors shadow-card disabled:opacity-60"
           aria-label="Refresh"
@@ -742,6 +760,18 @@ export function CommandCenter() {
           <RefreshCw size={16} className={busy ? 'animate-spin' : ''} />
         </button>
       </div>
+
+      {/* Pending briefing banner — appears when a background run finishes.
+          Content stays frozen until the user explicitly taps to apply it. */}
+      {pendingReport && !busy && (
+        <button
+          onClick={() => { setReport(pendingReport); setPendingReport(null) }}
+          className="w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-2xl bg-blue-600 text-white text-sm font-medium shadow-md active:opacity-80 transition-opacity animate-slide-down"
+        >
+          <Sparkles size={14} />
+          Briefing updated — tap to see
+        </button>
+      )}
 
       {!tokensLoading && !isConnected && <ConnectGooglePrompt onConnect={() => router.push(`/api/auth/google?email=${user?.email ?? ''}`)} />}
 
