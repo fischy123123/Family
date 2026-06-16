@@ -68,6 +68,35 @@ const LAST_RUN_PREFIX = 'fam-lastrun-'
 // just because the user navigated back to the screen or reopened the PWA.
 const ENGINE_THROTTLE_MS = 5 * 60 * 1000
 
+// Open a specific Gmail message reliably — including inside an iOS standalone
+// PWA, where both <a target="_blank"> and window.open() are silently blocked.
+// Strategy:
+//   1. Build a robust URL. We use #all/<id> rather than #inbox/<id> so the
+//      message is found even after it's been archived out of the inbox.
+//   2. Try a real anchor-element click (works in most browsers + Android PWA).
+//   3. If that's a no-op (standalone iOS), fall back to navigating the current
+//      webview, which always renders the page even without Safari chrome.
+function openGmailMessage(messageId: string) {
+  const url = `https://mail.google.com/mail/u/0/#all/${messageId}`
+  const isStandalone =
+    typeof window !== 'undefined' &&
+    (window.matchMedia?.('(display-mode: standalone)').matches ||
+      // iOS Safari exposes standalone via navigator.standalone
+      (window.navigator as unknown as { standalone?: boolean }).standalone === true)
+
+  if (isStandalone) {
+    // In a standalone PWA, new-window opens are blocked — navigate directly.
+    window.location.href = url
+    return
+  }
+
+  const opened = window.open(url, '_blank', 'noopener,noreferrer')
+  if (!opened) {
+    // Pop-up blocked or returned null — fall back to direct navigation.
+    window.location.href = url
+  }
+}
+
 function readCache<T>(key: string | null): T | null {
   if (!key) return null
   try {
@@ -1108,7 +1137,7 @@ function ProblemCard({
           <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">{p.detail}</p>
           {p.sourceEmailId && (
             <button
-              onClick={() => window.open(`https://mail.google.com/mail/u/0/#inbox/${p.sourceEmailId}`, '_blank', 'noopener,noreferrer')}
+              onClick={() => openGmailMessage(p.sourceEmailId!)}
               className="inline-flex items-center gap-1 mt-1 text-[11px] font-medium text-blue-600 hover:text-blue-800 hover:underline"
             >
               <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor" className="shrink-0">
@@ -1236,7 +1265,7 @@ function AttentionCard({
           <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">{item.reason}</p>
           {item.sourceEmailId && (
             <button
-              onClick={() => window.open(`https://mail.google.com/mail/u/0/#inbox/${item.sourceEmailId}`, '_blank', 'noopener,noreferrer')}
+              onClick={() => openGmailMessage(item.sourceEmailId!)}
               className="inline-flex items-center gap-1 mt-1 text-[11px] font-medium text-blue-600 hover:text-blue-800 hover:underline"
             >
               <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor" className="shrink-0">
