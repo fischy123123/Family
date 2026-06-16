@@ -526,24 +526,42 @@ export function CommandCenter() {
   }
 
   async function completeTaskFromItem(item: AttentionItem) {
-    // Hide it from view right away — don't wait for the engine to re-run.
+    // Hide it from view right away.
     setCompletedTitles((prev) => new Set(prev).add(item.title))
     const now = new Date().toISOString()
-    if (item.sourceType === 'task' || (!item.sourceId && item.sourceType !== 'reminder')) {
-      const byId = item.sourceId ? tasks.find((x) => x.id === item.sourceId) : undefined
-      const t = byId ?? tasks.find((x) => x.title.toLowerCase() === item.title.toLowerCase())
+    const titleLower = item.title.toLowerCase()
+
+    // 1. Try exact match by sourceId (most reliable — AI embeds the Firestore id)
+    if (item.sourceId) {
+      const t = tasks.find((x) => x.id === item.sourceId)
       if (t) { await updateTask({ ...t, isCompleted: true, completedAt: now }); return }
-    }
-    if (item.sourceType === 'reminder' || item.sourceType === 'inferred') {
-      const byId = item.sourceId ? reminders.find((x) => x.id === item.sourceId) : undefined
-      const r = byId ?? reminders.find((x) => x.title.toLowerCase() === item.title.toLowerCase())
+      const r = reminders.find((x) => x.id === item.sourceId)
       if (r) { await updateReminder({ ...r, isCompleted: true, completedAt: now }); return }
     }
-    // Last resort: try both collections by title
-    const t2 = tasks.find((x) => item.title.toLowerCase().includes(x.title.toLowerCase()) || x.title.toLowerCase().includes(item.title.toLowerCase()))
-    if (t2) { await updateTask({ ...t2, isCompleted: true, completedAt: now }); return }
-    const r2 = reminders.find((x) => item.title.toLowerCase().includes(x.title.toLowerCase()) || x.title.toLowerCase().includes(item.title.toLowerCase()))
-    if (r2) await updateReminder({ ...r2, isCompleted: true, completedAt: now })
+
+    // 2. Exact title match across both collections
+    const tExact = tasks.find((x) => x.title.toLowerCase() === titleLower)
+    if (tExact) { await updateTask({ ...tExact, isCompleted: true, completedAt: now }); return }
+    const rExact = reminders.find((x) => x.title.toLowerCase() === titleLower)
+    if (rExact) { await updateReminder({ ...rExact, isCompleted: true, completedAt: now }); return }
+
+    // 3. Fuzzy title match (AI may rephrase task titles)
+    const tFuzzy = tasks.find((x) => titleLower.includes(x.title.toLowerCase()) || x.title.toLowerCase().includes(titleLower))
+    if (tFuzzy) { await updateTask({ ...tFuzzy, isCompleted: true, completedAt: now }); return }
+    const rFuzzy = reminders.find((x) => titleLower.includes(x.title.toLowerCase()) || x.title.toLowerCase().includes(titleLower))
+    if (rFuzzy) { await updateReminder({ ...rFuzzy, isCompleted: true, completedAt: now }); return }
+
+    // 4. Nothing matched — create a completed task so the check-off is never silently lost
+    await createTask({
+      id: generateId(),
+      title: item.title,
+      notes: item.reason,
+      isCompleted: true,
+      completedAt: now,
+      priority: 'none',
+      source: 'ai',
+      createdAt: now,
+    } as Task)
   }
 
   async function saveItemAsTask(title: string, detail?: string) {
