@@ -262,11 +262,11 @@ export const TOOLS: Anthropic.Tool[] = [
         title: { type: 'string', description: 'Event title' },
         start_datetime: {
           type: 'string',
-          description: 'Start datetime as ISO 8601 string (e.g. 2024-03-15T14:00:00) or date only for all-day',
+          description: 'Start datetime in LOCAL time as YYYY-MM-DDTHH:mm:ss (no Z suffix, no timezone offset — e.g. "2026-06-17T15:00:00" for 3pm local). For all-day events use YYYY-MM-DD.',
         },
         end_datetime: {
           type: 'string',
-          description: 'End datetime as ISO 8601 string or date only',
+          description: 'End datetime in LOCAL time as YYYY-MM-DDTHH:mm:ss (no Z suffix). For all-day use YYYY-MM-DD.',
         },
         is_all_day: { type: 'boolean', description: 'Whether the event is all-day' },
         location: { type: 'string', description: 'Optional location' },
@@ -368,6 +368,7 @@ export function buildSystemPrompt(
   return `You are Copilot, the family's AI chief of staff.
 Today is ${today}${timezone ? ` (user timezone: ${timezone})` : ''}.
 All times you display to the user should be in ${timezone ? `the user's timezone (${timezone})` : 'local time'}, not UTC.
+CRITICAL — when calling create_google_event or create_event, always use LOCAL datetime strings in the format YYYY-MM-DDTHH:mm:ss with NO "Z" suffix and NO timezone offset. "3pm" means ${timezone ?? 'local time'} 3pm, output as "YYYY-MM-DDTHH:15:00:00", not UTC.
 
 Your job is to reduce the family's mental load. You are not a passive task bot — you are a proactive partner who keeps track of everyone's schedules, lists, and plans, and who tells the family what actually needs their attention. Think like a great executive assistant for a busy household.
 
@@ -416,6 +417,7 @@ export interface ToolContext {
   userEmail: string
   googleTokens: { accessToken: string; refreshToken: string } | null
   actions: string[]
+  timezone?: string
 }
 
 export interface PendingAction {
@@ -760,6 +762,7 @@ export async function executeTool(
           isAllDay,
           location: input.location as string | undefined,
           notes: input.notes as string | undefined,
+          timezone: ctx.timezone,
         },
       )
       actions.push(`Created Google Calendar event: ${created.title} on ${created.start.split('T')[0]}`)

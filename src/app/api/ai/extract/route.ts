@@ -23,7 +23,15 @@ export async function POST(request: NextRequest) {
   const imageMediaType: string | undefined = body.imageMediaType
   const members: MemberLite[] = body.members ?? []
   const today: string = body.today ?? new Date().toISOString()
+  const timezone: string = body.timezone ?? 'UTC'
   const existingEventTitles: string[] = body.existingEventTitles ?? []
+
+  // Format "now" in the user's local timezone so the AI understands relative dates correctly
+  const localNow = new Date(today).toLocaleString('en-US', {
+    timeZone: timezone,
+    weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+    hour: 'numeric', minute: '2-digit', hour12: true,
+  })
 
   if (!rawText.trim() && !imageBase64) {
     return NextResponse.json({ error: 'No input provided' }, { status: 400 })
@@ -38,7 +46,9 @@ export async function POST(request: NextRequest) {
   const systemPrompt = `You are the Extraction Engine for FamilyOS, an AI family operating system.
 Your job: read whatever the user captured (a note, screenshot, email, photo, voice transcript) and convert it into structured, actionable family outcomes.
 
-Today is ${new Date(today).toString()}.
+The user's current local time is: ${localNow} (timezone: ${timezone}).
+Use this to resolve ALL relative dates ("tomorrow", "next Tuesday", "in 2 weeks") into real calendar dates in the user's timezone.
+CRITICAL — date output format: output ALL dates/times as LOCAL time strings in the format "YYYY-MM-DDTHH:mm:ss" with NO "Z" suffix and NO timezone offset — just bare local time, e.g. "2026-06-17T15:00:00" for 3pm on June 17. The system will attach the correct timezone when sending to the calendar.
 
 THIS FAMILY:
 ${memberList}

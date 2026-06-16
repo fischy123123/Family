@@ -119,6 +119,7 @@ export function CaptureProvider({ children }: { children: React.ReactNode }) {
     // call the extraction API so the user sees results right away.
     if (prefill && opts?.autoAnalyze) {
       setLoading(true)
+      const tz = Intl.DateTimeFormat().resolvedOptions().timeZone
       fetch('/api/ai/extract', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -126,6 +127,7 @@ export function CaptureProvider({ children }: { children: React.ReactNode }) {
           rawText: prefill,
           members: members.map((m) => ({ name: m.name, email: m.email, role: m.role })),
           today: new Date().toISOString(),
+          timezone: tz,
           existingEventTitles: calendarEventList,
         }),
       })
@@ -163,6 +165,7 @@ export function CaptureProvider({ children }: { children: React.ReactNode }) {
     setOutcomes([])
     setSummary('')
     try {
+      const tz = Intl.DateTimeFormat().resolvedOptions().timeZone
       const res = await fetch('/api/ai/extract', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -172,6 +175,7 @@ export function CaptureProvider({ children }: { children: React.ReactNode }) {
           imageMediaType: imageData?.mediaType,
           members: members.map((m) => ({ name: m.name, email: m.email, role: m.role })),
           today: new Date().toISOString(),
+          timezone: tz,
           existingEventTitles: calendarEventList,
         }),
       })
@@ -216,6 +220,7 @@ export function CaptureProvider({ children }: { children: React.ReactNode }) {
           createdAt: new Date().toISOString(),
         } as Task)
       } else if (o.kind === 'event') {
+        const userTz = Intl.DateTimeFormat().resolvedOptions().timeZone
         const start = o.date ?? new Date().toISOString()
         const end = new Date(new Date(start).getTime() + 60 * 60 * 1000).toISOString()
         const selectedCalendarId = calendarSelections[idx] ?? 'primary'
@@ -237,6 +242,7 @@ export function CaptureProvider({ children }: { children: React.ReactNode }) {
                   isAllDay: false,
                   notes: o.notes ?? '',
                   calendarId: selectedCalendarId,
+                  timezone: userTz,
                 },
               }),
             })

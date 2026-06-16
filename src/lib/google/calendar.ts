@@ -168,10 +168,12 @@ export async function updateEvent(
     isAllDay?: boolean
     location?: string
     notes?: string
+    timezone?: string
   }
 ): Promise<GoogleEvent> {
   const auth = getAuthorizedClient(accessToken, refreshToken)
   const calendar = google.calendar({ version: 'v3', auth })
+  const tz = updates.timezone || 'UTC'
 
   const requestBody: Record<string, unknown> = {}
   if (updates.title !== undefined) requestBody.summary = updates.title
@@ -180,12 +182,12 @@ export async function updateEvent(
   if (updates.start !== undefined) {
     requestBody.start = updates.isAllDay
       ? { date: updates.start.split('T')[0] }
-      : { dateTime: updates.start, timeZone: 'UTC' }
+      : { dateTime: updates.start, timeZone: tz }
   }
   if (updates.end !== undefined) {
     requestBody.end = updates.isAllDay
       ? { date: updates.end.split('T')[0] }
-      : { dateTime: updates.end, timeZone: 'UTC' }
+      : { dateTime: updates.end, timeZone: tz }
   }
 
   const { data } = await calendar.events.patch({ calendarId, eventId, requestBody })
