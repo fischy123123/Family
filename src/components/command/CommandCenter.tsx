@@ -157,6 +157,10 @@ export function CommandCenter() {
   const [googleLoaded, setGoogleLoaded] = useState(false)
   const [hydrated, setHydrated] = useState(false)
   const lastRun = useRef<number>(0)
+  // When true, the next engine run writes directly to report (not pendingReport),
+  // even when called silently. Used after cache reset or when the cached report
+  // is stale, so the fresh result appears immediately without a "tap to see" step.
+  const forceDirectRef = useRef(false)
   // Guards the background "deep" (Opus) pass: each fast run bumps this token, and
   // a deep pass only applies its result if its token is still the latest — so a
   // newer briefing never gets clobbered by a stale deep pass finishing late.
@@ -194,26 +198,26 @@ export function CommandCenter() {
     Record<string, { responsibleId?: string; forIds?: string[] }>
   >({})
 
-  // Cached attention reports expire after 4 hours. Beyond that the stale-while-
-  // revalidate pattern causes more confusion than it saves (e.g. deleted events
-  // keep appearing). A cold load is better than a confidently wrong briefing.
   const REPORT_TTL_MS = 4 * 60 * 60 * 1000
 
-  // Clear all per-family localStorage caches and force a fresh engine run.
+  // Clear all per-family localStorage caches and trigger a fresh Google Calendar
+  // sync + engine run — WITHOUT wiping the current report from the screen.
+  // Keeping report/googleEvents visible prevents the blank-then-reload flicker.
   const clearCaches = useCallback(() => {
     if (!familyId) return
     const prefixes = [ATTN_PREFIX, GCAL_PREFIX, CLAR_PREFIX, GMAIL_PREFIX, LAST_RUN_PREFIX, CTX_SIG_PREFIX]
     prefixes.forEach((p) => {
       try { localStorage.removeItem(p + familyId) } catch { /* ignore */ }
     })
-    setReport(null)
-    setPendingReport(null)
-    setGoogleEvents([])
-    setGoogleLoaded(false)
     lastRun.current = 0
     lastCtxSig.current = ''
     setEngineError(null)
-    // Force a fresh Google Calendar fetch so Firestore gets the corrected event list.
+    setPendingReport(null)
+    // Next run bypasses the pendingReport buffer so the corrected data appears
+    // immediately instead of waiting for a "tap to see" interaction.
+    forceDirectRef.current = true
+    // Re-trigger the Google Calendar fetch, which will overwrite Firestore with
+    // the current Google Calendar state (removing any phantom deleted events).
     setCalSyncKey((k) => k + 1)
   }, [familyId])
 
@@ -221,12 +225,17 @@ export function CommandCenter() {
   // returning visit paints a complete page on the first frame.
   useEffect(() => {
     if (!familyId) return
-    // Only restore the report if it's still fresh enough to be trustworthy.
     const savedLastRun = readCache<number>(lastRunKey)
     if (savedLastRun) lastRun.current = savedLastRun
+    // Always restore the cached report so the user sees content immediately.
+    // If it's older than the TTL, mark the next engine run as direct (not buffered)
+    // so fresh content replaces it immediately instead of sitting in pendingReport.
     const reportAge = savedLastRun ? Date.now() - savedLastRun : Infinity
     const r = readCache<AttentionReport>(attnKey)
-    if (r && reportAge < REPORT_TTL_MS) setReport(r)
+    if (r) {
+      setReport(r)
+      if (reportAge > REPORT_TTL_MS) forceDirectRef.current = true
+    }
     const g = readCache<CalendarEvent[]>(gcalKey)
     if (g?.length) setGoogleEvents(g)
     const c = readCache<CalendarClarification[]>(clarKey)
@@ -412,8 +421,15 @@ export function CommandCenter() {
       ...tasks,
       ...reminderAsTask.filter((r) => !tasks.some((t) => t.id === r.id)),
     ]
+    // Only send events that are upcoming or still ongoing. Events that ended
+    // more than 30 minutes ago are irrelevant to the briefing, and excluding
+    // them prevents phantom deleted events (which linger in Firestore until the
+    // next Google Calendar sync) from being flagged as upcoming appointments.
+    const relevantCutoff = new Date(Date.now() - 30 * 60 * 1000).toISOString()
+    const upcomingEvents = events.filter((e) => (e.end ?? e.start) >= relevantCutoff)
+
     return {
-      members, events, tasks: allTasks, chores, plans, lists, eventContext,
+      members, events: upcomingEvents, tasks: allTasks, chores, plans, lists, eventContext,
       profile, memories, inbox, tier,
       currentUserEmail: user?.email ?? undefined,
       currentUserName: user?.displayName ?? undefined,
@@ -432,7 +448,10 @@ export function CommandCenter() {
     // pendingReport so content doesn't shift while the user is scrolling.
     // The user applies the update by tapping the "Briefing updated" banner.
     // Foreground runs (cold start or manual refresh) update report immediately.
-    const isPending = !!(silent && report)
+    // forceDirectRef overrides: stale cached reports and post-reset runs bypass
+    // the buffer so the corrected content appears without a "tap to see" step.
+    const isPending = !!(silent && report) && !forceDirectRef.current
+    forceDirectRef.current = false
     try {
       const eventContext = overrideContext ??
         eventContexts.map((e) => ({ eventTitle: e.eventTitle, context: e.context }))
@@ -1208,7 +1227,7 @@ export function CommandCenter() {
       {(report || engineError) && (
         <div className="text-center pb-2">
           <button
-            onClick={() => { clearCaches(); runEngine(undefined, false) }}
+            onClick={() => clearCaches()}
             className="text-xs text-slate-300 hover:text-slate-500 transition-colors"
           >
             Seeing something wrong? Reset cached data
