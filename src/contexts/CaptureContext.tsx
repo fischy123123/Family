@@ -7,6 +7,7 @@ import { useFirestore } from '@/hooks/useFirestore'
 import { useToast } from '@/contexts/ToastContext'
 import { useGoogleTokens } from '@/hooks/useGoogleTokens'
 import { generateId } from '@/lib/utils'
+import { resolveMemberRef } from '@/lib/members'
 import { MicButton } from '@/components/ui/MicButton'
 import type { FamilyMember, Task, CalendarEvent, SmartList, ExtractedOutcome, FamilyMemory, GroceryItem } from '@/lib/types'
 
@@ -206,6 +207,11 @@ export function CaptureProvider({ children }: { children: React.ReactNode }) {
   }
 
   async function applyOutcome(o: ExtractedOutcome, idx: number) {
+    // Resolve the AI's assignee (name or email) to a real member so assignment
+    // works for emailless children/pets too.
+    const assignedMember = resolveMemberRef(members, o.assignee ?? o.assigneeEmail)
+    const assigneeId = assignedMember?.id
+    const assigneeEmail = assignedMember?.email || o.assigneeEmail || undefined
     try {
       if (o.kind === 'task' || o.kind === 'follow_up') {
         await createTask({
@@ -214,7 +220,8 @@ export function CaptureProvider({ children }: { children: React.ReactNode }) {
           notes: o.notes ?? '',
           isCompleted: false,
           dueDate: o.date,
-          assigneeEmail: o.assigneeEmail,
+          assigneeId,
+          assigneeEmail,
           priority: o.kind === 'follow_up' ? 'medium' : 'none',
           source: 'capture',
           createdAt: new Date().toISOString(),
@@ -256,7 +263,7 @@ export function CaptureProvider({ children }: { children: React.ReactNode }) {
               isAllDay: false,
               notes: o.notes ?? '',
               calendarId: selectedCalendarId,
-              ownerEmail: o.assigneeEmail ?? '',
+              ownerEmail: assigneeEmail ?? '',
               color: '#8B5CF6',
               source: 'google',
             } as CalendarEvent)
@@ -285,7 +292,7 @@ export function CaptureProvider({ children }: { children: React.ReactNode }) {
             frequency: 'sometimes',
             status: 'need',
             notes: o.notes,
-            addedBy: o.assigneeEmail,
+            addedBy: assigneeEmail,
             createdAt: new Date().toISOString(),
           } as GroceryItem)
         } else {
@@ -314,7 +321,7 @@ export function CaptureProvider({ children }: { children: React.ReactNode }) {
         await createMemory({
           id: generateId(),
           text: o.notes ? `${o.title} — ${o.notes}` : o.title,
-          subjectEmail: o.assigneeEmail,
+          subjectEmail: assigneeEmail,
           source: 'capture',
           createdAt: new Date().toISOString(),
         } as FamilyMemory)
@@ -411,7 +418,11 @@ export function CaptureProvider({ children }: { children: React.ReactNode }) {
                               <p className="text-xs text-slate-400">
                                 {meta.label}
                                 {o.date ? ` · ${new Date(o.date).toLocaleDateString()}` : ''}
-                                {o.assigneeEmail ? ` · ${members.find((m) => m.email === o.assigneeEmail)?.name ?? o.assigneeEmail}` : ''}
+                                {(() => {
+                                  const am = resolveMemberRef(members, o.assignee ?? o.assigneeEmail)
+                                  const label = am?.name ?? o.assignee ?? o.assigneeEmail
+                                  return label ? ` · ${label}` : ''
+                                })()}
                               </p>
                             </div>
                             <button

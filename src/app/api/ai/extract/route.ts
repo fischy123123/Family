@@ -57,7 +57,7 @@ ${existingEventTitles.length > 0 ? `ALREADY ON THE CALENDAR — do NOT re-extrac
 ${existingEventTitles.join('\n')}
 
 ` : ''}CRITICAL — name matching for voice transcripts:
-Voice dictation frequently mis-transcribes family names phonetically (e.g. "Jessy" → "Jesse", "Aoife" → "Eva", "Niamh" → "Neve"). Whenever a name in the input sounds like one of the family members above, treat it as THAT member: correct the spelling to the real name in your titles/notes AND set assigneeEmail to their email. Possessives count too — "Jesse's cousin" means the cousin OF the family member Jessy, so the relevant person is Jessy. Only leave a name uncorrected if it clearly doesn't match anyone in the family.
+Voice dictation frequently mis-transcribes family names phonetically (e.g. "Jessy" → "Jesse", "Aoife" → "Eva", "Niamh" → "Neve"). Whenever a name in the input sounds like one of the family members above, treat it as THAT member: correct the spelling to the real name in your titles/notes AND set "assignee" to their exact name as listed above. Possessives count too — "Jesse's cousin" means the cousin OF the family member Jessy, so the relevant person is Jessy. Only leave a name uncorrected if it clearly doesn't match anyone in the family.
 
 Analyze the input and extract every actionable outcome. Each outcome has a "kind":
 - "task": something someone needs to do
@@ -71,13 +71,13 @@ For each outcome provide:
 - kind
 - title (concise, action-oriented, with corrected family names — e.g. "Sign Mia's permission slip")
 - date (ISO 8601 if there's a clear date/time, else omit). Resolve relative dates ("next Tuesday", "tomorrow") against today.
-- assigneeEmail (match to a family member's email — including phonetic matches — if clearly implied, else omit)
+- assignee (the EXACT name of the responsible family member from the list above — including phonetic matches — if clearly implied, else omit). Always use the person's name, never an email. This works for children and pets who have no email.
 - notes (optional short context)
 
 Also write a one-sentence "summary" of what was captured. If you corrected any names, mention it briefly in the summary (e.g. "Noted a haircut for Jessy (heard as 'Jesse')").
 
 Respond ONLY with valid JSON, no markdown:
-{"summary":"...","outcomes":[{"kind":"...","title":"...","date":"...","assigneeEmail":"...","notes":"..."}]}
+{"summary":"...","outcomes":[{"kind":"...","title":"...","date":"...","assignee":"...","notes":"..."}]}
 
 If nothing actionable is found, return {"summary":"...","outcomes":[]}.`
 

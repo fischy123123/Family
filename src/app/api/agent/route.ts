@@ -87,7 +87,7 @@ export async function POST(request: NextRequest) {
       : TOOLS.filter((t) => t.name !== 'get_google_events' && t.name !== 'create_google_event')
 
     const actions: string[] = []
-    const toolCtx: ToolContext = { db, familyId, userEmail, googleTokens, actions, timezone }
+    const toolCtx: ToolContext = { db, familyId, userEmail, googleTokens, actions, timezone, members }
 
     // Write tools requested by the AI this turn — these get queued, not run.
     const pendingActions: PendingAction[] = []

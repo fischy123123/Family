@@ -5,6 +5,7 @@ import type {
   FamilyMember, CalendarEvent, Task, Chore, Plan, SmartList,
   FamilyProfile, FamilyMemory,
 } from '@/lib/types'
+import { resolveAssignee } from '@/lib/members'
 
 // One actionable item the assistant noticed in the family's inbox. Folded into
 // the same reasoning as everything else — never shown as a separate silo.
@@ -246,10 +247,12 @@ export function buildFamilyContext(input: FamilyContextInput): string {
       openTasks.length
         ? openTasks
             .map(
-              (t) =>
-                `- [id:${t.id}] ${t.title}${t.dueDate ? ` (due ${fmtDate(t.dueDate, tz)})` : ''}${
-                  t.assigneeEmail ? ` [${t.assigneeEmail}]` : ''
+              (t) => {
+                const who = resolveAssignee(members, t)?.name ?? t.assigneeEmail
+                return `- [id:${t.id}] ${t.title}${t.dueDate ? ` (due ${fmtDate(t.dueDate, tz)})` : ''}${
+                  who ? ` [${who}]` : ''
                 } priority=${t.priority}`
+              }
             )
             .join('\n')
         : '(none)'
@@ -261,7 +264,7 @@ export function buildFamilyContext(input: FamilyContextInput): string {
       `CHORES:\n${chores
         .map(
           (c) =>
-            `- ${c.name} [${c.assigneeEmail || 'unassigned'}] every ${c.recurrence.interval} ${c.recurrence.frequency}, streak ${c.streak}, last done ${c.lastCompletedDate ?? 'never'}`
+            `- ${c.name} [${resolveAssignee(members, c)?.name || c.assigneeEmail || 'unassigned'}] every ${c.recurrence.interval} ${c.recurrence.frequency}, streak ${c.streak}, last done ${c.lastCompletedDate ?? 'never'}`
         )
         .join('\n')}`
     )

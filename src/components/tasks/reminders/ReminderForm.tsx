@@ -8,6 +8,8 @@ import { Select } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import type { FamilyReminder, FamilyMember, RecurrenceRule } from '@/lib/types'
 import { generateId } from '@/lib/utils'
+import { resolveAssignee } from '@/lib/members'
+import { AssigneePicker } from '@/components/ui/AssigneePicker'
 
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 
@@ -25,7 +27,7 @@ export function ReminderForm({ open, onClose, reminder, members, onSave, onDelet
   const [dueDate, setDueDate] = useState(reminder?.dueDate?.split('T')[0] ?? '')
   const [priority, setPriority] = useState<FamilyReminder['priority']>(reminder?.priority ?? 'none')
   const [notes, setNotes] = useState(reminder?.notes ?? '')
-  const [assigneeEmail, setAssigneeEmail] = useState(reminder?.assigneeEmail ?? '')
+  const [assigneeId, setAssigneeId] = useState<string | undefined>(resolveAssignee(members, reminder)?.id)
   const [recurrFreq, setRecurrFreq] = useState<RecurrenceRule['frequency'] | 'none'>(
     reminder?.recurrence?.frequency ?? 'none'
   )
@@ -56,7 +58,9 @@ export function ReminderForm({ open, onClose, reminder, members, onSave, onDelet
       notes,
     }
     if (dueDate) reminderData.dueDate = `${dueDate}T09:00:00`
-    if (assigneeEmail) reminderData.assigneeEmail = assigneeEmail
+    const assignedMember = members.find((m) => m.id === assigneeId)
+    if (assigneeId) reminderData.assigneeId = assigneeId
+    if (assignedMember?.email) reminderData.assigneeEmail = assignedMember.email
     if (recurrence) reminderData.recurrence = recurrence
     try {
       await onSave(reminderData)
@@ -81,12 +85,7 @@ export function ReminderForm({ open, onClose, reminder, members, onSave, onDelet
         </Select>
 
         {members.length > 0 && (
-          <Select value={assigneeEmail} onChange={(e) => setAssigneeEmail(e.target.value)}>
-            <option value="">Unassigned</option>
-            {members.map((m) => (
-              <option key={m.id} value={m.email}>{m.name}</option>
-            ))}
-          </Select>
+          <AssigneePicker members={members} value={assigneeId} onChange={setAssigneeId} label="Assign to" />
         )}
 
         {/* Recurrence */}

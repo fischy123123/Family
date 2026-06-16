@@ -28,6 +28,7 @@ import { Badge } from '@/components/ui/badge'
 import { PRIORITY_COLORS } from '@/lib/types'
 import type { FamilyReminder, Checklist, ShoppingList, Chore, CalendarEvent, FamilyMember } from '@/lib/types'
 import { isOverdue, isToday, formatTime } from '@/lib/utils'
+import { resolveAssignee } from '@/lib/members'
 import { isChoreDueToday } from '@/lib/recurrence'
 import Link from 'next/link'
 
@@ -84,7 +85,7 @@ function buildBriefing(params: {
 
     if (todayChores.length > 0) {
       const chore = todayChores[0]
-      const who = memberName(chore.assigneeEmail)
+      const who = resolveAssignee(members, chore)?.name ?? 'Someone'
       sentences.push(
         todayChores.length === 1
           ? `${who} has ${chore.name} on the chore list.`
@@ -399,9 +400,9 @@ export function DashboardPage() {
                   (e) => e.ownerEmail === m.email && e.start.split('T')[0] === todayStr
                 )
                 const mReminders = reminders.filter(
-                  (r) => !r.isCompleted && r.assigneeEmail === m.email && r.dueDate && (isToday(r.dueDate) || isOverdue(r.dueDate))
+                  (r) => !r.isCompleted && resolveAssignee(members, r)?.id === m.id && r.dueDate && (isToday(r.dueDate) || isOverdue(r.dueDate))
                 )
-                const mChores = todayChores.filter((c) => c.assigneeEmail === m.email)
+                const mChores = todayChores.filter((c) => resolveAssignee(members, c)?.id === m.id)
                 const count = mEvents.length + mReminders.length + mChores.length
                 const nextEvent = mEvents[0]
 

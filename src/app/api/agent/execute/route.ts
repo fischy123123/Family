@@ -7,6 +7,7 @@ import {
   type ToolContext,
   type PendingAction,
 } from '@/lib/agent/tools'
+import type { FamilyMember } from '@/lib/types'
 
 export const dynamic = 'force-dynamic'
 
@@ -43,8 +44,20 @@ export async function POST(request: NextRequest) {
       // db stays null; tools handle this gracefully
     }
 
+    // Load members so assignee names in queued actions resolve to ids
+    // (works for emailless children/pets).
+    let members: FamilyMember[] = []
+    if (db) {
+      try {
+        const snap = await db.collection('families').doc(familyId).collection('members').get()
+        members = snap.docs.map((d) => ({ id: d.id, ...d.data() }) as FamilyMember)
+      } catch {
+        // non-fatal — assignment falls back to whatever email the AI provided
+      }
+    }
+
     const performed: string[] = []
-    const ctx: ToolContext = { db, familyId, userEmail, googleTokens: googleTokens ?? null, actions: performed }
+    const ctx: ToolContext = { db, familyId, userEmail, googleTokens: googleTokens ?? null, actions: performed, members }
 
     // Map temp ids (from propose phase) → real ids created during execution
     const idMap: Record<string, string> = {}

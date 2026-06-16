@@ -1,13 +1,24 @@
 'use client'
 
 import { useState, useRef, useEffect } from 'react'
-import { Plus, CheckCircle2, Circle, Trash2, Pencil, X, Check, Repeat } from 'lucide-react'
+import { Plus, CheckCircle2, Circle, Trash2, Pencil, X, Check, Repeat, UserPlus } from 'lucide-react'
 import { useFirestore } from '@/hooks/useFirestore'
 import { useFamily } from '@/contexts/FamilyContext'
 import { generateId } from '@/lib/utils'
 import type { Task, FamilyReminder, Chore, FamilyMember } from '@/lib/types'
 import { isChoreDueToday, recurrenceLabel } from '@/lib/recurrence'
+import { resolveAssignee } from '@/lib/members'
+import { AssigneePicker } from '@/components/ui/AssigneePicker'
 import { ChoreForm } from './chores/ChoreForm'
+
+// Build the canonical assignment fields from a chosen member id. We store the
+// id (canonical) and keep the email in sync for systems that still read it
+// (calendar owner colors, AI context, legacy data).
+function assignFields(members: FamilyMember[], memberId?: string): { assigneeId?: string; assigneeEmail?: string } {
+  if (!memberId) return { assigneeId: undefined, assigneeEmail: undefined }
+  const m = members.find((x) => x.id === memberId)
+  return { assigneeId: memberId, assigneeEmail: m?.email || undefined }
+}
 
 type Priority = Task['priority']
 const PRIORITY_ORDER: Priority[] = ['high', 'medium', 'low', 'none']
@@ -30,6 +41,7 @@ interface ListItem {
   notes?: string
   priority: Priority
   dueDate?: string
+  assigneeId?: string
   assigneeEmail?: string
   isCompleted: boolean
   source: 'task' | 'reminder'
@@ -37,10 +49,10 @@ interface ListItem {
 }
 
 function toListItem(t: Task): ListItem {
-  return { id: t.id, title: t.title, notes: t.notes, priority: t.priority, dueDate: t.dueDate, assigneeEmail: t.assigneeEmail, isCompleted: t.isCompleted, source: 'task', raw: t }
+  return { id: t.id, title: t.title, notes: t.notes, priority: t.priority, dueDate: t.dueDate, assigneeId: t.assigneeId, assigneeEmail: t.assigneeEmail, isCompleted: t.isCompleted, source: 'task', raw: t }
 }
 function reminderToListItem(r: FamilyReminder): ListItem {
-  return { id: r.id, title: r.title, notes: r.notes, priority: r.priority, dueDate: r.dueDate, assigneeEmail: r.assigneeEmail, isCompleted: r.isCompleted, source: 'reminder', raw: r }
+  return { id: r.id, title: r.title, notes: r.notes, priority: r.priority, dueDate: r.dueDate, assigneeId: r.assigneeId, assigneeEmail: r.assigneeEmail, isCompleted: r.isCompleted, source: 'reminder', raw: r }
 }
 
 function sortItems(items: ListItem[]): ListItem[] {
@@ -64,7 +76,7 @@ export function TasksView() {
   const [showCompleted, setShowCompleted] = useState(false)
   const [addTitle, setAddTitle] = useState('')
   const [addPriority, setAddPriority] = useState<Priority>('none')
-  const [addAssignee, setAddAssignee] = useState('')
+  const [addAssignee, setAddAssignee] = useState<string | undefined>(undefined)
   const [adding, setAdding] = useState(false)
 
   const allItems: ListItem[] = [
@@ -91,12 +103,23 @@ export function TasksView() {
   async function save(item: ListItem, patch: EditPatch) {
     const trimmed = patch.title.trim()
     if (!trimmed) return
+    const af = assignFields(members, patch.assigneeId)
     if (item.source === 'task') {
       const t = item.raw as Task
-      await updateTask({ ...t, title: trimmed, notes: patch.notes || undefined, priority: patch.priority, dueDate: patch.dueDate || undefined, assigneeEmail: patch.assigneeEmail || undefined })
+      await updateTask({ ...t, title: trimmed, notes: patch.notes || undefined, priority: patch.priority, dueDate: patch.dueDate || undefined, ...af })
     } else {
       const r = item.raw as FamilyReminder
-      await updateReminder({ ...r, title: trimmed, notes: patch.notes || undefined, priority: patch.priority, dueDate: patch.dueDate || undefined, assigneeEmail: patch.assigneeEmail || undefined })
+      await updateReminder({ ...r, title: trimmed, notes: patch.notes || undefined, priority: patch.priority, dueDate: patch.dueDate || undefined, ...af })
+    }
+  }
+
+  // Quick (one-tap) reassignment from the row, without entering full edit.
+  async function quickAssign(item: ListItem, memberId?: string) {
+    const af = assignFields(members, memberId)
+    if (item.source === 'task') {
+      await updateTask({ ...(item.raw as Task), ...af })
+    } else {
+      await updateReminder({ ...(item.raw as FamilyReminder), ...af })
     }
   }
 
@@ -115,13 +138,13 @@ export function TasksView() {
       title,
       isCompleted: false,
       priority: addPriority,
-      assigneeEmail: addAssignee || undefined,
+      ...assignFields(members, addAssignee),
       source: 'manual',
       createdAt: new Date().toISOString(),
     } as Task)
     setAddTitle('')
     setAddPriority('none')
-    setAddAssignee('')
+    setAddAssignee(undefined)
     setAdding(false)
   }
 
@@ -153,24 +176,17 @@ export function TasksView() {
           <select
             value={addPriority}
             onChange={(e) => setAddPriority(e.target.value as Priority)}
-            className="flex-1 text-xs rounded-xl px-2 py-2 border border-slate-200 focus:outline-none focus:border-blue-300 bg-white text-slate-600"
+            className="text-xs rounded-xl px-2 py-2 border border-slate-200 focus:outline-none focus:border-blue-300 bg-white text-slate-600"
           >
             <option value="none">Priority</option>
             <option value="high">🔴 High</option>
             <option value="medium">🟠 Medium</option>
             <option value="low">🟢 Low</option>
           </select>
-          <select
-            value={addAssignee}
-            onChange={(e) => setAddAssignee(e.target.value)}
-            className="flex-1 text-xs rounded-xl px-2 py-2 border border-slate-200 focus:outline-none focus:border-blue-300 bg-white text-slate-600"
-          >
-            <option value="">Anyone</option>
-            {members.map((m) => (
-              <option key={m.id} value={m.email}>{m.emoji} {m.name}</option>
-            ))}
-          </select>
         </div>
+        {members.length > 0 && (
+          <AssigneePicker members={members} value={addAssignee} onChange={setAddAssignee} label="Assign to" />
+        )}
       </form>
 
       {/* Open tasks */}
@@ -190,6 +206,7 @@ export function TasksView() {
               onToggle={() => toggle(item)}
               onSave={(patch) => save(item, patch)}
               onRemove={() => remove(item)}
+              onQuickAssign={(id) => quickAssign(item, id)}
             />
           ))}
         </div>
@@ -214,6 +231,7 @@ export function TasksView() {
                   onToggle={() => toggle(item)}
                   onSave={(patch) => save(item, patch)}
                   onRemove={() => remove(item)}
+                  onQuickAssign={(id) => quickAssign(item, id)}
                 />
               ))}
             </div>
@@ -245,11 +263,15 @@ function ChoresSection({ chores, members, onCreate, onUpdate, onDelete }: {
 
   const today = new Date().toISOString().split('T')[0]
 
-  function memberName(email: string) {
-    return members.find((m) => m.email === email)?.name ?? email.split('@')[0] ?? 'Anyone'
+  function choreMember(chore: Chore) {
+    return resolveAssignee(members, chore)
   }
-  function memberEmoji(email: string) {
-    return members.find((m) => m.email === email)?.emoji ?? '👤'
+  function memberName(chore: Chore) {
+    const m = choreMember(chore)
+    return m?.name ?? (chore.assigneeEmail ? chore.assigneeEmail.split('@')[0] : 'Anyone')
+  }
+  function memberEmoji(chore: Chore) {
+    return choreMember(chore)?.emoji ?? '👤'
   }
 
   async function markDone(chore: Chore) {
@@ -296,7 +318,7 @@ function ChoresSection({ chores, members, onCreate, onUpdate, onDelete }: {
                 className="flex items-center gap-3 p-3.5 bg-white rounded-2xl shadow-card border border-slate-50"
                 style={{ borderLeft: `3px solid ${chore.colorHex}` }}
               >
-                <div className="text-xl shrink-0">{memberEmoji(chore.assigneeEmail)}</div>
+                <div className="text-xl shrink-0">{memberEmoji(chore)}</div>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
                     <p className="text-sm font-medium text-slate-900">{chore.name}</p>
@@ -311,7 +333,7 @@ function ChoresSection({ chores, members, onCreate, onUpdate, onDelete }: {
                     )}
                   </div>
                   <p className="text-xs text-slate-400 mt-0.5">
-                    {memberName(chore.assigneeEmail)} · {recurrenceLabel(chore.recurrence)}
+                    {memberName(chore)} · {recurrenceLabel(chore.recurrence)}
                   </p>
                 </div>
                 <div className="flex items-center gap-1 shrink-0">
@@ -350,27 +372,27 @@ function ChoresSection({ chores, members, onCreate, onUpdate, onDelete }: {
   )
 }
 
-type EditPatch = { title: string; notes: string; priority: Priority; dueDate: string; assigneeEmail: string }
+type EditPatch = { title: string; notes: string; priority: Priority; dueDate: string; assigneeId?: string }
 
-function TaskRow({ item, members, onToggle, onSave, onRemove }: {
+function TaskRow({ item, members, onToggle, onSave, onRemove, onQuickAssign }: {
   item: ListItem
   members: FamilyMember[]
   onToggle: () => void
   onSave: (patch: EditPatch) => Promise<void>
   onRemove: () => void
+  onQuickAssign: (memberId?: string) => void
 }) {
   const [editing, setEditing] = useState(false)
-  const [draft, setDraft] = useState<EditPatch>({ title: '', notes: '', priority: 'none', dueDate: '', assigneeEmail: '' })
+  const [draft, setDraft] = useState<EditPatch>({ title: '', notes: '', priority: 'none', dueDate: '', assigneeId: undefined })
   const [saving, setSaving] = useState(false)
+  const [assignOpen, setAssignOpen] = useState(false)
   const titleRef = useRef<HTMLInputElement>(null)
 
   const dueStr = item.dueDate
     ? new Date(item.dueDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
     : null
   const overdue = item.dueDate && !item.isCompleted && new Date(item.dueDate) < new Date()
-  const assignee = item.assigneeEmail
-    ? members.find((m) => m.email?.toLowerCase() === item.assigneeEmail!.toLowerCase())
-    : undefined
+  const assignee = resolveAssignee(members, item)
 
   function startEdit() {
     setDraft({
@@ -378,7 +400,7 @@ function TaskRow({ item, members, onToggle, onSave, onRemove }: {
       notes: item.notes ?? '',
       priority: item.priority,
       dueDate: item.dueDate ? item.dueDate.split('T')[0] : '',
-      assigneeEmail: item.assigneeEmail ?? '',
+      assigneeId: assignee?.id,
     })
     setEditing(true)
   }
@@ -431,16 +453,14 @@ function TaskRow({ item, members, onToggle, onSave, onRemove }: {
             className="flex-1 text-xs rounded-xl px-2 py-2 border border-slate-200 focus:outline-none focus:border-blue-300 bg-white text-slate-600"
           />
         </div>
-        <select
-          value={draft.assigneeEmail}
-          onChange={(e) => setDraft((d) => ({ ...d, assigneeEmail: e.target.value }))}
-          className="w-full text-xs rounded-xl px-2 py-2 border border-slate-200 focus:outline-none focus:border-blue-300 bg-white text-slate-600"
-        >
-          <option value="">Assign to… (anyone)</option>
-          {members.map((m) => (
-            <option key={m.id} value={m.email}>{m.emoji} {m.name}</option>
-          ))}
-        </select>
+        {members.length > 0 && (
+          <AssigneePicker
+            members={members}
+            value={draft.assigneeId}
+            onChange={(id) => setDraft((d) => ({ ...d, assigneeId: id }))}
+            label="Assign to"
+          />
+        )}
         <div className="flex items-center gap-2 pt-1">
           <button
             onClick={handleSave}
@@ -493,17 +513,37 @@ function TaskRow({ item, members, onToggle, onSave, onRemove }: {
               {overdue ? '⚠ ' : ''}{dueStr}
             </span>
           )}
-          {assignee ? (
-            <span className="inline-flex items-center gap-1 text-[11px] font-medium text-slate-500">
-              <span className="w-4 h-4 rounded-full flex items-center justify-center text-[9px]" style={{ background: `${assignee.colorHex}25` }}>
-                {assignee.emoji}
+          {/* Quick-assign: tap the assignee (or "Assign") to reassign in one tap */}
+          <button
+            onClick={() => setAssignOpen((v) => !v)}
+            className="inline-flex items-center gap-1 text-[11px] font-medium text-slate-500 hover:text-slate-700 transition-colors"
+          >
+            {assignee ? (
+              <>
+                <span className="w-4 h-4 rounded-full flex items-center justify-center text-[9px]" style={{ background: `${assignee.colorHex}25` }}>
+                  {assignee.emoji}
+                </span>
+                {assignee.name}
+              </>
+            ) : item.assigneeEmail ? (
+              <span className="text-slate-400">{item.assigneeEmail.split('@')[0]}</span>
+            ) : (
+              <span className="inline-flex items-center gap-1 text-blue-600 hover:text-blue-700">
+                <UserPlus size={11} /> Assign
               </span>
-              {assignee.name}
-            </span>
-          ) : item.assigneeEmail ? (
-            <span className="text-[11px] font-medium text-slate-400">{item.assigneeEmail.split('@')[0]}</span>
-          ) : null}
+            )}
+          </button>
         </div>
+        {assignOpen && (
+          <div className="mt-2">
+            <AssigneePicker
+              members={members}
+              value={assignee?.id}
+              onChange={(id) => { onQuickAssign(id); setAssignOpen(false) }}
+              label=""
+            />
+          </div>
+        )}
       </div>
       <div className="flex gap-1 shrink-0">
         <button

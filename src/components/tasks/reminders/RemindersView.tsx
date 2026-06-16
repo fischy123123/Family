@@ -10,6 +10,7 @@ import { PRIORITY_COLORS } from '@/lib/types'
 import type { FamilyReminder, FamilyMember } from '@/lib/types'
 import { isOverdue, formatDate } from '@/lib/utils'
 import { getReminderDueDate, recurrenceLabel } from '@/lib/recurrence'
+import { resolveAssignee } from '@/lib/members'
 
 const PRIORITY_ORDER: FamilyReminder['priority'][] = ['high', 'medium', 'low', 'none']
 
@@ -85,9 +86,9 @@ export function RemindersView() {
                       )}
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
-                      {r.assigneeEmail && (
+                      {(r.assigneeId || r.assigneeEmail) && (
                         <span className="text-xs text-gray-400">
-                          {members.find((m) => m.email === r.assigneeEmail)?.name ?? r.assigneeEmail.split('@')[0]}
+                          {resolveAssignee(members, r)?.name ?? r.assigneeEmail?.split('@')[0] ?? ''}
                         </span>
                       )}
                       <div className="w-2 h-2 rounded-full" style={{ backgroundColor: PRIORITY_COLORS[r.priority] }} />

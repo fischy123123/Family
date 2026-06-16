@@ -1,6 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { generateId } from '@/lib/utils'
 import { getEvents, getCalendars, createEvent as createGoogleEvent } from '@/lib/google/calendar'
+import { resolveMemberRef } from '@/lib/members'
 import type { FamilyMember, FamilyMemory, FamilyProfile } from '@/lib/types'
 
 // ---------------------------------------------------------------------------
@@ -100,7 +101,7 @@ export const TOOLS: Anthropic.Tool[] = [
         is_all_day: { type: 'boolean', description: 'Whether the event is all-day' },
         location: { type: 'string', description: 'Optional location' },
         notes: { type: 'string', description: 'Optional notes' },
-        assignee_email: { type: 'string', description: 'Optional email of the family member this is for' },
+        assignee: { type: 'string', description: 'Optional NAME of the family member this is for (use their name, works for children/pets without an email)' },
       },
       required: ['title', 'start_datetime', 'end_datetime'],
     },
@@ -114,7 +115,7 @@ export const TOOLS: Anthropic.Tool[] = [
         title: { type: 'string', description: 'Reminder title' },
         due_date: { type: 'string', description: 'Due date as ISO 8601 (e.g. 2024-03-15T09:00:00)' },
         priority: { type: 'string', description: 'Priority: none, low, medium, or high' },
-        assignee_email: { type: 'string', description: 'Optional email of who this is assigned to' },
+        assignee: { type: 'string', description: 'Optional NAME of who this is assigned to (use their name, works for children/pets without an email)' },
         notes: { type: 'string', description: 'Optional notes' },
       },
       required: ['title'],
@@ -127,11 +128,11 @@ export const TOOLS: Anthropic.Tool[] = [
       type: 'object' as const,
       properties: {
         name: { type: 'string', description: 'Chore name' },
-        assignee_email: { type: 'string', description: 'Email of family member assigned to this chore' },
+        assignee: { type: 'string', description: 'NAME of the family member assigned to this chore (use their name, works for children/pets without an email)' },
         frequency: { type: 'string', description: 'Recurrence frequency: daily, weekly, or monthly' },
         interval: { type: 'number', description: 'Interval for recurrence (e.g. 2 for every 2 weeks). Default 1.' },
       },
-      required: ['name', 'assignee_email', 'frequency'],
+      required: ['name', 'assignee', 'frequency'],
     },
   },
   {
@@ -388,7 +389,9 @@ ${memberList || '  (none yet)'}
 ${profileBlock}${memoryBlock}
 
 NAME MATCHING (important for voice input):
-Messages are often dictated, and voice transcription mis-spells family names phonetically (e.g. "Jessy" becomes "Jesse", "Aoife" becomes "Eva"). When a name in the message sounds like one of the family members above, treat it as THAT member — use their real spelling and their email when assigning tasks/events/reminders. Possessives count too: "Jesse's cousin" refers to a relative of the family member Jessy. Only treat a name as someone outside the family if it clearly matches no one. If you make such a correction, reflect the corrected name naturally in your reply (e.g. "Added Jessy's haircut…") so the user can see you understood who they meant.
+Messages are often dictated, and voice transcription mis-spells family names phonetically (e.g. "Jessy" becomes "Jesse", "Aoife" becomes "Eva"). When a name in the message sounds like one of the family members above, treat it as THAT member — use their real spelling and pass their NAME in the "assignee" field when assigning tasks/events/reminders/chores. Always assign by name (not email) so it works for children and pets who have no email address. Possessives count too: "Jesse's cousin" refers to a relative of the family member Jessy. Only treat a name as someone outside the family if it clearly matches no one. If you make such a correction, reflect the corrected name naturally in your reply (e.g. "Added Jessy's haircut…") so the user can see you understood who they meant.
+
+ALWAYS ASSIGN WHEN THERE'S A CLEAR OWNER: Whenever a task, reminder, event, or chore clearly belongs to or is about a specific family member, set "assignee" to their name. Don't leave things unassigned when the owner is obvious from the request.
 
 ${calendarInstructions}
 
@@ -410,7 +413,7 @@ Examples of what you can do:
 - "Schedule dentist for Mia next Tuesday at 3pm" → create_event or create_google_event (queued for confirmation)
 - "What do we have this week?" → get_google_events or list_events, summarize concisely
 - "Add chicken tacos to Monday dinner" → set_meal (queued for confirmation)
-- "Remind Eric to pay rent on the 1st" → create_reminder with Eric's email (queued for confirmation)
+- "Remind Eric to pay rent on the 1st" → create_reminder with assignee "Eric" (queued for confirmation)
 - "What chores are due?" → list_chores
 
 If the user asks to add something to shopping and no list exists yet, create one first with create_shopping_list, then add items with add_shopping_items — use the temporary id returned by create_shopping_list as the list_id for add_shopping_items.`
@@ -427,6 +430,7 @@ export interface ToolContext {
   googleTokens: { accessToken: string; refreshToken: string } | null
   actions: string[]
   timezone?: string
+  members?: FamilyMember[]
 }
 
 export interface PendingAction {
@@ -554,6 +558,7 @@ export async function executeTool(
       if (!db) return { error: 'Firestore admin not configured. Cannot create event.' }
       const id = generateId()
       const isAllDay = input.is_all_day as boolean ?? !input.start_datetime.includes('T')
+      const assignedMember = resolveMemberRef(ctx.members ?? [], (input.assignee as string) ?? (input.assignee_email as string))
       const event = {
         title: input.title as string,
         start: input.start_datetime as string,
@@ -562,7 +567,7 @@ export async function executeTool(
         location: (input.location as string) ?? '',
         notes: (input.notes as string) ?? '',
         calendarId: 'primary',
-        ownerEmail: (input.assignee_email as string) ?? ctx.userEmail,
+        ownerEmail: assignedMember?.email || (input.assignee_email as string) || ctx.userEmail,
         color: '#3B82F6',
       }
       await col('events').doc(id).set(event)
@@ -581,7 +586,13 @@ export async function executeTool(
         notes: (input.notes as string) ?? '',
       }
       if (input.due_date) reminder.dueDate = input.due_date
-      if (input.assignee_email) reminder.assigneeEmail = input.assignee_email
+      const remAssignee = resolveMemberRef(ctx.members ?? [], (input.assignee as string) ?? (input.assignee_email as string))
+      if (remAssignee) {
+        reminder.assigneeId = remAssignee.id
+        if (remAssignee.email) reminder.assigneeEmail = remAssignee.email
+      } else if (input.assignee_email) {
+        reminder.assigneeEmail = input.assignee_email
+      }
       await col('reminders').doc(id).set(reminder)
       actions.push(`Created reminder: ${reminder.title as string}`)
       return { success: true, id, reminder }
@@ -606,16 +617,18 @@ export async function executeTool(
       if (!db) return { error: 'Firestore admin not configured. Cannot create chore.' }
       const id = generateId()
       const frequency = (input.frequency as string) ?? 'weekly'
-      const chore = {
+      const choreAssignee = resolveMemberRef(ctx.members ?? [], (input.assignee as string) ?? (input.assignee_email as string))
+      const chore: Record<string, unknown> = {
         name: input.name as string,
-        assigneeEmail: (input.assignee_email as string) ?? '',
-        colorHex: '#22C55E',
+        assigneeEmail: choreAssignee?.email || (input.assignee_email as string) || '',
+        colorHex: choreAssignee?.colorHex || '#22C55E',
         recurrence: {
           frequency: ['daily', 'weekly', 'monthly'].includes(frequency) ? frequency : 'weekly',
           interval: (input.interval as number) ?? 1,
         },
         streak: 0,
       }
+      if (choreAssignee) chore.assigneeId = choreAssignee.id
       await col('chores').doc(id).set(chore)
       actions.push(`Created chore: ${chore.name}`)
       return { success: true, id, chore }

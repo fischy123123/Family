@@ -20,6 +20,7 @@ import { ConnectGooglePrompt } from '@/components/dashboard/ConnectGooglePrompt'
 import { CoachingSection } from '@/components/coach/CoachingSection'
 import { MicButton } from '@/components/ui/MicButton'
 import { generateId } from '@/lib/utils'
+import { resolveMemberRef } from '@/lib/members'
 import { BUCKET_META } from '@/lib/types'
 import type {
   FamilyMember, CalendarEvent, Task, Chore, Plan, SmartList,
@@ -514,18 +515,20 @@ export function CommandCenter() {
     const responsible = memberById(responsibleId)
     const forNames = forMembers.map((m) => m.name).join(', ')
     const respName = responsible?.name ?? ''
-    const responsibleEmail = responsible?.email
 
     // 2. Update underlying task/reminder assignee, if this item maps to one.
-    if (responsibleEmail) {
+    //    Write the canonical id (works for emailless members) plus email for
+    //    backward-compat.
+    if (responsible) {
+      const af = { assigneeId: responsible.id, assigneeEmail: responsible.email || undefined }
       const t = item.sourceId
         ? tasks.find((x) => x.id === item.sourceId)
         : tasks.find((x) => x.title.toLowerCase() === item.title.toLowerCase())
-      if (t) await updateTask({ ...t, assigneeEmail: responsibleEmail })
+      if (t) await updateTask({ ...t, ...af })
       const r = item.sourceId
         ? reminders.find((x) => x.id === item.sourceId)
         : reminders.find((x) => x.title.toLowerCase() === item.title.toLowerCase())
-      if (r) await updateReminder({ ...r, assigneeEmail: responsibleEmail })
+      if (r) await updateReminder({ ...r, ...af })
     }
 
     // 3. Persist the nuance as a deduped family memory.
@@ -960,17 +963,16 @@ export function CommandCenter() {
                       }
                       // Resolve who it's for / who's responsible. A user override
                       // (keyed by member id) wins; otherwise fall back to the AI's
-                      // email-based assignment.
+                      // assignment, which may reference a member by email OR name
+                      // (names work for emailless children/pets).
                       const ov = assignmentOverrides[item.title]
-                      const byEmail = (email?: string) =>
-                        email ? members.find((m) => m.email?.toLowerCase() === email.toLowerCase()) : undefined
                       const byId = (id?: string) => members.find((m) => m.id === id)
                       const responsible = ov
                         ? byId(ov.responsibleId)
-                        : byEmail(item.assigneeEmail)
+                        : resolveMemberRef(members, item.assigneeEmail)
                       const forMembers = ov
                         ? (ov.forIds ?? []).map(byId).filter(Boolean) as FamilyMember[]
-                        : (item.forEmails ?? []).map(byEmail).filter(Boolean) as FamilyMember[]
+                        : (item.forEmails ?? []).map((ref) => resolveMemberRef(members, ref)).filter(Boolean) as FamilyMember[]
                       return (
                         <AttentionCard
                           key={item.id}

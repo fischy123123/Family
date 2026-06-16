@@ -229,7 +229,8 @@ export interface Task {
   isCompleted: boolean
   completedAt?: string
   dueDate?: string
-  assigneeEmail?: string
+  assigneeId?: string           // canonical assignment key (member id)
+  assigneeEmail?: string        // legacy / AI-derived fallback
   priority: 'none' | 'low' | 'medium' | 'high'
   recurrence?: RecurrenceRule
   planId?: string               // if part of a Plan
@@ -335,7 +336,8 @@ export interface ExtractedOutcome {
   kind: 'task' | 'event' | 'shopping_item' | 'packing_item' | 'plan' | 'memory' | 'follow_up'
   title: string
   date?: string
-  assigneeEmail?: string
+  assignee?: string             // AI-emitted member name (resolves to id; works for emailless members)
+  assigneeEmail?: string        // legacy
   notes?: string
   targetListId?: string
   targetPlanId?: string
@@ -394,14 +396,16 @@ export interface FamilyReminder {
   completedAt?: string
   priority: 'none' | 'low' | 'medium' | 'high'
   notes?: string
-  assigneeEmail?: string
+  assigneeId?: string           // canonical assignment key (member id)
+  assigneeEmail?: string        // legacy / AI-derived fallback
   recurrence?: RecurrenceRule
 }
 
 export interface Chore {
   id: string
   name: string
-  assigneeEmail: string
+  assigneeId?: string           // canonical assignment key (member id)
+  assigneeEmail: string         // legacy / AI-derived fallback
   colorHex: string
   recurrence: RecurrenceRule
   lastCompletedDate?: string

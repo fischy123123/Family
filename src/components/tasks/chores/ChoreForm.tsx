@@ -8,6 +8,8 @@ import { Select } from '@/components/ui/select'
 import { CHORE_COLORS } from '@/lib/types'
 import type { Chore, FamilyMember, RecurrenceRule } from '@/lib/types'
 import { generateId } from '@/lib/utils'
+import { resolveAssignee } from '@/lib/members'
+import { AssigneePicker } from '@/components/ui/AssigneePicker'
 
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 
@@ -22,7 +24,7 @@ interface ChoreFormProps {
 
 export function ChoreForm({ open, onClose, chore, members, onSave, onDelete }: ChoreFormProps) {
   const [name, setName] = useState(chore?.name ?? '')
-  const [assigneeEmail, setAssigneeEmail] = useState(chore?.assigneeEmail ?? '')
+  const [assigneeId, setAssigneeId] = useState<string | undefined>(resolveAssignee(members, chore)?.id)
   const [colorHex, setColorHex] = useState(chore?.colorHex ?? CHORE_COLORS[0])
   const [freq, setFreq] = useState<RecurrenceRule['frequency']>(chore?.recurrence?.frequency ?? 'weekly')
   const [interval, setInterval] = useState(chore?.recurrence?.interval ?? 1)
@@ -41,9 +43,13 @@ export function ChoreForm({ open, onClose, chore, members, onSave, onDelete }: C
       interval,
       ...(freq === 'weekly' && days.length > 0 ? { daysOfWeek: days } : {}),
     }
+    const assignedMember = members.find((m) => m.id === assigneeId)
     const choreData: Chore = {
       id: chore?.id ?? generateId(),
-      name, assigneeEmail, colorHex, recurrence,
+      name,
+      assigneeId: assigneeId,
+      assigneeEmail: assignedMember?.email ?? '',
+      colorHex, recurrence,
       streak: chore?.streak ?? 0,
     }
     if (chore?.lastCompletedDate) choreData.lastCompletedDate = chore.lastCompletedDate
@@ -61,10 +67,7 @@ export function ChoreForm({ open, onClose, chore, members, onSave, onDelete }: C
         <Input placeholder="Chore name" value={name} onChange={(e) => setName(e.target.value)} required />
 
         {members.length > 0 && (
-          <Select value={assigneeEmail} onChange={(e) => setAssigneeEmail(e.target.value)}>
-            <option value="">Unassigned</option>
-            {members.map((m) => <option key={m.id} value={m.email}>{m.name}</option>)}
-          </Select>
+          <AssigneePicker members={members} value={assigneeId} onChange={setAssigneeId} label="Assign to" />
         )}
 
         <div>

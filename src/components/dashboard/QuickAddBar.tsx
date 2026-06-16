@@ -6,6 +6,7 @@ import { format } from 'date-fns'
 import { useFirestore } from '@/hooks/useFirestore'
 import { useToast } from '@/contexts/ToastContext'
 import { generateId } from '@/lib/utils'
+import { resolveMemberRef } from '@/lib/members'
 import type {
   FamilyMember, CalendarEvent, FamilyReminder, Chore, Checklist, ShoppingList, RecurrenceRule,
 } from '@/lib/types'
@@ -19,6 +20,7 @@ interface QuickAction {
   endTime?: string
   isAllDay?: boolean
   location?: string
+  assignee?: string
   assigneeEmail?: string
   priority?: FamilyReminder['priority']
   notes?: string
@@ -48,20 +50,25 @@ export function QuickAddBar() {
   const shoppingLists = useFirestore<ShoppingList>('shopping_lists')
 
   async function applyAction(a: QuickAction): Promise<string> {
+    // Resolve the AI's assignee (name or email) to a real member — works for
+    // children/pets with no email.
+    const assignedMember = resolveMemberRef(members, a.assignee ?? a.assigneeEmail)
+    const assigneeId = assignedMember?.id
+    const assigneeEmail = assignedMember?.email || a.assigneeEmail || undefined
     switch (a.kind) {
       case 'event': {
         const date = a.date ?? format(new Date(), 'yyyy-MM-dd')
         const allDay = a.isAllDay ?? !a.startTime
         const start = allDay ? date : `${date}T${a.startTime}:00`
         const end = allDay ? date : `${date}T${a.endTime ?? a.startTime}:00`
-        const color = members.find((m) => m.email === a.assigneeEmail)?.colorHex ?? '#3B82F6'
+        const color = assignedMember?.colorHex ?? '#3B82F6'
         await events.create({
           id: generateId(),
           title: a.title ?? 'Untitled',
           start, end, isAllDay: allDay,
           ...(a.location ? { location: a.location } : {}),
           calendarId: 'primary',
-          ownerEmail: a.assigneeEmail ?? '',
+          ownerEmail: assigneeEmail ?? '',
           color,
         })
         return `📅 Event: ${a.title}`
@@ -75,7 +82,8 @@ export function QuickAddBar() {
           notes: a.notes ?? '',
         }
         if (a.date) r.dueDate = `${a.date}T09:00:00`
-        if (a.assigneeEmail) r.assigneeEmail = a.assigneeEmail
+        if (assigneeId) r.assigneeId = assigneeId
+        if (assigneeEmail) r.assigneeEmail = assigneeEmail
         await reminders.create(r)
         return `🔔 Reminder: ${a.title}`
       }
@@ -84,11 +92,12 @@ export function QuickAddBar() {
           frequency: a.frequency ?? 'weekly',
           interval: a.interval ?? 1,
         }
-        const color = members.find((m) => m.email === a.assigneeEmail)?.colorHex ?? '#22C55E'
+        const color = assignedMember?.colorHex ?? '#22C55E'
         await chores.create({
           id: generateId(),
           name: a.name ?? a.title ?? 'Untitled',
-          assigneeEmail: a.assigneeEmail ?? '',
+          ...(assigneeId ? { assigneeId } : {}),
+          assigneeEmail: assigneeEmail ?? '',
           colorHex: color,
           recurrence,
           streak: 0,
