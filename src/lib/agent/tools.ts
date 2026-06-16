@@ -1,6 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { generateId } from '@/lib/utils'
-import { getEvents, createEvent as createGoogleEvent } from '@/lib/google/calendar'
+import { getEvents, getCalendars, createEvent as createGoogleEvent } from '@/lib/google/calendar'
 import type { FamilyMember, FamilyMemory, FamilyProfile } from '@/lib/types'
 
 // ---------------------------------------------------------------------------
@@ -241,6 +241,14 @@ export const TOOLS: Anthropic.Tool[] = [
 
   // --- Google Calendar tools (only used when tokens are available) ---
   {
+    name: 'list_google_calendars',
+    description: 'List all Google Calendars the user has access to (names and IDs). Call this before create_google_event when the user specifies a particular calendar (e.g. "family calendar", "shared calendar") so you can find the right calendar_id.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {},
+    },
+  },
+  {
     name: 'get_google_events',
     description: 'Get events from Google Calendar (only available when Google Calendar is connected)',
     input_schema: {
@@ -271,6 +279,7 @@ export const TOOLS: Anthropic.Tool[] = [
         is_all_day: { type: 'boolean', description: 'Whether the event is all-day' },
         location: { type: 'string', description: 'Optional location' },
         notes: { type: 'string', description: 'Optional notes/description' },
+        calendar_id: { type: 'string', description: 'Google Calendar ID to create the event in. Use list_google_calendars first to find the right ID when the user specifies a named calendar. Defaults to the primary calendar if omitted.' },
       },
       required: ['title', 'start_datetime', 'end_datetime'],
     },
@@ -342,7 +351,7 @@ export function buildSystemPrompt(
       : ''
 
   const calendarInstructions = hasGoogleTokens
-    ? 'Google Calendar is connected — prefer get_google_events and create_google_event for calendar operations. Use list_events / create_event only for Firestore-only storage.'
+    ? 'Google Calendar is connected — prefer get_google_events and create_google_event for calendar operations. Use list_events / create_event only for Firestore-only storage. IMPORTANT: when the user asks to add an event to a specific calendar (e.g. "family calendar", "shared calendar", "work calendar"), ALWAYS call list_google_calendars first to find the correct calendar_id, then pass it to create_google_event. Never assume the calendar ID.'
     : 'Google Calendar is not connected — use list_events and create_event for Firestore-based calendar.'
 
   // The lens: how this family wants to be helped.
@@ -735,6 +744,19 @@ export async function executeTool(
     // -----------------------------------------------------------------------
     // GOOGLE CALENDAR TOOLS
     // -----------------------------------------------------------------------
+    case 'list_google_calendars': {
+      if (!googleTokens) return { error: 'Google Calendar not connected' }
+      const cals = await getCalendars(googleTokens.accessToken, googleTokens.refreshToken)
+      return {
+        calendars: cals.map((c) => ({
+          id: c.id,
+          name: c.summary,
+          primary: c.primary ?? false,
+          accessRole: c.accessRole,
+        })),
+      }
+    }
+
     case 'get_google_events': {
       if (!googleTokens) return { error: 'Google Calendar not connected' }
       const daysAhead = (input.days_ahead as number) ?? 14
@@ -763,6 +785,7 @@ export async function executeTool(
           location: input.location as string | undefined,
           notes: input.notes as string | undefined,
           timezone: ctx.timezone,
+          calendarId: input.calendar_id as string | undefined,
         },
       )
       actions.push(`Created Google Calendar event: ${created.title} on ${created.start.split('T')[0]}`)
