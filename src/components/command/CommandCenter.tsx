@@ -64,10 +64,11 @@ const GCAL_PREFIX = 'fam-gcal-'
 const CLAR_PREFIX = 'fam-clar-'
 const GMAIL_PREFIX = 'fam-gmail-'
 const LAST_RUN_PREFIX = 'fam-lastrun-'
+const CTX_SIG_PREFIX = 'fam-ctxsig-'
 
-// 5-minute throttle: if nothing has changed, don't re-run the attention engine
-// just because the user navigated back to the screen or reopened the PWA.
-const ENGINE_THROTTLE_MS = 5 * 60 * 1000
+// 15-minute throttle: skip the engine if the family data hasn't meaningfully
+// changed and we already ran recently (survives navigation + PWA re-opens).
+const ENGINE_THROTTLE_MS = 15 * 60 * 1000
 
 // Open a specific Gmail message reliably — including inside an iOS standalone
 // PWA, where both <a target="_blank"> and window.open() are silently blocked.
@@ -143,6 +144,7 @@ export function CommandCenter() {
   const clarKey = familyId ? CLAR_PREFIX + familyId : null
   const gmailKey = familyId ? GMAIL_PREFIX + familyId : null
   const lastRunKey = familyId ? LAST_RUN_PREFIX + familyId : null
+  const ctxSigKey = familyId ? CTX_SIG_PREFIX + familyId : null
 
   const [report, setReport] = useState<AttentionReport | null>(null)
   const [engineError, setEngineError] = useState<string | null>(null)
@@ -204,8 +206,12 @@ export function CommandCenter() {
     // window doesn't re-run the engine if nothing has changed.
     const savedLastRun = readCache<number>(lastRunKey)
     if (savedLastRun) lastRun.current = savedLastRun
+    // Restore the last context signature so Firestore delivering the same data
+    // on remount doesn't look like "new context" and trigger an immediate re-run.
+    const savedCtxSig = readCache<string>(ctxSigKey)
+    if (savedCtxSig) lastCtxSig.current = savedCtxSig
     setHydrated(true)
-  }, [familyId, attnKey, gcalKey, clarKey, gmailKey, dismissKey, lastRunKey])
+  }, [familyId, attnKey, gcalKey, clarKey, gmailKey, dismissKey, lastRunKey, ctxSigKey])
 
   // Scan Gmail for actionable items — once per session, using the main Google
   // connection's token (it already includes the gmail.readonly scope). Results
@@ -480,9 +486,14 @@ export function CommandCenter() {
   const lastCtxSig = useRef<string>('')
   useEffect(() => {
     if (!hydrated) return
-    if (lastCtxSig.current === '') { lastCtxSig.current = ctxSignature; return }
     if (lastCtxSig.current === ctxSignature) return
+    const prev = lastCtxSig.current
     lastCtxSig.current = ctxSignature
+    writeCache(ctxSigKey, ctxSignature)
+    // Skip on the very first hydration pass (prev was '' or the cached value).
+    // Only run when data *genuinely* changes after the initial load, and only if
+    // at least 60 seconds have elapsed since the last run (prevents rapid-fire).
+    if (prev === '' || Date.now() - lastRun.current < 60_000) return
     lastRun.current = Date.now()
     // Silent if a report exists, cold-start otherwise (so the user sees the loader).
     runEngine(undefined, !!report)
