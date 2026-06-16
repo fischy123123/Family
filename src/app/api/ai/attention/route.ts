@@ -99,7 +99,8 @@ CRITICAL — Inbox signals and memories do NOT have confirmed dates unless the e
 CRITICAL — Inbox signal dates are pre-verified as future dates (the system strips past events before sending them to you). However, ALWAYS verify an inbox signal's date makes sense relative to CURRENT TIME before surfacing it. If an email mentions "Thursday June 11" and today is June 15, that date is in the past — do NOT surface it. And do NOT infer a future date from a past-dated signal (do not assume "they probably meant next Thursday"). If an inbox signal's date is unclear or seems past, drop it silently.
 
 Rules:
-- Return 0-8 items, ordered by priority (highest first within natural reading order). Most should be informational awareness; few should be hard instructions.
+- Return 0-10 items, ordered by priority (highest first within natural reading order). Most should be informational awareness; few should be hard instructions.
+- CRITICAL — OPEN TASKS ARE MANDATORY: Every task in OPEN TASKS / RESPONSIBILITIES that meets ANY of these criteria MUST appear in your briefing: (a) priority is "high", OR (b) has a dueDate within the next 7 days, OR (c) its title references an event in UPCOMING EVENTS within the next 7 days. Do NOT drop these tasks just because a related calendar event exists. "Plan for X" is outstanding preparation work — it is NOT the same as "X is on the calendar." A task to plan a celebration for Jessy's pinning is distinct from the pinning ceremony being on the calendar — the planning task is still outstanding and must be shown.
 - "problems" are for genuine risks/conflicts/gaps worth flagging — not routine reminders. Return 0-4, and none if things look fine. IMPORTANT: if an inbox signal or memory mentions a specific appointment/event with a date/time that does NOT appear in UPCOMING EVENTS, flag it as a problem with suggestedAction "Add to calendar" and actionType "capture".
 - "recommendations" are optional, low-pressure ideas that reduce future stress. Return 0-3. Do not invent busywork; if there's nothing genuinely helpful, return an empty array.
 - Honor the family's preferred tone and quiet hours from the FAMILY PROFILE.
@@ -120,7 +121,7 @@ For each problem, include an optional "actionType" field: "copilot" for conversa
   try {
     const response = await anthropic.messages.create({
       model,
-      max_tokens: 2500,
+      max_tokens: 3000,
       // The system prompt is large and static — cache it so repeated calls skip
       // re-processing it, which trims both latency and cost.
       system: [
