@@ -119,7 +119,11 @@ export async function createEvent(
   const auth = getAuthorizedClient(accessToken, refreshToken)
   const calendar = google.calendar({ version: 'v3', auth })
   const calendarId = event.calendarId ?? 'primary'
-  const tz = event.timezone || 'UTC'
+  // Only pass timeZone when we actually know it. Passing 'UTC' as a default
+  // causes "2:00 PM" (local intent) to be stored as 2 PM UTC = 7 AM Pacific.
+  // Without a timeZone, Google Calendar interprets the datetime in the user's
+  // calendar's own default timezone — a much safer fallback.
+  const tz = event.timezone
 
   const requestBody: {
     summary: string
@@ -133,10 +137,10 @@ export async function createEvent(
     description: event.notes,
     start: event.isAllDay
       ? { date: event.start.split('T')[0] }
-      : { dateTime: event.start, timeZone: tz },
+      : { dateTime: event.start, ...(tz ? { timeZone: tz } : {}) },
     end: event.isAllDay
       ? { date: event.end.split('T')[0] }
-      : { dateTime: event.end, timeZone: tz },
+      : { dateTime: event.end, ...(tz ? { timeZone: tz } : {}) },
   }
 
   const { data } = await calendar.events.insert({ calendarId, requestBody })
@@ -173,7 +177,7 @@ export async function updateEvent(
 ): Promise<GoogleEvent> {
   const auth = getAuthorizedClient(accessToken, refreshToken)
   const calendar = google.calendar({ version: 'v3', auth })
-  const tz = updates.timezone || 'UTC'
+  const tz = updates.timezone // undefined is safe — see createEvent comment above
 
   const requestBody: Record<string, unknown> = {}
   if (updates.title !== undefined) requestBody.summary = updates.title
@@ -182,12 +186,12 @@ export async function updateEvent(
   if (updates.start !== undefined) {
     requestBody.start = updates.isAllDay
       ? { date: updates.start.split('T')[0] }
-      : { dateTime: updates.start, timeZone: tz }
+      : { dateTime: updates.start, ...(tz ? { timeZone: tz } : {}) }
   }
   if (updates.end !== undefined) {
     requestBody.end = updates.isAllDay
       ? { date: updates.end.split('T')[0] }
-      : { dateTime: updates.end, timeZone: tz }
+      : { dateTime: updates.end, ...(tz ? { timeZone: tz } : {}) }
   }
 
   const { data } = await calendar.events.patch({ calendarId, eventId, requestBody })

@@ -425,8 +425,12 @@ export function CommandCenter() {
     // more than 30 minutes ago are irrelevant to the briefing, and excluding
     // them prevents phantom deleted events (which linger in Firestore until the
     // next Google Calendar sync) from being flagged as upcoming appointments.
-    const relevantCutoff = new Date(Date.now() - 30 * 60 * 1000).toISOString()
-    const upcomingEvents = events.filter((e) => (e.end ?? e.start) >= relevantCutoff)
+    // Use getTime() for comparison — ISO string comparison is unreliable when
+    // mixed timezone formats are present (e.g. "-07:00" vs "Z" suffixes).
+    const relevantCutoff = Date.now() - 30 * 60 * 1000
+    const upcomingEvents = events.filter(
+      (e) => new Date(e.end ?? e.start).getTime() >= relevantCutoff
+    )
 
     return {
       members, events: upcomingEvents, tasks: allTasks, chores, plans, lists, eventContext,
