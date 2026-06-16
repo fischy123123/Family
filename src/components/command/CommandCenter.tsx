@@ -170,6 +170,9 @@ export function CommandCenter() {
   const clarificationsFetched = useRef(false)
   const [emailSuggestions, setEmailSuggestions] = useState<EmailSuggestion[]>([])
   const emailFetched = useRef(false)
+  // Incrementing this forces the Google Calendar fetch effect to re-run, even
+  // when its other deps (isConnected, familyId) haven't changed.
+  const [calSyncKey, setCalSyncKey] = useState(0)
   // Titles of items the user has dismissed this session. Persisted to localStorage
   // so they survive a page refresh (cleared when a fresh briefing arrives).
   const DISMISS_PREFIX = 'fam-dismissed-'
@@ -191,12 +194,39 @@ export function CommandCenter() {
     Record<string, { responsibleId?: string; forIds?: string[] }>
   >({})
 
+  // Cached attention reports expire after 4 hours. Beyond that the stale-while-
+  // revalidate pattern causes more confusion than it saves (e.g. deleted events
+  // keep appearing). A cold load is better than a confidently wrong briefing.
+  const REPORT_TTL_MS = 4 * 60 * 60 * 1000
+
+  // Clear all per-family localStorage caches and force a fresh engine run.
+  const clearCaches = useCallback(() => {
+    if (!familyId) return
+    const prefixes = [ATTN_PREFIX, GCAL_PREFIX, CLAR_PREFIX, GMAIL_PREFIX, LAST_RUN_PREFIX, CTX_SIG_PREFIX]
+    prefixes.forEach((p) => {
+      try { localStorage.removeItem(p + familyId) } catch { /* ignore */ }
+    })
+    setReport(null)
+    setPendingReport(null)
+    setGoogleEvents([])
+    setGoogleLoaded(false)
+    lastRun.current = 0
+    lastCtxSig.current = ''
+    setEngineError(null)
+    // Force a fresh Google Calendar fetch so Firestore gets the corrected event list.
+    setCalSyncKey((k) => k + 1)
+  }, [familyId])
+
   // Hydrate everything from cache the moment the family id is known, so a
   // returning visit paints a complete page on the first frame.
   useEffect(() => {
     if (!familyId) return
+    // Only restore the report if it's still fresh enough to be trustworthy.
+    const savedLastRun = readCache<number>(lastRunKey)
+    if (savedLastRun) lastRun.current = savedLastRun
+    const reportAge = savedLastRun ? Date.now() - savedLastRun : Infinity
     const r = readCache<AttentionReport>(attnKey)
-    if (r) setReport(r)
+    if (r && reportAge < REPORT_TTL_MS) setReport(r)
     const g = readCache<CalendarEvent[]>(gcalKey)
     if (g?.length) setGoogleEvents(g)
     const c = readCache<CalendarClarification[]>(clarKey)
@@ -205,10 +235,6 @@ export function CommandCenter() {
     if (em?.length) setEmailSuggestions(em)
     const dism = readCache<string[]>(dismissKey)
     if (dism?.length) setDismissedTitles(new Set(dism))
-    // Restore when the engine last ran so reopening the PWA within the throttle
-    // window doesn't re-run the engine if nothing has changed.
-    const savedLastRun = readCache<number>(lastRunKey)
-    if (savedLastRun) lastRun.current = savedLastRun
     // Restore the last context signature so Firestore delivering the same data
     // on remount doesn't look like "new context" and trigger an immediate re-run.
     const savedCtxSig = readCache<string>(ctxSigKey)
@@ -316,7 +342,7 @@ export function CommandCenter() {
     load()
     return () => { cancelled = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isConnected, gcalKey, familyId])
+  }, [isConnected, gcalKey, familyId, calSyncKey])
 
   // Ask the AI which calendar events are ambiguous — once per session, skipping
   // events the family has already explained. Cached so it doesn't pop in again.
@@ -1174,6 +1200,19 @@ export function CommandCenter() {
           <div className="text-4xl mb-3">🌤️</div>
           <p className="text-sm font-medium text-slate-700">You&apos;re all clear.</p>
           <p className="text-xs text-slate-400 mt-1">Nothing needs your attention right now.</p>
+        </div>
+      )}
+
+      {/* Escape hatch — if a deleted event or wrong data keeps appearing, this
+          nukes all local caches and forces a fresh pull from Google + AI. */}
+      {(report || engineError) && (
+        <div className="text-center pb-2">
+          <button
+            onClick={() => { clearCaches(); runEngine(undefined, false) }}
+            className="text-xs text-slate-300 hover:text-slate-500 transition-colors"
+          >
+            Seeing something wrong? Reset cached data
+          </button>
         </div>
       )}
     </div>
