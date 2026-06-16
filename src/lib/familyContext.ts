@@ -135,7 +135,19 @@ export function buildFamilyContext(input: FamilyContextInput): string {
   const sections: string[] = []
 
   const nowFormatted = fmtDatetime(now, tz)
-  sections.push(`CURRENT TIME: ${nowFormatted}${tz ? ` (timezone: ${tz})` : ''}`)
+  // Give the AI an unambiguous local-date anchor so it doesn't count UTC days
+  const localDateStr = new Date(now).toLocaleDateString('en-US', {
+    timeZone: tz,
+    weekday: 'long',
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+  })
+  sections.push(
+    `CURRENT TIME: ${nowFormatted}${tz ? ` (timezone: ${tz})` : ''}\n` +
+    `TODAY'S LOCAL DATE: ${localDateStr} — use this as the anchor for all relative date reasoning. ` +
+    `"Tomorrow" means the calendar day AFTER this date in the user's timezone, not the next UTC day.`
+  )
 
   const matchedSelf = currentUserEmail
     ? members.find((m) => m.email?.toLowerCase() === currentUserEmail.toLowerCase())

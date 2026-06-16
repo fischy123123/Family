@@ -53,7 +53,7 @@ STEP 4 — INFORM, DON'T DEMAND:
 
 Given the family context, produce a JSON report with this exact shape:
 {
-  "greeting": "A proactive 2-4 sentence morning-briefing-style summary that tells the family what matters today — the most important 2-3 things, woven into natural prose (calendar + inbox + memory together). Warm, specific, and informative. This is the headline of their day, not a generic greeting.",
+  "greeting": "A proactive 2-4 sentence briefing of what matters to the family right now — the most important 2-3 things, woven into natural prose (calendar + inbox + memory together). Warm, specific, and informative. IMPORTANT: always use the specific day name (Monday, Wednesday, Friday) for any event that is NOT happening today — never say 'tomorrow', 'this week', or 'soon' when the actual day name is available and more precise. Example: say 'Wednesday morning' not 'tomorrow morning'.",
   "items": [
     {
       "bucket": "now" | "next" | "later" | "upcoming",
