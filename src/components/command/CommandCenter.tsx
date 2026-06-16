@@ -161,11 +161,7 @@ export function CommandCenter() {
   // even when called silently. Used after cache reset or when the cached report
   // is stale, so the fresh result appears immediately without a "tap to see" step.
   const forceDirectRef = useRef(false)
-  // Guards the background "deep" (Opus) pass: each fast run bumps this token, and
-  // a deep pass only applies its result if its token is still the latest — so a
-  // newer briefing never gets clobbered by a stale deep pass finishing late.
   const deepToken = useRef<number>(0)
-  const [deepening, setDeepening] = useState(false)
   const [clarifications, setClarifications] = useState<CalendarClarification[]>([])
   const [clarificationAnswers, setClarificationAnswers] = useState<Record<string, string>>({})
   const [clarificationsDismissed, setClarificationsDismissed] = useState(false)
@@ -460,7 +456,6 @@ export function CommandCenter() {
       const eventContext = overrideContext ??
         eventContexts.map((e) => ({ eventTitle: e.eventTitle, context: e.context }))
 
-      // Pass 1 — FAST (Sonnet): paint the briefing quickly.
       const res = await fetch('/api/ai/attention', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -476,37 +471,7 @@ export function CommandCenter() {
         }
         setEngineError(null)
         writeCache(attnKey, data)
-        // Persist so the PWA reopening within the throttle window skips a
-        // pointless re-run when nothing has changed.
         writeCache(lastRunKey, lastRun.current)
-
-        // Pass 2 — DEEP (Opus): silently sharpen the prioritization and update in
-        // place. Not awaited so the fast result shows immediately. Guarded by the
-        // token so a stale deep pass never overwrites a newer briefing.
-        setDeepening(true)
-        ;(async () => {
-          try {
-            const dRes = await fetch('/api/ai/attention', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(buildEngineBody(eventContext, 'deep')),
-            })
-            const dData = await dRes.json() as AttentionReport & { error?: string }
-            if (dRes.ok && deepToken.current === myToken) {
-              // Follow the same pending/direct path as the fast pass for this run.
-              if (isPending) {
-                setPendingReport(dData)
-              } else {
-                setReport(dData)
-              }
-              writeCache(attnKey, dData)
-            }
-          } catch {
-            /* deep pass is best-effort — the fast result already stands */
-          } finally {
-            if (deepToken.current === myToken) setDeepening(false)
-          }
-        })()
       } else {
         // Surface the error so it's visible instead of silently showing nothing.
         setEngineError(data.error ?? 'Something went wrong. Tap refresh to try again.')
@@ -788,7 +753,7 @@ export function CommandCenter() {
 
   return (
     <div className="max-w-3xl mx-auto px-4 sm:px-6 py-6 space-y-6">
-      <TopProgressBar active={busy || deepening} />
+      <TopProgressBar active={busy} />
 
       {/* Header */}
       <div className="flex items-start justify-between">
@@ -892,20 +857,13 @@ export function CommandCenter() {
             <Sparkles size={18} className="mt-0.5 shrink-0 opacity-90" />
             <p className="text-[15px] leading-relaxed font-medium">{report.greeting}</p>
           </button>
-          {deepening ? (
-            <div className="flex items-center gap-1.5 mt-3 text-[11px] text-white/70">
-              <span className="w-3 h-3 border-[1.5px] border-white/40 border-t-transparent rounded-full animate-spin" />
-              Sharpening priorities…
-            </div>
-          ) : (
-            <button
-              onClick={() => openBriefingInCopilot(report.greeting!)}
-              className="flex items-center gap-1.5 mt-3 text-[12px] font-semibold text-white/90 hover:text-white transition-colors"
-            >
-              <MessageCircle size={13} className="shrink-0" />
-              Ask a follow-up
-            </button>
-          )}
+          <button
+            onClick={() => openBriefingInCopilot(report.greeting!)}
+            className="flex items-center gap-1.5 mt-3 text-[12px] font-semibold text-white/90 hover:text-white transition-colors"
+          >
+            <MessageCircle size={13} className="shrink-0" />
+            Ask a follow-up
+          </button>
         </div>
       )}
 

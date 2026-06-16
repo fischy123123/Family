@@ -1,13 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
-import { buildFamilyContext, type FamilyContextInput } from '@/lib/familyContext'
+import { buildFamilyContextParts, type FamilyContextInput } from '@/lib/familyContext'
 
-// Two-tier escalation:
-// - 'fast'  (Sonnet) paints the briefing quickly on load.
-// - 'deep'  (Opus) silently re-runs the same reasoning for sharper prioritization
-//   and updates the briefing in place when it returns.
-const FAST_MODEL = 'claude-sonnet-4-6'
-const DEEP_MODEL = 'claude-opus-4-8'
+// Single-model attention engine. Sonnet is fast, capable, and cost-effective
+// for a family briefing. The previous Opus deep-pass was removed because it
+// ran on every call and dominated the API bill without meaningful quality gain.
+const MODEL = 'claude-sonnet-4-6'
 
 // The Attention Engine + Timeline Intelligence Engine.
 // Takes full family context, returns a prioritized "what needs attention now" report.
@@ -17,8 +15,9 @@ export async function POST(request: NextRequest) {
   }
 
   const ctx: FamilyContextInput & { tier?: 'fast' | 'deep' } = await request.json()
-  const model = ctx.tier === 'deep' ? DEEP_MODEL : FAST_MODEL
-  const contextBlock = buildFamilyContext(ctx)
+  // Build context as two parts: the static data block (cacheable) and the
+  // dynamic time header (changes every run — not cached).
+  const { timeHeader, dataBlock } = buildFamilyContextParts(ctx)
 
   const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
@@ -121,14 +120,25 @@ For each problem, include an optional "actionType" field: "copilot" for conversa
 
   try {
     const response = await anthropic.messages.create({
-      model,
-      max_tokens: 3000,
-      // The system prompt is large and static — cache it so repeated calls skip
-      // re-processing it, which trims both latency and cost.
+      model: MODEL,
+      // Briefing JSON typically uses 800-1200 tokens. 1500 is a comfortable
+      // ceiling that avoids truncation while not over-allocating.
+      max_tokens: 1500,
+      // System prompt: static → cache it (saves ~600 tokens on every cache hit).
       system: [
         { type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } },
       ],
-      messages: [{ role: 'user', content: `FAMILY CONTEXT:\n\n${contextBlock}` }],
+      messages: [{
+        role: 'user',
+        content: [
+          // Data block: members, events, tasks, etc. Changes only when the
+          // family's actual data changes — cache it to avoid re-processing the
+          // same context on rapid consecutive calls.
+          { type: 'text', text: `FAMILY CONTEXT:\n\n${dataBlock}`, cache_control: { type: 'ephemeral' } },
+          // Time header: always fresh — current time + today's date anchor.
+          { type: 'text', text: timeHeader },
+        ],
+      }],
     })
 
     const text = response.content[0].type === 'text' ? response.content[0].text : '{}'

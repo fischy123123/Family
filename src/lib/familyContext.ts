@@ -115,6 +115,17 @@ function fmtProfile(p: FamilyProfile): string {
 }
 
 export function buildFamilyContext(input: FamilyContextInput): string {
+  const { timeHeader, dataBlock } = buildFamilyContextParts(input)
+  return `${timeHeader}\n\n${dataBlock}`
+}
+
+// Split into a time-dynamic header (changes every run) and a mostly-static data
+// block (members, events, tasks, etc.). The data block can be prompt-cached so
+// only the small time header incurs full token cost on repeat calls.
+export function buildFamilyContextParts(input: FamilyContextInput): {
+  timeHeader: string
+  dataBlock: string
+} {
   const {
     members, events, tasks, chores, plans, lists, now, timezone, eventContext,
     profile, memories, inbox, currentUserEmail, currentUserName,
@@ -133,10 +144,8 @@ export function buildFamilyContext(input: FamilyContextInput): string {
 
   const openTasks = (tasks ?? []).filter((t) => !t.isCompleted).slice(0, 40)
 
-  const sections: string[] = []
-
+  // ── Time header (dynamic — changes every run, excluded from cache) ────────
   const nowFormatted = fmtDatetime(now, tz)
-  // Give the AI an unambiguous local-date anchor so it doesn't count UTC days
   const localDateStr = new Date(now).toLocaleDateString('en-US', {
     timeZone: tz,
     weekday: 'long',
@@ -144,11 +153,13 @@ export function buildFamilyContext(input: FamilyContextInput): string {
     month: 'long',
     day: 'numeric',
   })
-  sections.push(
+  const timeHeader =
     `CURRENT TIME: ${nowFormatted}${tz ? ` (timezone: ${tz})` : ''}\n` +
     `TODAY'S LOCAL DATE: ${localDateStr} — use this as the anchor for all relative date reasoning. ` +
     `"Tomorrow" means the calendar day AFTER this date in the user's timezone, not the next UTC day.`
-  )
+
+  // ── Data block (mostly static — eligible for prompt caching) ────────────
+  const dataSections: string[] = []
 
   const matchedSelf = currentUserEmail
     ? members.find((m) => m.email?.toLowerCase() === currentUserEmail.toLowerCase())
@@ -158,7 +169,7 @@ export function buildFamilyContext(input: FamilyContextInput): string {
     : currentUserName || currentUserEmail
       ? `${currentUserName ?? ''}${currentUserEmail ? ` <${currentUserEmail}>` : ''} — NOTE: this person is not yet matched to a family member profile`
       : 'unknown'
-  sections.push(`SIGNED-IN USER (the person you are talking to right now — address them as "you"): ${selfDescriptor}`)
+  dataSections.push(`SIGNED-IN USER (the person you are talking to right now — address them as "you"): ${selfDescriptor}`)
 
   // Split memories: family-wide vs personal to the current user.
   // A memory with ANY subjectEmail is personal to that person only — it must
@@ -189,7 +200,7 @@ export function buildFamilyContext(input: FamilyContextInput): string {
           .join('\n')}`
       )
     }
-    sections.push(
+    dataSections.push(
       `PERSONAL LENS FOR ${matchedSelf?.name ?? 'THE SIGNED-IN USER'} ` +
       `(READ THIS FIRST — apply it as the primary filter on what you surface in this briefing. ` +
       `Do not show them things that contradict their stated preferences or that they have ` +
@@ -201,13 +212,13 @@ export function buildFamilyContext(input: FamilyContextInput): string {
   if (profile) {
     const profileText = fmtProfile(profile)
     if (profileText) {
-      sections.push(
+      dataSections.push(
         `HOUSEHOLD PROFILE (secondary lens — shared family priorities. Apply after the personal lens above):\n${profileText}`
       )
     }
   }
 
-  sections.push(
+  dataSections.push(
     `FAMILY MEMBERS:\n${members.length ? members.map((m) => fmtMember(m, currentUserEmail)).join('\n') : '(none yet)'}`
   )
 
@@ -216,7 +227,7 @@ export function buildFamilyContext(input: FamilyContextInput): string {
       if (!!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1
       return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
     }).slice(0, 60)
-    sections.push(
+    dataSections.push(
       `WHAT YOU KNOW ABOUT THIS FAMILY (shared durable memory — facts, routines, preferences that apply to everyone):\n${ordered
         .map((m) => {
           const who = m.subjectEmail ? ` (about ${m.subjectEmail})` : ''
@@ -227,7 +238,7 @@ export function buildFamilyContext(input: FamilyContextInput): string {
     )
   }
 
-  sections.push(
+  dataSections.push(
     `UPCOMING EVENTS (next 14 days):\n${
       upcomingEvents.length
         ? upcomingEvents
@@ -242,7 +253,7 @@ export function buildFamilyContext(input: FamilyContextInput): string {
     }`
   )
 
-  sections.push(
+  dataSections.push(
     `OPEN TASKS / RESPONSIBILITIES:\n${
       openTasks.length
         ? openTasks
@@ -260,7 +271,7 @@ export function buildFamilyContext(input: FamilyContextInput): string {
   )
 
   if (chores?.length) {
-    sections.push(
+    dataSections.push(
       `CHORES:\n${chores
         .map(
           (c) =>
@@ -271,7 +282,7 @@ export function buildFamilyContext(input: FamilyContextInput): string {
   }
 
   if (plans?.length) {
-    sections.push(
+    dataSections.push(
       `ACTIVE PLANS:\n${plans
         .map((p) => {
           const openTaskCount = p.tasks.filter((t) => !t.isCompleted).length
@@ -282,7 +293,7 @@ export function buildFamilyContext(input: FamilyContextInput): string {
   }
 
   if (lists?.length) {
-    sections.push(
+    dataSections.push(
       `LISTS:\n${lists
         .map((l) => {
           const remaining = l.items.filter((i) => !i.isComplete).length
@@ -298,7 +309,7 @@ export function buildFamilyContext(input: FamilyContextInput): string {
   const freshInbox = (inbox ?? []).filter((s) => !s.date || s.date >= todayStr)
 
   if (freshInbox.length > 0) {
-    sections.push(
+    dataSections.push(
       `FROM THE INBOX (actionable items the assistant found in the family's email — treat these as RAW SIGNALS, not facts. Fold the genuinely relevant ones into your briefing the same way you would a calendar event or task; decide what's worth surfacing and what's noise. Do NOT list these separately or tell the user to "check their inbox" — just inform them of what matters):\n${freshInbox
         .map((s) => {
           const when = s.date ? ` — ${fmtDate(s.date, tz)}` : ''
@@ -313,12 +324,12 @@ export function buildFamilyContext(input: FamilyContextInput): string {
 
 
   if (eventContext?.length) {
-    sections.push(
+    dataSections.push(
       `USER-PROVIDED CALENDAR CONTEXT (the family explained these otherwise-ambiguous events — rely on this to understand what they are, who they're for, and what prep they need):\n${eventContext
         .map((e) => `- "${e.eventTitle}": ${e.context}`)
         .join('\n')}`
     )
   }
 
-  return sections.join('\n\n')
+  return { timeHeader, dataBlock: dataSections.join('\n\n') }
 }
