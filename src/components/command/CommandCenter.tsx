@@ -1121,10 +1121,9 @@ export function CommandCenter() {
                   <ProblemCard
                     key={p.id}
                     problem={p}
-                    onCapture={(text) => openCapture({ text, autoAnalyze: true })}
-                    onCalendar={() => router.push('/calendar')}
                     onSaveTask={() => saveItemAsTask(p.title, p.detail)}
                     onDismiss={() => dismissItem(p.title)}
+                    onCopilot={(text) => openBriefingInCopilot(text)}
                   />
                 ),
               )}
@@ -1155,16 +1154,17 @@ export function CommandCenter() {
                   <div className="flex-1">
                     <p className="text-sm font-medium text-slate-900">{r.title}</p>
                     <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">{r.rationale}</p>
-                  </div>
-                  <div className="flex items-start gap-1 shrink-0">
                     {r.actionLabel && (
                       <button
-                        onClick={() => openCapture({ text: `${r.title}. ${r.rationale}`, autoAnalyze: true })}
-                        className="mt-0.5 px-3 py-1.5 rounded-xl text-xs font-semibold text-white bg-gradient-to-r from-purple-600 to-purple-700 hover:from-purple-500 hover:to-purple-600 transition-all"
+                        onClick={() => openBriefingInCopilot(`${r.title}. ${r.rationale}`)}
+                        className="mt-2 inline-flex items-center gap-1 text-xs font-medium text-purple-600 hover:text-purple-800"
                       >
-                        {r.actionLabel}
+                        <MessageCircle size={11} />
+                        {r.actionLabel} →
                       </button>
                     )}
+                  </div>
+                  <div className="flex items-start gap-1 shrink-0">
                     <button
                       onClick={() => dismissItem(r.title)}
                       className="p-1.5 rounded-lg text-slate-300 hover:text-slate-500 hover:bg-slate-100 transition-colors"
@@ -1244,34 +1244,19 @@ export function CommandCenter() {
 
 function ProblemCard({
   problem: p,
-  onCapture,
-  onCalendar,
   onSaveTask,
   onDismiss,
+  onCopilot,
 }: {
   problem: PotentialProblem
-  onCapture: (text: string) => void
-  onCalendar: () => void
   onSaveTask: () => void
   onDismiss: () => void
+  onCopilot: (text: string) => void
 }) {
   const [saved, setSaved] = useState(false)
   const severityBg = p.severity === 'high' ? '#fee2e2' : p.severity === 'medium' ? '#ffedd5' : '#fef9c3'
   const severityColor = p.severity === 'high' ? '#dc2626' : p.severity === 'medium' ? '#ea580c' : '#a16207'
   const borderColor = p.severity === 'high' ? '#dc2626' : p.severity === 'medium' ? '#f97316' : '#eab308'
-  const actionText = p.suggestedAction ? `${p.title}. ${p.detail}` : p.title
-
-  function handleAction() {
-    if (p.actionType === 'calendar') { onCalendar(); return }
-    // For capture and copilot types, use Capture pre-filled so the AI can create
-    // the right item (event, task, or reminder) based on what's needed.
-    onCapture(actionText)
-  }
-
-  function handleSave() {
-    setSaved(true)
-    onSaveTask()
-  }
 
   return (
     <div
@@ -1295,11 +1280,11 @@ function ProblemCard({
           )}
           {p.suggestedAction && (
             <button
-              onClick={handleAction}
+              onClick={() => onCopilot(`${p.title}. ${p.detail} — ${p.suggestedAction}`)}
               className="inline-flex items-center gap-1.5 text-xs text-blue-600 hover:text-blue-700 mt-2 font-medium"
             >
               <MessageCircle size={11} className="shrink-0" />
-              {p.suggestedAction}
+              {p.suggestedAction} →
             </button>
           )}
         </div>
@@ -1311,7 +1296,7 @@ function ProblemCard({
             {p.severity}
           </span>
           <button
-            onClick={handleSave}
+            onClick={() => { setSaved(true); onSaveTask() }}
             disabled={saved}
             className="p-1.5 rounded-lg transition-colors"
             style={{ color: saved ? '#22c55e' : '#cbd5e1' }}
@@ -1406,7 +1391,10 @@ function AttentionCard({
       style={{ borderLeft: `3px solid ${accent}`, opacity: done ? 0.5 : 1 }}
     >
       <div className="flex items-start gap-3 p-4">
-        {(item.sourceType === 'task' || item.sourceType === 'reminder') && (
+        {/* Checkbox only when there's a real Firestore task/reminder backing it.
+            AI-inferred awareness items use the same sourceType but have no
+            sourceId — there's nothing to mark complete, so no checkbox. */}
+        {item.sourceId && (item.sourceType === 'task' || item.sourceType === 'reminder') && (
           <button
             onClick={() => { setDone(true); onComplete() }}
             className="mt-0.5 w-5 h-5 rounded-md border-2 flex items-center justify-center shrink-0 transition-colors"
