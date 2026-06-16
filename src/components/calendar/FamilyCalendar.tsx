@@ -103,7 +103,8 @@ export function FamilyCalendar() {
           body: JSON.stringify({
             accessToken: fresh.accessToken,
             refreshToken: fresh.refreshToken,
-            event: { ...ev, ownerEmail: user?.email ?? '' },
+            // timezone is required so Google accepts datetimes with no offset.
+            event: { ...ev, ownerEmail: user?.email ?? '', timezone: Intl.DateTimeFormat().resolvedOptions().timeZone },
           }),
         })
         // Re-fetch events

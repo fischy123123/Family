@@ -304,6 +304,10 @@ export function CopilotChat() {
             familyId,
             userEmail: user.email,
             googleTokens,
+            // Required so Google Calendar events created from queued actions get
+            // the user's timezone. Without it Google rejects datetimes that have
+            // no UTC offset (which is how the AI emits them).
+            timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
           }),
         })
 

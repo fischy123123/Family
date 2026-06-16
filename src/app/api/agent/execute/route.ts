@@ -22,11 +22,12 @@ export const dynamic = 'force-dynamic'
 
 export async function POST(request: NextRequest) {
   try {
-    const { actions, familyId, userEmail, googleTokens } = (await request.json()) as {
+    const { actions, familyId, userEmail, googleTokens, timezone } = (await request.json()) as {
       actions: PendingAction[]
       familyId: string
       userEmail: string
       googleTokens: { accessToken: string; refreshToken: string } | null
+      timezone?: string
     }
 
     if (!familyId) {
@@ -57,7 +58,7 @@ export async function POST(request: NextRequest) {
     }
 
     const performed: string[] = []
-    const ctx: ToolContext = { db, familyId, userEmail, googleTokens: googleTokens ?? null, actions: performed, members }
+    const ctx: ToolContext = { db, familyId, userEmail, googleTokens: googleTokens ?? null, actions: performed, members, timezone }
 
     // Map temp ids (from propose phase) → real ids created during execution
     const idMap: Record<string, string> = {}
