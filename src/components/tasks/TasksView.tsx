@@ -30,16 +30,17 @@ interface ListItem {
   notes?: string
   priority: Priority
   dueDate?: string
+  assigneeEmail?: string
   isCompleted: boolean
   source: 'task' | 'reminder'
   raw: Task | FamilyReminder
 }
 
 function toListItem(t: Task): ListItem {
-  return { id: t.id, title: t.title, notes: t.notes, priority: t.priority, dueDate: t.dueDate, isCompleted: t.isCompleted, source: 'task', raw: t }
+  return { id: t.id, title: t.title, notes: t.notes, priority: t.priority, dueDate: t.dueDate, assigneeEmail: t.assigneeEmail, isCompleted: t.isCompleted, source: 'task', raw: t }
 }
 function reminderToListItem(r: FamilyReminder): ListItem {
-  return { id: r.id, title: r.title, notes: r.notes, priority: r.priority, dueDate: r.dueDate, isCompleted: r.isCompleted, source: 'reminder', raw: r }
+  return { id: r.id, title: r.title, notes: r.notes, priority: r.priority, dueDate: r.dueDate, assigneeEmail: r.assigneeEmail, isCompleted: r.isCompleted, source: 'reminder', raw: r }
 }
 
 function sortItems(items: ListItem[]): ListItem[] {
@@ -63,6 +64,7 @@ export function TasksView() {
   const [showCompleted, setShowCompleted] = useState(false)
   const [addTitle, setAddTitle] = useState('')
   const [addPriority, setAddPriority] = useState<Priority>('none')
+  const [addAssignee, setAddAssignee] = useState('')
   const [adding, setAdding] = useState(false)
 
   const allItems: ListItem[] = [
@@ -86,15 +88,15 @@ export function TasksView() {
     }
   }
 
-  async function save(item: ListItem, patch: { title: string; notes: string; priority: Priority; dueDate: string }) {
+  async function save(item: ListItem, patch: EditPatch) {
     const trimmed = patch.title.trim()
     if (!trimmed) return
     if (item.source === 'task') {
       const t = item.raw as Task
-      await updateTask({ ...t, title: trimmed, notes: patch.notes || undefined, priority: patch.priority, dueDate: patch.dueDate || undefined })
+      await updateTask({ ...t, title: trimmed, notes: patch.notes || undefined, priority: patch.priority, dueDate: patch.dueDate || undefined, assigneeEmail: patch.assigneeEmail || undefined })
     } else {
       const r = item.raw as FamilyReminder
-      await updateReminder({ ...r, title: trimmed, notes: patch.notes || undefined, priority: patch.priority, dueDate: patch.dueDate || undefined })
+      await updateReminder({ ...r, title: trimmed, notes: patch.notes || undefined, priority: patch.priority, dueDate: patch.dueDate || undefined, assigneeEmail: patch.assigneeEmail || undefined })
     }
   }
 
@@ -113,11 +115,13 @@ export function TasksView() {
       title,
       isCompleted: false,
       priority: addPriority,
+      assigneeEmail: addAssignee || undefined,
       source: 'manual',
       createdAt: new Date().toISOString(),
     } as Task)
     setAddTitle('')
     setAddPriority('none')
+    setAddAssignee('')
     setAdding(false)
   }
 
@@ -129,30 +133,44 @@ export function TasksView() {
       </div>
 
       {/* Quick-add */}
-      <form onSubmit={handleAdd} className="flex gap-2 mb-6">
-        <input
-          value={addTitle}
-          onChange={(e) => setAddTitle(e.target.value)}
-          placeholder="Add a task…"
-          className="flex-1 text-sm rounded-xl px-3 py-2.5 border border-slate-200 focus:outline-none focus:border-blue-300 bg-white"
-        />
-        <select
-          value={addPriority}
-          onChange={(e) => setAddPriority(e.target.value as Priority)}
-          className="text-xs rounded-xl px-2 py-2.5 border border-slate-200 focus:outline-none focus:border-blue-300 bg-white text-slate-600"
-        >
-          <option value="none">Priority</option>
-          <option value="high">🔴 High</option>
-          <option value="medium">🟠 Medium</option>
-          <option value="low">🟢 Low</option>
-        </select>
-        <button
-          type="submit"
-          disabled={!addTitle.trim() || adding}
-          className="px-3 py-2.5 rounded-xl bg-blue-600 text-white disabled:opacity-40 transition-opacity"
-        >
-          <Plus size={16} />
-        </button>
+      <form onSubmit={handleAdd} className="mb-6 space-y-2">
+        <div className="flex gap-2">
+          <input
+            value={addTitle}
+            onChange={(e) => setAddTitle(e.target.value)}
+            placeholder="Add a task…"
+            className="flex-1 text-sm rounded-xl px-3 py-2.5 border border-slate-200 focus:outline-none focus:border-blue-300 bg-white"
+          />
+          <button
+            type="submit"
+            disabled={!addTitle.trim() || adding}
+            className="px-3 py-2.5 rounded-xl bg-blue-600 text-white disabled:opacity-40 transition-opacity"
+          >
+            <Plus size={16} />
+          </button>
+        </div>
+        <div className="flex gap-2">
+          <select
+            value={addPriority}
+            onChange={(e) => setAddPriority(e.target.value as Priority)}
+            className="flex-1 text-xs rounded-xl px-2 py-2 border border-slate-200 focus:outline-none focus:border-blue-300 bg-white text-slate-600"
+          >
+            <option value="none">Priority</option>
+            <option value="high">🔴 High</option>
+            <option value="medium">🟠 Medium</option>
+            <option value="low">🟢 Low</option>
+          </select>
+          <select
+            value={addAssignee}
+            onChange={(e) => setAddAssignee(e.target.value)}
+            className="flex-1 text-xs rounded-xl px-2 py-2 border border-slate-200 focus:outline-none focus:border-blue-300 bg-white text-slate-600"
+          >
+            <option value="">Anyone</option>
+            {members.map((m) => (
+              <option key={m.id} value={m.email}>{m.emoji} {m.name}</option>
+            ))}
+          </select>
+        </div>
       </form>
 
       {/* Open tasks */}
@@ -168,6 +186,7 @@ export function TasksView() {
             <TaskRow
               key={item.id}
               item={item}
+              members={members}
               onToggle={() => toggle(item)}
               onSave={(patch) => save(item, patch)}
               onRemove={() => remove(item)}
@@ -191,6 +210,7 @@ export function TasksView() {
                 <TaskRow
                   key={item.id}
                   item={item}
+                  members={members}
                   onToggle={() => toggle(item)}
                   onSave={(patch) => save(item, patch)}
                   onRemove={() => remove(item)}
@@ -330,16 +350,17 @@ function ChoresSection({ chores, members, onCreate, onUpdate, onDelete }: {
   )
 }
 
-type EditPatch = { title: string; notes: string; priority: Priority; dueDate: string }
+type EditPatch = { title: string; notes: string; priority: Priority; dueDate: string; assigneeEmail: string }
 
-function TaskRow({ item, onToggle, onSave, onRemove }: {
+function TaskRow({ item, members, onToggle, onSave, onRemove }: {
   item: ListItem
+  members: FamilyMember[]
   onToggle: () => void
   onSave: (patch: EditPatch) => Promise<void>
   onRemove: () => void
 }) {
   const [editing, setEditing] = useState(false)
-  const [draft, setDraft] = useState<EditPatch>({ title: '', notes: '', priority: 'none', dueDate: '' })
+  const [draft, setDraft] = useState<EditPatch>({ title: '', notes: '', priority: 'none', dueDate: '', assigneeEmail: '' })
   const [saving, setSaving] = useState(false)
   const titleRef = useRef<HTMLInputElement>(null)
 
@@ -347,6 +368,9 @@ function TaskRow({ item, onToggle, onSave, onRemove }: {
     ? new Date(item.dueDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
     : null
   const overdue = item.dueDate && !item.isCompleted && new Date(item.dueDate) < new Date()
+  const assignee = item.assigneeEmail
+    ? members.find((m) => m.email?.toLowerCase() === item.assigneeEmail!.toLowerCase())
+    : undefined
 
   function startEdit() {
     setDraft({
@@ -354,6 +378,7 @@ function TaskRow({ item, onToggle, onSave, onRemove }: {
       notes: item.notes ?? '',
       priority: item.priority,
       dueDate: item.dueDate ? item.dueDate.split('T')[0] : '',
+      assigneeEmail: item.assigneeEmail ?? '',
     })
     setEditing(true)
   }
@@ -406,6 +431,16 @@ function TaskRow({ item, onToggle, onSave, onRemove }: {
             className="flex-1 text-xs rounded-xl px-2 py-2 border border-slate-200 focus:outline-none focus:border-blue-300 bg-white text-slate-600"
           />
         </div>
+        <select
+          value={draft.assigneeEmail}
+          onChange={(e) => setDraft((d) => ({ ...d, assigneeEmail: e.target.value }))}
+          className="w-full text-xs rounded-xl px-2 py-2 border border-slate-200 focus:outline-none focus:border-blue-300 bg-white text-slate-600"
+        >
+          <option value="">Assign to… (anyone)</option>
+          {members.map((m) => (
+            <option key={m.id} value={m.email}>{m.emoji} {m.name}</option>
+          ))}
+        </select>
         <div className="flex items-center gap-2 pt-1">
           <button
             onClick={handleSave}
@@ -458,6 +493,16 @@ function TaskRow({ item, onToggle, onSave, onRemove }: {
               {overdue ? '⚠ ' : ''}{dueStr}
             </span>
           )}
+          {assignee ? (
+            <span className="inline-flex items-center gap-1 text-[11px] font-medium text-slate-500">
+              <span className="w-4 h-4 rounded-full flex items-center justify-center text-[9px]" style={{ background: `${assignee.colorHex}25` }}>
+                {assignee.emoji}
+              </span>
+              {assignee.name}
+            </span>
+          ) : item.assigneeEmail ? (
+            <span className="text-[11px] font-medium text-slate-400">{item.assigneeEmail.split('@')[0]}</span>
+          ) : null}
         </div>
       </div>
       <div className="flex gap-1 shrink-0">
