@@ -2,13 +2,13 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { LayoutGrid, Users, Map, ShoppingCart, Sparkles, Compass } from 'lucide-react'
+import { LayoutGrid, Users, ShoppingCart, Sparkles, Compass, CheckSquare } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 const NAV_ITEMS = [
   { href: '/command', label: 'Home', icon: LayoutGrid },
   { href: '/coach', label: 'Coach', icon: Compass },
-  { href: '/plans', label: 'Plans', icon: Map },
+  { href: '/tasks', label: 'Tasks', icon: CheckSquare },
   { href: '/lists', label: 'Groceries', icon: ShoppingCart },
   { href: '/family', label: 'Family', icon: Users },
   { href: '/copilot', label: 'Copilot', icon: Sparkles },
@@ -49,7 +49,7 @@ export function MobileNav() {
               />
               <span
                 className={cn(
-                  'text-xs font-medium transition-colors',
+                  'text-[10px] font-medium transition-colors',
                   active ? 'text-blue-600' : 'text-slate-400'
                 )}
               >

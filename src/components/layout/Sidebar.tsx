@@ -3,11 +3,12 @@
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { useAuth } from '@/contexts/AuthContext'
-import { LayoutGrid, Users, Map, ShoppingCart, Sparkles, Compass, LogOut, Settings } from 'lucide-react'
+import { LayoutGrid, Users, Map, ShoppingCart, Sparkles, Compass, LogOut, Settings, CheckSquare } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 const NAV_ITEMS = [
   { href: '/command', label: 'Command Center', icon: LayoutGrid },
+  { href: '/tasks', label: 'Tasks', icon: CheckSquare },
   { href: '/family', label: 'Family', icon: Users },
   { href: '/plans', label: 'Plans', icon: Map },
   { href: '/lists', label: 'Groceries', icon: ShoppingCart },
