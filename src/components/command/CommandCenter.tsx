@@ -440,6 +440,11 @@ export function CommandCenter() {
   const runEngine = useCallback(async (overrideContext?: { eventTitle: string; context: string }[], silent?: boolean) => {
     if (silent) setRefreshing(true)
     else setLoading(true)
+    // Stamp the run time immediately so manual refreshes also update the throttle.
+    // Both auto-runs (which set lastRun.current before calling) and manual refreshes
+    // (which call runEngine directly) will record the correct timestamp.
+    const runAt = Date.now()
+    lastRun.current = runAt
     // Bump the token: this fast run is now the latest, so any in-flight deep pass
     // from a previous run will be ignored when it returns.
     const myToken = ++deepToken.current
@@ -470,9 +475,11 @@ export function CommandCenter() {
         }
         setEngineError(null)
         writeCache(attnKey, data)
-        writeCache(lastRunKey, lastRun.current)
+        writeCache(lastRunKey, runAt)
       } else {
         // Surface the error so it's visible instead of silently showing nothing.
+        // Don't overwrite the existing report or cache — keep showing the last
+        // good briefing while the user decides whether to retry.
         setEngineError(data.error ?? 'Something went wrong. Tap refresh to try again.')
         // Reset the throttle so the engine retries automatically when new data arrives.
         lastRun.current = 0
@@ -497,9 +504,7 @@ export function CommandCenter() {
     // re-run will follow when fresh Google data arrives via ctxSignature.
     if (isConnected && !googleLoaded && events.length === 0) return
     if (members.length === 0 && events.length === 0 && tasks.length === 0) return
-    const now = Date.now()
-    if (now - lastRun.current < ENGINE_THROTTLE_MS) return
-    lastRun.current = now
+    if (Date.now() - lastRun.current < ENGINE_THROTTLE_MS) return
     runEngine(undefined, !!report)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hydrated, googleLoaded, members.length, events.length, tasks.length, reminders.length, googleEvents.length])
@@ -525,7 +530,6 @@ export function CommandCenter() {
     // Only run when data *genuinely* changes after the initial load, and only if
     // at least 60 seconds have elapsed since the last run (prevents rapid-fire).
     if (prev === '' || Date.now() - lastRun.current < 60_000) return
-    lastRun.current = Date.now()
     // Silent if a report exists, cold-start otherwise (so the user sees the loader).
     runEngine(undefined, !!report)
     // eslint-disable-next-line react-hooks/exhaustive-deps

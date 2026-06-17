@@ -121,11 +121,11 @@ For each problem, include an optional "actionType" field: "copilot" for conversa
   try {
     const response = await anthropic.messages.create({
       model: MODEL,
-      // A full briefing (greeting + several items, each with reason/timing/
-      // assignee, plus problems and recommendations) can run 1500-2200 tokens.
-      // 2500 leaves headroom so the JSON is never truncated — a truncated
-      // response salvages only the greeting and drops every status card.
-      max_tokens: 2500,
+      // A comprehensive briefing (greeting + 10 items, each with 8 fields,
+      // plus problems and recommendations) can reach 3000-3500 output tokens.
+      // 4096 provides a firm ceiling above any realistic briefing so the JSON
+      // is never truncated — a truncated response drops every status card.
+      max_tokens: 4096,
       // System prompt: static → cache it (saves ~600 tokens on every cache hit).
       system: [
         { type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } },
@@ -143,6 +143,16 @@ For each problem, include an optional "actionType" field: "copilot" for conversa
       }],
     })
 
+    // Detect truncation before trying to parse — a truncated JSON is not useful
+    // and shouldn't overwrite the client's existing good report. Return a 500 so
+    // the client keeps showing the cached briefing and offers a retry button.
+    if (response.stop_reason === 'max_tokens') {
+      return NextResponse.json(
+        { error: 'Briefing was cut short — tap retry to try again.' },
+        { status: 500 }
+      )
+    }
+
     const text = response.content[0].type === 'text' ? response.content[0].text : '{}'
     const match = text.match(/\{[\s\S]*\}/)
     let parsed: {
@@ -155,8 +165,8 @@ For each problem, include an optional "actionType" field: "copilot" for conversa
       try {
         parsed = JSON.parse(match[0])
       } catch {
-        // Response was truncated mid-JSON (stop_reason === 'max_tokens').
-        // Salvage whatever fields were fully written before the cutoff.
+        // Unexpected parse failure (not a token limit issue — already checked above).
+        // Salvage the greeting so something appears rather than a blank screen.
         const greetingMatch = match[0].match(/"greeting"\s*:\s*"((?:[^"\\]|\\[\s\S])*)"/)
         parsed = { greeting: greetingMatch?.[1] ?? 'Here is what needs your attention.', items: [], problems: [], recommendations: [] }
       }
