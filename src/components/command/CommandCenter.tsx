@@ -69,32 +69,29 @@ const CTX_SIG_PREFIX = 'fam-ctxsig-'
 // changed and we already ran recently (survives navigation + PWA re-opens).
 const ENGINE_THROTTLE_MS = 15 * 60 * 1000
 
-// Open a specific Gmail message reliably — including inside an iOS standalone
-// PWA, where both <a target="_blank"> and window.open() are silently blocked.
-// Strategy:
-//   1. Build a robust URL. We use #all/<id> rather than #inbox/<id> so the
-//      message is found even after it's been archived out of the inbox.
-//   2. Try a real anchor-element click (works in most browsers + Android PWA).
-//   3. If that's a no-op (standalone iOS), fall back to navigating the current
-//      webview, which always renders the page even without Safari chrome.
+// Open a specific Gmail message in the system browser (Safari), NOT inside the
+// app's own webview. We use #all/<id> rather than #inbox/<id> so the message is
+// found even after it's been archived out of the inbox.
+//
+// The key insight for iOS standalone PWAs: window.open() is silently blocked and
+// setting window.location.href just navigates the chrome-less PWA webview — which
+// is NOT signed into Gmail, so the deep link never resolves to the actual email
+// (the tap appears to "open in the app" and go nowhere). A programmatic click on
+// an <a target="_blank"> element DOES hand the URL off to Safari, where the user
+// is already signed into Gmail and #all/<id> opens the real message.
 function openGmailMessage(messageId: string) {
   const url = `https://mail.google.com/mail/u/0/#all/${messageId}`
-  const isStandalone =
-    typeof window !== 'undefined' &&
-    (window.matchMedia?.('(display-mode: standalone)').matches ||
-      // iOS Safari exposes standalone via navigator.standalone
-      (window.navigator as unknown as { standalone?: boolean }).standalone === true)
-
-  if (isStandalone) {
-    // In a standalone PWA, new-window opens are blocked — navigate directly.
-    window.location.href = url
-    return
-  }
-
-  const opened = window.open(url, '_blank', 'noopener,noreferrer')
-  if (!opened) {
-    // Pop-up blocked or returned null — fall back to direct navigation.
-    window.location.href = url
+  try {
+    const a = document.createElement('a')
+    a.href = url
+    a.target = '_blank'
+    a.rel = 'noopener noreferrer'
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+  } catch {
+    // Last resort if DOM manipulation is unavailable.
+    window.open(url, '_blank', 'noopener,noreferrer') || (window.location.href = url)
   }
 }
 
@@ -1085,6 +1082,7 @@ export function CommandCenter() {
                     onSaveTask={() => saveItemAsTask(p.title, p.detail)}
                     onDismiss={() => dismissItem(p.title)}
                     onCopilot={(text) => openBriefingInCopilot(text)}
+                    onCapture={(text) => openCapture({ text, autoAnalyze: true })}
                   />
                 ),
               )}
@@ -1205,11 +1203,15 @@ function ProblemCard({
   onSaveTask,
   onDismiss,
   onCopilot,
+  onCapture,
 }: {
   problem: PotentialProblem
   onSaveTask: () => void
   onDismiss: () => void
   onCopilot: (text: string) => void
+  // Opens the Capture dialog (which has a per-calendar event picker) pre-filled
+  // with this problem, for "add to calendar" style actions.
+  onCapture: (text: string) => void
 }) {
   const [saved, setSaved] = useState(false)
   const severityBg = p.severity === 'high' ? '#fee2e2' : p.severity === 'medium' ? '#ffedd5' : '#fef9c3'
@@ -1236,15 +1238,28 @@ function ProblemCard({
               View email
             </button>
           )}
-          {p.suggestedAction && (
-            <button
-              onClick={() => onCopilot(`${p.title}. ${p.detail} — ${p.suggestedAction}`)}
-              className="inline-flex items-center gap-1.5 text-xs text-blue-600 hover:text-blue-700 mt-2 font-medium"
-            >
-              <MessageCircle size={11} className="shrink-0" />
-              {p.suggestedAction} →
-            </button>
-          )}
+          {p.suggestedAction && (() => {
+            // "capture" / "calendar" actions (e.g. "Add to calendar") open the
+            // Capture dialog, which gives a real event view with a per-calendar
+            // picker. Everything else is conversational → Copilot.
+            const toCalendar = p.actionType === 'capture' || p.actionType === 'calendar'
+            const captureText = [
+              p.title,
+              p.detail,
+              p.relatedDate ? `Date: ${new Date(p.relatedDate).toLocaleDateString()}` : '',
+            ].filter(Boolean).join('. ')
+            return (
+              <button
+                onClick={() => toCalendar ? onCapture(captureText) : onCopilot(`${p.title}. ${p.detail} — ${p.suggestedAction}`)}
+                className="inline-flex items-center gap-1.5 text-xs text-blue-600 hover:text-blue-700 mt-2 font-medium"
+              >
+                {toCalendar
+                  ? <CalIcon size={11} className="shrink-0" />
+                  : <MessageCircle size={11} className="shrink-0" />}
+                {p.suggestedAction} →
+              </button>
+            )
+          })()}
         </div>
         <div className="flex items-center gap-1 shrink-0">
           <span

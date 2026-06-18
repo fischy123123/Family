@@ -41,8 +41,17 @@ export interface FamilyContextInput {
   currentUserName?: string
 }
 
+// Date-only strings ("YYYY-MM-DD") carry no time or zone. Parsing one with
+// `new Date()` yields UTC midnight, which any timezone behind UTC (e.g. Pacific)
+// then renders as the PREVIOUS calendar day — the classic off-by-one. Detect
+// these and render the literal calendar parts with NO timezone conversion.
+const DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/
+
 // Format a date/time in the user's local timezone for the AI.
 function fmtDatetime(iso: string, tz?: string): string {
+  // All-day / date-only values have no time component — render as a plain date
+  // so we never shift the day or invent a spurious time.
+  if (DATE_ONLY_RE.test(iso.trim())) return fmtDate(iso, tz)
   try {
     return new Date(iso).toLocaleString('en-US', {
       timeZone: tz,
@@ -59,8 +68,21 @@ function fmtDatetime(iso: string, tz?: string): string {
 }
 
 function fmtDate(iso: string, tz?: string): string {
+  const trimmed = iso.trim()
+  // Date-only: pin to UTC so the calendar parts render exactly as written,
+  // regardless of the server's runtime timezone (the server runs in UTC).
+  if (DATE_ONLY_RE.test(trimmed)) {
+    const [y, m, d] = trimmed.split('-').map(Number)
+    return new Date(Date.UTC(y, m - 1, d)).toLocaleDateString('en-US', {
+      timeZone: 'UTC',
+      weekday: 'short',
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+    })
+  }
   try {
-    return new Date(iso).toLocaleDateString('en-US', {
+    return new Date(trimmed).toLocaleDateString('en-US', {
       timeZone: tz,
       weekday: 'short',
       month: 'short',
