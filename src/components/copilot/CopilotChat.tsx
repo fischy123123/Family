@@ -2,15 +2,9 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react'
 import {
-  Send,
-  Sparkles,
-  Bot,
-  CheckCircle2,
-  AlertTriangle,
-  CalendarDays,
-  ShoppingCart,
-  ListChecks,
-  Plane,
+  Send, Sparkles, Bot, CheckCircle2, AlertTriangle,
+  CalendarDays, ShoppingCart, ListChecks, Plane,
+  Mic, MicOff, Volume2, Loader2, X,
 } from 'lucide-react'
 import { format } from 'date-fns'
 import { useAuth } from '@/contexts/AuthContext'
@@ -18,6 +12,8 @@ import { useFamily } from '@/contexts/FamilyContext'
 import { useFirestore } from '@/hooks/useFirestore'
 import { useGoogleTokens } from '@/hooks/useGoogleTokens'
 import { useToast } from '@/contexts/ToastContext'
+import { useSpeech } from '@/hooks/useSpeech'
+import { useVoiceRecorder } from '@/hooks/useVoiceRecorder'
 import { MicButton } from '@/components/ui/MicButton'
 import { Markdown } from '@/components/ui/Markdown'
 import { ProposedActions, type PendingAction, type ActionStatus } from '@/components/copilot/ProposedActions'
@@ -167,6 +163,19 @@ function EmptyState({ onPrompt }: { onPrompt: (prompt: string) => void }) {
   )
 }
 
+// Strip markdown symbols so TTS reads naturally without saying "asterisk" etc.
+function plainText(md: string): string {
+  return md
+    .replace(/#{1,6}\s*/g, '')
+    .replace(/\*\*(.*?)\*\*/g, '$1')
+    .replace(/\*(.*?)\*/g, '$1')
+    .replace(/`{1,3}[^`]*`{1,3}/g, '')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/^\s*[-*+]\s+/gm, '')
+    .replace(/\n{2,}/g, '. ')
+    .trim()
+}
+
 // ---------------------------------------------------------------------------
 // Main component
 // ---------------------------------------------------------------------------
@@ -181,13 +190,32 @@ export function CopilotChat() {
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
+  const [voiceMode, setVoiceMode] = useState(false)
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
+  const prevLoadingRef = useRef(false)
+  const prevSpeechStateRef = useRef<'idle' | 'loading' | 'playing'>('idle')
+
+  const { speak, stop: stopSpeech, state: speechState } = useSpeech()
+
+  // Whisper prompt: seed with family member names for better recognition.
+  const whisperPrompt = members.length
+    ? `Family members: ${members.map((m) => m.name).join(', ')}. Family calendar and task management.`
+    : 'Family calendar and task management.'
+
+  const { state: recorderState, start: startRecording, stop: stopRecording, cleanup: cleanupRecorder } = useVoiceRecorder({
+    prompt: whisperPrompt,
+    onTranscript: useCallback((text: string) => {
+      // In voice mode: auto-send the transcript. Outside voice mode this hook
+      // isn't used (the existing MicButton handles regular text fill-in).
+      handleSend(text)
+    // handleSend is defined below — stable via useCallback, added to deps there
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []),
+  })
 
   // Seed the conversation from another screen (e.g. tapping the Home briefing).
-  // The briefing prose lands as the opening assistant message so the user can
-  // immediately ask follow-ups or have the assistant act on it.
   useEffect(() => {
     if (typeof window === 'undefined') return
     const seed = sessionStorage.getItem('copilot-seed')
@@ -202,6 +230,41 @@ export function CopilotChat() {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, loading])
+
+  // Voice loop — step 1: when the AI finishes responding, read it aloud.
+  useEffect(() => {
+    if (!voiceMode) return
+    // Detect loading → false transition (AI just responded).
+    if (prevLoadingRef.current && !loading) {
+      const last = messages[messages.length - 1]
+      if (last?.role === 'assistant' && last.content) {
+        speak(plainText(last.content))
+      }
+    }
+    prevLoadingRef.current = loading
+  }, [loading, voiceMode, messages, speak])
+
+  // Voice loop — step 2: when TTS finishes, auto-restart the mic.
+  useEffect(() => {
+    if (!voiceMode) return
+    // Detect playing → idle transition (TTS just ended naturally).
+    if (prevSpeechStateRef.current === 'playing' && speechState === 'idle' && !loading) {
+      startRecording()
+    }
+    prevSpeechStateRef.current = speechState
+  }, [speechState, voiceMode, loading, startRecording])
+
+  function enterVoiceMode() {
+    setVoiceMode(true)
+    startRecording()
+  }
+
+  function exitVoiceMode() {
+    setVoiceMode(false)
+    stopRecording()
+    cleanupRecorder()
+    stopSpeech()
+  }
 
 
   const handleSend = useCallback(
@@ -401,39 +464,106 @@ export function CopilotChat() {
 
       {/* Sticky input bar */}
       <div className="shrink-0 border-t border-slate-100 bg-slate-50/80 backdrop-blur px-5 sm:px-8 py-4">
-        <div className="max-w-3xl mx-auto flex items-center gap-3">
-          <input
-            ref={inputRef}
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder={loading ? 'Thinking…' : 'Message Copilot…'}
-            disabled={loading || !familyId}
-            className={cn(
-              'flex-1 rounded-full border border-slate-200 bg-white px-5 py-3 text-[15px] text-slate-900 shadow-card',
-              'placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-300',
-              'disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-150',
-            )}
-          />
-          <MicButton
-            size={48}
-            className="!rounded-full"
-            onText={(spoken) => setInput((prev) => (prev ? prev.trim() + ' ' : '') + spoken)}
-          />
-          <button
-            onClick={() => handleSend()}
-            disabled={loading || !input.trim() || !familyId}
-            className={cn(
-              'w-12 h-12 rounded-full flex items-center justify-center shrink-0 transition-all duration-150',
-              'bg-gradient-to-br from-blue-600 to-purple-600 text-white shadow-card',
-              'hover:shadow-md hover:-translate-y-0.5',
-              'disabled:opacity-40 disabled:cursor-not-allowed disabled:shadow-none disabled:translate-y-0',
-              'active:scale-95',
-            )}
-            aria-label="Send message"
-          >
-            <Send size={18} />
-          </button>
+        <div className="max-w-3xl mx-auto">
+          {voiceMode ? (
+            /* ── Voice conversation mode ── */
+            <div className="flex flex-col items-center gap-3 py-2">
+              {/* Big central state button */}
+              <div className="relative">
+                {/* Pulse ring while recording */}
+                {recorderState === 'recording' && (
+                  <span className="absolute inset-0 rounded-full bg-red-400 animate-ping opacity-30" />
+                )}
+                <button
+                  onClick={() => {
+                    if (recorderState === 'recording') stopRecording()
+                    else if (recorderState === 'idle' && speechState === 'idle' && !loading) startRecording()
+                    else if (speechState !== 'idle') { stopSpeech(); startRecording() }
+                  }}
+                  className={cn(
+                    'relative w-20 h-20 rounded-full flex items-center justify-center transition-all shadow-elevated',
+                    recorderState === 'recording'
+                      ? 'bg-red-500 scale-110'
+                      : 'bg-gradient-to-br from-blue-600 to-purple-600',
+                  )}
+                  aria-label={recorderState === 'recording' ? 'Tap to send' : 'Tap to speak'}
+                >
+                  {recorderState === 'recording' && <MicOff size={28} className="text-white" />}
+                  {recorderState === 'transcribing' && <Loader2 size={28} className="text-white animate-spin" />}
+                  {recorderState === 'idle' && loading && <Loader2 size={28} className="text-white animate-spin" />}
+                  {recorderState === 'idle' && !loading && speechState !== 'idle' && <Volume2 size={28} className="text-white" />}
+                  {recorderState === 'idle' && !loading && speechState === 'idle' && <Mic size={28} className="text-white" />}
+                </button>
+              </div>
+
+              <p className="text-xs font-medium text-slate-500 h-4">
+                {recorderState === 'recording' ? 'Listening — tap to send' :
+                 recorderState === 'transcribing' ? 'Processing…' :
+                 loading ? 'Thinking…' :
+                 speechState !== 'idle' ? 'Speaking — tap to interrupt' :
+                 'Tap to speak'}
+              </p>
+
+              <button
+                onClick={exitVoiceMode}
+                className="inline-flex items-center gap-1.5 text-xs text-slate-400 hover:text-slate-600 transition-colors"
+              >
+                <X size={13} /> Exit voice mode
+              </button>
+            </div>
+          ) : (
+            /* ── Normal text input ── */
+            <div className="flex items-center gap-3">
+              <input
+                ref={inputRef}
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder={loading ? 'Thinking…' : 'Message Copilot…'}
+                disabled={loading || !familyId}
+                className={cn(
+                  'flex-1 rounded-full border border-slate-200 bg-white px-5 py-3 text-[15px] text-slate-900 shadow-card',
+                  'placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-300',
+                  'disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-150',
+                )}
+              />
+              {/* Voice conversation toggle */}
+              <button
+                onClick={enterVoiceMode}
+                disabled={loading || !familyId}
+                className={cn(
+                  'w-12 h-12 rounded-full flex items-center justify-center shrink-0 transition-all',
+                  'bg-white border border-slate-200 text-slate-500 shadow-card',
+                  'hover:border-blue-300 hover:text-blue-600',
+                  'disabled:opacity-40 disabled:cursor-not-allowed',
+                  'active:scale-95',
+                )}
+                aria-label="Start voice conversation"
+                title="Voice conversation"
+              >
+                <Mic size={18} />
+              </button>
+              <MicButton
+                size={48}
+                className="!rounded-full"
+                onText={(spoken) => setInput((prev) => (prev ? prev.trim() + ' ' : '') + spoken)}
+              />
+              <button
+                onClick={() => handleSend()}
+                disabled={loading || !input.trim() || !familyId}
+                className={cn(
+                  'w-12 h-12 rounded-full flex items-center justify-center shrink-0 transition-all duration-150',
+                  'bg-gradient-to-br from-blue-600 to-purple-600 text-white shadow-card',
+                  'hover:shadow-md hover:-translate-y-0.5',
+                  'disabled:opacity-40 disabled:cursor-not-allowed disabled:shadow-none disabled:translate-y-0',
+                  'active:scale-95',
+                )}
+                aria-label="Send message"
+              >
+                <Send size={18} />
+              </button>
+            </div>
+          )}
         </div>
       </div>
     </div>
