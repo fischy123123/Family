@@ -66,7 +66,7 @@ export function RealtimeVoiceMode({
   const [lastUser, setLastUser] = useState('')
   const startedRef = useRef(false)
 
-  const { state, start, stop } = useRealtimeVoice({
+  const { state, error, start, stop } = useRealtimeVoice({
     getContext,
     onUserText: (t) => { setLastUser(t); onUserText?.(t) },
     onAssistantText,
@@ -100,12 +100,27 @@ export function RealtimeVoiceMode({
 
       <div className="flex flex-col items-center gap-8 flex-1 justify-center">
         <Orb state={state} />
-        <div className="text-center min-h-[3rem]">
-          <p className="text-white text-lg font-medium">{STATUS_TEXT[state]}</p>
-          {lastUser && (
-            <p className="text-white/60 text-sm mt-2 max-w-xs mx-auto line-clamp-2">
-              &ldquo;{lastUser}&rdquo;
-            </p>
+        <div className="text-center min-h-[3rem] max-w-sm">
+          {error ? (
+            <>
+              <p className="text-red-300 text-base font-medium">Couldn&apos;t start voice</p>
+              <p className="text-white/50 text-sm mt-1.5 break-words">{error}</p>
+              <button
+                onClick={() => start()}
+                className="mt-4 px-5 py-2 rounded-full bg-white/10 hover:bg-white/20 text-white text-sm font-medium transition-colors"
+              >
+                Try again
+              </button>
+            </>
+          ) : (
+            <>
+              <p className="text-white text-lg font-medium">{STATUS_TEXT[state]}</p>
+              {lastUser && (
+                <p className="text-white/60 text-sm mt-2 max-w-xs mx-auto line-clamp-2">
+                  &ldquo;{lastUser}&rdquo;
+                </p>
+              )}
+            </>
           )}
         </div>
       </div>

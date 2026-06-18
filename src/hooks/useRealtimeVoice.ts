@@ -27,6 +27,7 @@ type RealtimeEvent = Record<string, any>
 
 export function useRealtimeVoice(opts: Options) {
   const [state, setState] = useState<RealtimeState>('idle')
+  const [error, setError] = useState<string | null>(null)
 
   const optsRef = useRef(opts)
   useEffect(() => { optsRef.current = opts }, [opts])
@@ -128,6 +129,7 @@ export function useRealtimeVoice(opts: Options) {
   const start = useCallback(async () => {
     if (activeRef.current) return
     activeRef.current = true
+    setError(null)
     setState('connecting')
     try {
       const ctx = await optsRef.current.getContext()
@@ -200,12 +202,14 @@ export function useRealtimeVoice(opts: Options) {
       const answerSdp = await sdpRes.text()
       await pc.setRemoteDescription({ type: 'answer', sdp: answerSdp })
     } catch (e) {
-      optsRef.current.onError?.(e instanceof Error ? e.message : 'Could not start voice')
+      const msg = e instanceof Error ? e.message : 'Could not start voice'
+      setError(msg)
+      optsRef.current.onError?.(msg)
       stop()
     }
   }, [handleEvent, send, stop])
 
   useEffect(() => () => stop(), [stop])
 
-  return { state, start, stop }
+  return { state, error, start, stop }
 }
