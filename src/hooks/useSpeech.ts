@@ -2,62 +2,89 @@
 
 import { useState, useEffect, useRef } from 'react'
 
-// Wraps the Web Speech API for TTS. Calling speak() while already speaking
-// cancels playback (toggle behaviour). Automatically cancels on unmount.
-//
-// Note: speechSynthesis.speak() MUST be called inside a user-gesture handler
-// (tap, click) on iOS — the hook guarantees this because speak() is always
-// invoked from a button's onClick.
+export type SpeechState = 'idle' | 'loading' | 'playing'
+
+// Fetches TTS audio from the server (/api/tts → OpenAI) and plays it via an
+// HTMLAudioElement. Calling speak() while loading or playing stops playback
+// (toggle behaviour). Automatically stops on unmount (navigation).
 export function useSpeech() {
-  const [speaking, setSpeaking] = useState(false)
-  const supported = typeof window !== 'undefined' && 'speechSynthesis' in window
-  // Track the active utterance so we can cancel it without touching the
-  // global queue (which may contain other utterances in future).
-  const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null)
+  const [state, setState] = useState<SpeechState>('idle')
+  // Use a ref to read current state inside async callbacks without stale closures.
+  const stateRef = useRef<SpeechState>('idle')
+  const audioRef = useRef<HTMLAudioElement | null>(null)
+  const objectUrlRef = useRef<string | null>(null)
+  const abortRef = useRef<AbortController | null>(null)
 
-  useEffect(() => {
-    // Stop speech when the component that owns this hook unmounts (e.g. page
-    // navigation) so audio doesn't keep playing in the background.
-    return () => {
-      if (supported) window.speechSynthesis.cancel()
-    }
-  }, [supported])
-
-  function speak(text: string) {
-    if (!supported) return
-
-    // Toggle: tap again to stop
-    if (speaking) {
-      window.speechSynthesis.cancel()
-      setSpeaking(false)
-      utteranceRef.current = null
-      return
-    }
-
-    // Cancel anything already queued before we add ours
-    window.speechSynthesis.cancel()
-
-    const utterance = new SpeechSynthesisUtterance(text)
-    utterance.rate = 0.92      // slightly slower than default for comfortable listening
-    utterance.pitch = 1.0
-    utterance.volume = 1.0
-    utterance.onstart = () => setSpeaking(true)
-    utterance.onend = () => { setSpeaking(false); utteranceRef.current = null }
-    utterance.onerror = () => { setSpeaking(false); utteranceRef.current = null }
-
-    utteranceRef.current = utterance
-    // speechSynthesis.speak is synchronous — onstart fires immediately on most
-    // browsers. Set optimistic state before the call to avoid a visual flicker.
-    setSpeaking(true)
-    window.speechSynthesis.speak(utterance)
+  function track(s: SpeechState) {
+    stateRef.current = s
+    setState(s)
   }
 
   function stop() {
-    if (!supported) return
-    window.speechSynthesis.cancel()
-    setSpeaking(false)
-    utteranceRef.current = null
+    abortRef.current?.abort()
+    abortRef.current = null
+    if (audioRef.current) {
+      audioRef.current.pause()
+      audioRef.current.src = ''
+      audioRef.current = null
+    }
+    if (objectUrlRef.current) {
+      URL.revokeObjectURL(objectUrlRef.current)
+      objectUrlRef.current = null
+    }
+    track('idle')
   }
 
-  return { speak, stop, speaking, supported }
+  // Stop when the component that owns this hook navigates away.
+  useEffect(() => stop, [])
+
+  async function speak(text: string) {
+    // Toggle: speaking or loading → stop.
+    if (stateRef.current !== 'idle') {
+      stop()
+      return
+    }
+
+    track('loading')
+    const ctrl = new AbortController()
+    abortRef.current = ctrl
+
+    try {
+      const res = await fetch('/api/tts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text }),
+        signal: ctrl.signal,
+      })
+      if (!res.ok) throw new Error(`TTS ${res.status}`)
+      if (ctrl.signal.aborted) return
+
+      const blob = await res.blob()
+      if (ctrl.signal.aborted) return
+
+      const url = URL.createObjectURL(blob)
+      objectUrlRef.current = url
+
+      const audio = new Audio(url)
+      audioRef.current = audio
+      audio.onended = stop
+      audio.onerror = stop
+
+      track('playing')
+      await audio.play()
+    } catch (e) {
+      // AbortError = user tapped stop while loading — not a real error.
+      if (!(e instanceof DOMException && e.name === 'AbortError')) {
+        stop()
+      }
+    }
+  }
+
+  return {
+    speak,
+    stop,
+    state,
+    speaking: state !== 'idle',
+    loading: state === 'loading',
+  }
 }
