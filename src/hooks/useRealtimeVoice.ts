@@ -162,6 +162,7 @@ export function useRealtimeVoice(opts: Options) {
       if (!sessionRes.ok) throw new Error(sessionData.error ?? 'Could not start session')
       const ephemeralKey: string = sessionData.clientSecret
       const model: string = sessionData.model
+      const greetingInstruction: string = sessionData.greetingInstruction ?? 'Greet the user warmly in one short sentence and ask how you can help. Always respond in English.'
       if (!ephemeralKey) throw new Error('No session token returned')
 
       // 2. Set up WebRTC.
@@ -189,10 +190,10 @@ export function useRealtimeVoice(opts: Options) {
       }
       dc.onopen = () => {
         if (activeRef.current) setState('listening')
-        // Kick off a brief spoken greeting.
+        // Kick off a personalized spoken greeting using context from the session.
         send({
           type: 'response.create',
-          response: { instructions: 'Greet the user warmly in one short sentence and ask how you can help.' },
+          response: { instructions: greetingInstruction },
         })
       }
 

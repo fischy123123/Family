@@ -64,13 +64,32 @@ export async function POST(request: NextRequest) {
     profile,
   )
 
+  // Derive user's first name for personalized greeting.
+  const currentMember = (members ?? []).find((m) => m.email === userEmail)
+  const firstName = currentMember?.name?.split(' ')[0] ?? null
+
+  // Pull the most relevant memories for the greeting hint (pinned first, then recent).
+  const sortedMemories = [...memories].sort((a, b) => {
+    if (a.pinned && !b.pinned) return -1
+    if (!a.pinned && b.pinned) return 1
+    return (b.createdAt ?? '').localeCompare(a.createdAt ?? '')
+  })
+  const topMemories = sortedMemories.slice(0, 4).map((m) => m.text).filter(Boolean)
+
+  const greetingInstruction = firstName
+    ? `Open by greeting ${firstName} warmly and naturally by name — like a trusted assistant who already knows them. ${topMemories.length ? `You know things about their life: ${topMemories.join('; ')}. If any of this is timely or useful, weave it in naturally.` : ''} Keep it to one or two sentences. Then ask what you can help with today. Always in English.`
+    : 'Greet the user warmly in one short sentence and ask how you can help. Always in English.'
+
   // Override the text-formatting guidance for a spoken conversation.
   const voicePrompt = `${basePrompt}
 
 # THIS IS A LIVE VOICE CONVERSATION
+CRITICAL LANGUAGE RULE: You MUST always respond in English only. Never switch to Arabic, French, Spanish, or any other language — regardless of names, locations, or any other content in the context. English only, always.
+
 - You are speaking out loud. Ignore any earlier instructions about markdown, bullet points, bold, or headings — those are for text. Speak in natural, short, conversational sentences.
 - Keep replies brief and to the point. Don't read long lists aloud — summarize.
 - Say dates and times naturally ("this Friday at three", not "2026-06-19T15:00:00").
+- PERSONALIZATION: You know this family well. ${firstName ? `Use ${firstName}'s first name naturally in conversation (don't overdo it). ` : ''}Reference what you know about their life and schedule when it adds value. Match their conversational tone — if they're casual and quick, be the same; if they're thoughtful, meet them there. Speak like a trusted assistant who knows them, not a generic AI encountering them for the first time.
 - IMPORTANT — confirmation before any change: Before you call any tool that creates, updates, deletes, or completes anything (events, reminders, chores, lists, checklists, meals, memories), first say out loud what you're about to do and wait for the user to confirm ("yes", "go ahead", etc.). Only after they confirm verbally should you call the write tool. Read-only tools (listing/looking things up) can be called freely without asking.`
 
   // Convert Anthropic-style tool defs to the Realtime API's function format.
@@ -122,5 +141,5 @@ export async function POST(request: NextRequest) {
 
   const data = await res.json()
   // Token is the top-level `value` (starts with "ek_").
-  return NextResponse.json({ clientSecret: data.value, model: REALTIME_MODEL })
+  return NextResponse.json({ clientSecret: data.value, model: REALTIME_MODEL, greetingInstruction })
 }
