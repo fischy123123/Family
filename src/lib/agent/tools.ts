@@ -1,6 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { generateId } from '@/lib/utils'
-import { getEvents, getCalendars, createEvent as createGoogleEvent } from '@/lib/google/calendar'
+import { getEvents, getCalendars, createEvent as createGoogleEvent, updateEvent, deleteEvent } from '@/lib/google/calendar'
 import { resolveMemberRef } from '@/lib/members'
 import type { FamilyMember, FamilyMemory, FamilyProfile } from '@/lib/types'
 
@@ -286,6 +286,44 @@ export const TOOLS: Anthropic.Tool[] = [
     },
   },
   {
+    name: 'delete_google_event',
+    description: 'Delete an event from Google Calendar. Call get_google_events first to find the event_id and calendar_id of the event to delete.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        event_id: { type: 'string', description: 'Google Calendar event ID (from get_google_events)' },
+        calendar_id: { type: 'string', description: 'Google Calendar ID the event belongs to (from get_google_events). Defaults to primary.' },
+        event_title: { type: 'string', description: 'Human-readable event title — shown to the user in the confirmation card' },
+        event_date: { type: 'string', description: 'Date/time of the event — shown to the user in the confirmation card (ISO string)' },
+      },
+      required: ['event_id', 'event_title'],
+    },
+  },
+  {
+    name: 'update_google_event',
+    description: 'Update (edit) an existing Google Calendar event. Call get_google_events first to find the event_id and calendar_id. Only include fields that need to change. For recurring events, get_google_events returns a recurringEventId — use scope "instance" to update only this occurrence (default), or scope "all" to update the entire series (pass series_event_id = recurringEventId in that case).',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        event_id: { type: 'string', description: 'Google Calendar event ID of the specific instance (from get_google_events)' },
+        series_event_id: { type: 'string', description: 'The recurringEventId from get_google_events — only needed when scope is "all" to update the whole series' },
+        calendar_id: { type: 'string', description: 'Google Calendar ID the event belongs to (from get_google_events). Defaults to primary.' },
+        event_title: { type: 'string', description: 'Current title of the event — shown in the confirmation card' },
+        scope: {
+          type: 'string',
+          enum: ['instance', 'all'],
+          description: '"instance" (default) = update only this occurrence; "all" = update all occurrences in the recurring series. Only use "all" when the user explicitly asks to change every occurrence.',
+        },
+        title: { type: 'string', description: 'New title (omit to keep unchanged)' },
+        start_datetime: { type: 'string', description: 'New start datetime in LOCAL time as YYYY-MM-DDTHH:mm:ss (omit to keep unchanged)' },
+        end_datetime: { type: 'string', description: 'New end datetime in LOCAL time as YYYY-MM-DDTHH:mm:ss (omit to keep unchanged)' },
+        location: { type: 'string', description: 'New location (omit to keep unchanged)' },
+        notes: { type: 'string', description: 'New description/notes (omit to keep unchanged)' },
+      },
+      required: ['event_id', 'event_title'],
+    },
+  },
+  {
     name: 'remember',
     description: "Store a durable fact about the family so it informs future briefings and answers. Use this whenever the user tells you something worth remembering long-term — an allergy, a routine, a preference, a relationship, a recurring logistic. Do NOT use it for one-off tasks or events (use create_reminder/create_event for those).",
     input_schema: {
@@ -319,6 +357,8 @@ export const WRITE_TOOLS = new Set<string>([
   'complete_reminder',
   'complete_chore',
   'create_google_event',
+  'delete_google_event',
+  'update_google_event',
   'remember',
 ])
 
@@ -352,7 +392,16 @@ export function buildSystemPrompt(
       : ''
 
   const calendarInstructions = hasGoogleTokens
-    ? 'Google Calendar is connected — prefer get_google_events and create_google_event for calendar operations. Use list_events / create_event only for Firestore-only storage. ALWAYS call list_google_calendars before create_google_event. Prefer shared family calendars over the user\'s primary personal calendar for family events. Pass the chosen calendar_id to create_google_event.'
+    ? `Google Calendar is connected — prefer get_google_events and create_google_event for calendar operations. Use list_events / create_event only for Firestore-only storage. ALWAYS call list_google_calendars before create_google_event. Prefer shared family calendars over the user's primary personal calendar for family events. Pass the chosen calendar_id to create_google_event.
+
+UPDATING EVENTS: Always use update_google_event — never delete + recreate. Call get_google_events first to find the event_id and calendar_id. Pass only the fields that change; omit unchanged fields.
+
+RECURRING EVENTS: get_google_events returns a recurringEventId field when an event is part of a recurring series.
+- Default (scope "instance"): update_google_event only changes THIS specific occurrence — use this unless the user says "change all" or "every week" etc.
+- scope "all": patches the whole series — use series_event_id (the recurringEventId). Only use this when the user explicitly wants all future/past occurrences changed.
+- Never assume scope "all" — always default to instance unless the user is clear about wanting all occurrences changed.
+
+DELETING EVENTS: Call get_google_events first to get the event_id and calendar_id, then call delete_google_event. For recurring events, clarify with the user whether they want to delete just this occurrence or the whole series. Default to just this occurrence.`
     : 'Google Calendar is not connected — use list_events and create_event for Firestore-based calendar.'
 
   // The lens: how this family wants to be helped.
@@ -803,6 +852,35 @@ export async function executeTool(
       )
       actions.push(`Created Google Calendar event: ${created.title} on ${created.start.split('T')[0]}`)
       return { success: true, event: created }
+    }
+
+    case 'delete_google_event': {
+      if (!googleTokens) return { error: 'Google Calendar not connected' }
+      const calId = (input.calendar_id as string) || 'primary'
+      await deleteEvent(googleTokens.accessToken, googleTokens.refreshToken, input.event_id as string, calId)
+      actions.push(`Deleted Google Calendar event: ${input.event_title ?? input.event_id}`)
+      return { success: true }
+    }
+
+    case 'update_google_event': {
+      if (!googleTokens) return { error: 'Google Calendar not connected' }
+      const calId = (input.calendar_id as string) || 'primary'
+      // For scope "all" on a recurring series, patch the series event ID so all occurrences change.
+      const scope = (input.scope as string) ?? 'instance'
+      const targetId = scope === 'all' && input.series_event_id
+        ? (input.series_event_id as string)
+        : (input.event_id as string)
+      const updates: { title?: string; start?: string; end?: string; location?: string; notes?: string; timezone?: string } = {}
+      if (input.title) updates.title = input.title as string
+      if (input.start_datetime) updates.start = input.start_datetime as string
+      if (input.end_datetime) updates.end = input.end_datetime as string
+      if (input.location !== undefined) updates.location = input.location as string
+      if (input.notes !== undefined) updates.notes = input.notes as string
+      if (ctx.timezone) updates.timezone = ctx.timezone
+      const updated = await updateEvent(googleTokens.accessToken, googleTokens.refreshToken, targetId, calId, updates)
+      const scopeLabel = scope === 'all' ? ' (all occurrences)' : ''
+      actions.push(`Updated Google Calendar event: ${updated.title}${scopeLabel}`)
+      return { success: true, event: updated, scope }
     }
 
     default:

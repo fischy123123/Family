@@ -29,6 +29,7 @@ export interface GoogleEvent {
   calendarId: string
   calendarName: string
   ownerEmail: string
+  recurringEventId?: string  // set if this is an instance of a recurring event
 }
 
 export async function getCalendars(accessToken: string, refreshToken: string) {
@@ -72,7 +73,7 @@ export async function getEvents(
         const colorId = item.colorId ?? cal.colorId ?? ''
         const color = COLOR_MAP[colorId] ?? DEFAULT_COLOR
 
-        allEvents.push({
+        const eventEntry: GoogleEvent = {
           id: item.id,
           title: item.summary ?? '',
           start,
@@ -84,7 +85,9 @@ export async function getEvents(
           calendarId: cal.id,
           calendarName: cal.summary ?? '',
           ownerEmail: '',
-        })
+        }
+        if (item.recurringEventId) eventEntry.recurringEventId = item.recurringEventId
+        allEvents.push(eventEntry)
       }
     } catch (err) {
       // Some calendars may be inaccessible; skip them

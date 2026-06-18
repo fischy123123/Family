@@ -13,6 +13,8 @@ import {
   Check,
   X,
   Loader2,
+  Trash2,
+  PencilLine,
 } from 'lucide-react'
 import { format, parseISO, isValid } from 'date-fns'
 import type { FamilyMember } from '@/lib/types'
@@ -186,6 +188,35 @@ function describe(action: PendingAction, members: FamilyMember[]): ActionView {
         label: 'Mark complete',
         title: 'Complete chore',
         details: [],
+      }
+    }
+    case 'delete_google_event': {
+      const details: { label: string; value: string }[] = []
+      if (input.event_date) details.push({ label: 'When', value: fmtDateTime(input.event_date) })
+      return {
+        icon: Trash2,
+        accent: 'text-red-600',
+        bg: 'bg-red-50',
+        label: 'Delete calendar event',
+        title: input.event_title ?? 'Event',
+        details,
+      }
+    }
+    case 'update_google_event': {
+      const details: { label: string; value: string }[] = []
+      if (input.scope === 'all') details.push({ label: 'Scope', value: 'All occurrences in series' })
+      else details.push({ label: 'Scope', value: 'This occurrence only' })
+      if (input.title) details.push({ label: 'New title', value: String(input.title) })
+      if (input.start_datetime) details.push({ label: 'New time', value: fmtDateTime(input.start_datetime) })
+      if (input.location) details.push({ label: 'New location', value: String(input.location) })
+      if (input.notes) details.push({ label: 'New notes', value: String(input.notes) })
+      return {
+        icon: PencilLine,
+        accent: 'text-blue-600',
+        bg: 'bg-blue-50',
+        label: 'Update calendar event',
+        title: input.event_title ?? 'Event',
+        details,
       }
     }
     case 'remember': {
