@@ -5,7 +5,7 @@ import {
   Send, Sparkles, Bot, CheckCircle2, AlertTriangle,
   CalendarDays, ShoppingCart, ListChecks, Plane, AudioLines,
 } from 'lucide-react'
-import { VoiceMode } from '@/components/copilot/VoiceMode'
+import { RealtimeVoiceMode } from '@/components/copilot/RealtimeVoiceMode'
 import { format } from 'date-fns'
 import { useAuth } from '@/contexts/AuthContext'
 import { useFamily } from '@/contexts/FamilyContext'
@@ -189,9 +189,6 @@ export function CopilotChat() {
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
-  // Mirror of messages for use inside async voice callbacks (avoids stale closure).
-  const messagesRef = useRef<Message[]>([])
-  useEffect(() => { messagesRef.current = messages }, [messages])
 
   // Seed the conversation from another screen (e.g. tapping the Home briefing).
   useEffect(() => {
@@ -346,94 +343,20 @@ export function CopilotChat() {
     [input, loading, familyId, user?.email, members, messages, getFreshTokens, toast],
   )
 
-  // Voice mode: run one full agent turn (append user msg, call agent, append
-  // assistant msg) and return the spoken reply + where any queued actions live.
-  const runAgentTurn = useCallback(
-    async (content: string): Promise<{ reply: string; pendingCount: number; msgIndex: number }> => {
-      if (!familyId || !user?.email) throw new Error('Not ready')
-
-      const userMsg: Message = { role: 'user', content }
-      setMessages((prev) => [...prev, userMsg])
-
-      const freshTokens = await getFreshTokens()
-      const googleTokens = freshTokens
+  // Resolve the dynamic context the realtime voice session needs (fresh Google
+  // tokens, family members, timezone) at the moment the conversation starts.
+  const getVoiceContext = useCallback(async () => {
+    const freshTokens = await getFreshTokens()
+    return {
+      familyId: familyId ?? '',
+      userEmail: user?.email ?? '',
+      members,
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      googleTokens: freshTokens
         ? { accessToken: freshTokens.accessToken, refreshToken: freshTokens.refreshToken }
-        : null
-
-      const history = [...messagesRef.current, userMsg].map((m) => ({ role: m.role, content: m.content }))
-
-      const res = await fetch('/api/agent', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          messages: history,
-          familyId,
-          userEmail: user.email,
-          googleTokens,
-          context: {
-            members,
-            today: format(new Date(), "yyyy-MM-dd'T'HH:mm:ss (EEEE, MMMM d, yyyy)"),
-            timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-          },
-        }),
-      })
-
-      if (!res.ok || !res.body) {
-        const err = await res.json().catch(() => ({ error: 'Request failed' }))
-        throw new Error((err as { error?: string }).error ?? `HTTP ${res.status}`)
-      }
-
-      // Consume the SSE stream, accumulating the reply and final payload.
-      const reader = res.body.getReader()
-      const decoder = new TextDecoder()
-      let buffer = ''
-      let reply = ''
-      let pendingActions: PendingAction[] = []
-      let actions: string[] = []
-
-      type DoneEvent = { type: 'done'; reply: string; pendingActions: PendingAction[]; actions: string[]; availableCalendars?: Array<{ id: string; name: string; primary: boolean }> }
-      type SSEEvent = { type: 'token'; token: string } | DoneEvent | { type: 'error'; error: string }
-
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        buffer += decoder.decode(value, { stream: true })
-        const lines = buffer.split('\n')
-        buffer = lines.pop() ?? ''
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) continue
-          let event: SSEEvent
-          try { event = JSON.parse(line.slice(6)) } catch { continue }
-          if (event.type === 'token') {
-            reply += event.token
-          } else if (event.type === 'done') {
-            const d = event as DoneEvent
-            reply = d.reply || reply
-            pendingActions = d.pendingActions ?? []
-            actions = d.actions ?? []
-            if (d.availableCalendars?.length) setAvailableCalendars(d.availableCalendars)
-          } else if (event.type === 'error') {
-            throw new Error(event.error)
-          }
-        }
-      }
-
-      const hasPending = pendingActions.length > 0
-      const finalReply = reply || (hasPending ? "Here's what I'll do — confirm to apply." : 'Done.')
-      const assistantMsg: Message = {
-        role: 'assistant',
-        content: finalReply,
-        actions: hasPending ? [] : actions,
-        pendingActions,
-        actionStatus: hasPending ? 'pending' : undefined,
-      }
-      const msgIndex = messagesRef.current.length // index where the assistant msg lands
-      setMessages((prev) => [...prev, assistantMsg])
-
-      return { reply: finalReply, pendingCount: pendingActions.length, msgIndex }
-    },
-    [familyId, user?.email, members, getFreshTokens],
-  )
+        : null,
+    }
+  }, [familyId, user?.email, members, getFreshTokens])
 
   // Apply the queued actions for a given message after the user confirms
   const handleConfirm = useCallback(
@@ -624,9 +547,10 @@ export function CopilotChat() {
       </div>
 
       {voiceOpen && (
-        <VoiceMode
-          getReply={runAgentTurn}
-          executePending={handleConfirm}
+        <RealtimeVoiceMode
+          getContext={getVoiceContext}
+          onUserText={(t) => setMessages((prev) => [...prev, { role: 'user', content: t }])}
+          onAssistantText={(t) => setMessages((prev) => [...prev, { role: 'assistant', content: t }])}
           onClose={() => setVoiceOpen(false)}
           onError={(msg) => toast(msg, 'error')}
         />

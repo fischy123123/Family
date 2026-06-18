@@ -2,43 +2,40 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { X, Mic } from 'lucide-react'
-import { useVoiceConversation, type ConvoState } from '@/hooks/useVoiceConversation'
+import { useRealtimeVoice, type RealtimeState } from '@/hooks/useRealtimeVoice'
 import { cn } from '@/lib/utils'
+import type { FamilyMember } from '@/lib/types'
 
-interface TurnResult {
-  reply: string
-  pendingCount: number
-  msgIndex: number
+interface ToolContext {
+  familyId: string
+  userEmail: string
+  members: FamilyMember[]
+  timezone: string
+  googleTokens: { accessToken: string; refreshToken: string } | null
 }
 
-const STATUS_TEXT: Record<ConvoState, string> = {
+const STATUS_TEXT: Record<RealtimeState, string> = {
+  idle: '',
   connecting: 'Connecting…',
   listening: 'Listening…',
-  transcribing: 'Got it…',
   thinking: 'Thinking…',
   speaking: 'Speaking…',
-  idle: '',
 }
 
-function Orb({ state }: { state: ConvoState }) {
-  // The orb's animation reflects the conversation state.
+function Orb({ state }: { state: RealtimeState }) {
   const isListening = state === 'listening'
   const isSpeaking = state === 'speaking'
-  const isBusy = state === 'thinking' || state === 'transcribing' || state === 'connecting'
+  const isBusy = state === 'thinking' || state === 'connecting'
 
   return (
     <div className="relative flex items-center justify-center w-56 h-56">
-      {/* Outer pulsing rings */}
       {isListening && (
         <>
           <span className="absolute inset-0 rounded-full bg-white/10 animate-ping" />
           <span className="absolute inset-4 rounded-full bg-white/10 animate-ping [animation-delay:300ms]" />
         </>
       )}
-      {isSpeaking && (
-        <span className="absolute inset-0 rounded-full bg-blue-400/20 animate-pulse" />
-      )}
-      {/* Core orb */}
+      {isSpeaking && <span className="absolute inset-0 rounded-full bg-blue-400/20 animate-pulse" />}
       <div
         className={cn(
           'relative w-40 h-40 rounded-full bg-gradient-to-br from-blue-400 via-blue-500 to-purple-600 shadow-2xl transition-transform duration-500',
@@ -53,29 +50,29 @@ function Orb({ state }: { state: ConvoState }) {
   )
 }
 
-export function VoiceMode({
-  getReply,
-  executePending,
-  onClose,
+export function RealtimeVoiceMode({
+  getContext,
+  onUserText,
+  onAssistantText,
   onError,
+  onClose,
 }: {
-  getReply: (text: string) => Promise<TurnResult>
-  executePending: (msgIndex: number) => Promise<void>
-  onClose: () => void
+  getContext: () => Promise<ToolContext>
+  onUserText?: (text: string) => void
+  onAssistantText?: (text: string) => void
   onError: (msg: string) => void
+  onClose: () => void
 }) {
-  const [lastTranscript, setLastTranscript] = useState('')
+  const [lastUser, setLastUser] = useState('')
   const startedRef = useRef(false)
 
-  const { state, start, stop, interrupt } = useVoiceConversation({
-    getReply,
-    executePending,
-    onTranscript: (t) => setLastTranscript(t),
+  const { state, start, stop } = useRealtimeVoice({
+    getContext,
+    onUserText: (t) => { setLastUser(t); onUserText?.(t) },
+    onAssistantText,
     onError,
   })
 
-  // Auto-start the conversation as soon as the overlay opens (this mounts
-  // right after the user's tap, so the mic prompt and audio are user-initiated).
   useEffect(() => {
     if (startedRef.current) return
     startedRef.current = true
@@ -91,7 +88,6 @@ export function VoiceMode({
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col items-center justify-between bg-gradient-to-b from-slate-900 via-slate-900 to-indigo-950 px-6 py-10 animate-slide-up">
-      {/* Close button */}
       <div className="w-full flex justify-end max-w-md">
         <button
           onClick={handleClose}
@@ -102,32 +98,21 @@ export function VoiceMode({
         </button>
       </div>
 
-      {/* Orb + status */}
       <div className="flex flex-col items-center gap-8 flex-1 justify-center">
-        <button
-          onClick={() => state === 'speaking' && interrupt()}
-          className="focus:outline-none"
-          aria-label={state === 'speaking' ? 'Tap to interrupt' : 'Voice assistant'}
-        >
-          <Orb state={state} />
-        </button>
+        <Orb state={state} />
         <div className="text-center min-h-[3rem]">
           <p className="text-white text-lg font-medium">{STATUS_TEXT[state]}</p>
-          {state === 'speaking' && (
-            <p className="text-white/40 text-sm mt-1">Tap the orb to interrupt</p>
-          )}
-          {lastTranscript && (state === 'thinking' || state === 'transcribing') && (
+          {lastUser && (
             <p className="text-white/60 text-sm mt-2 max-w-xs mx-auto line-clamp-2">
-              &ldquo;{lastTranscript}&rdquo;
+              &ldquo;{lastUser}&rdquo;
             </p>
           )}
         </div>
       </div>
 
-      {/* End button */}
       <div className="w-full max-w-md flex flex-col items-center gap-4">
         <p className="text-white/40 text-xs text-center flex items-center gap-1.5">
-          <Mic size={13} /> Just start talking — I&apos;ll listen and reply
+          <Mic size={13} /> Just start talking — interrupt me anytime
         </p>
         <button
           onClick={handleClose}
