@@ -243,7 +243,7 @@ export const TOOLS: Anthropic.Tool[] = [
   // --- Google Calendar tools (only used when tokens are available) ---
   {
     name: 'list_google_calendars',
-    description: 'List all Google Calendars the user has access to (names and IDs). Call this before create_google_event when the user specifies a particular calendar (e.g. "family calendar", "shared calendar") so you can find the right calendar_id.',
+    description: 'List all Google Calendars the user has access to. ALWAYS call this before create_google_event so you can suggest the right calendar. Prefer a shared \'Family\' or \'family\' calendar over the primary personal calendar when adding family events.',
     input_schema: {
       type: 'object' as const,
       properties: {},
@@ -352,7 +352,7 @@ export function buildSystemPrompt(
       : ''
 
   const calendarInstructions = hasGoogleTokens
-    ? 'Google Calendar is connected — prefer get_google_events and create_google_event for calendar operations. Use list_events / create_event only for Firestore-only storage. IMPORTANT: when the user asks to add an event to a specific calendar (e.g. "family calendar", "shared calendar", "work calendar"), ALWAYS call list_google_calendars first to find the correct calendar_id, then pass it to create_google_event. Never assume the calendar ID.'
+    ? 'Google Calendar is connected — prefer get_google_events and create_google_event for calendar operations. Use list_events / create_event only for Firestore-only storage. ALWAYS call list_google_calendars before create_google_event. Prefer shared family calendars over the user\'s primary personal calendar for family events. Pass the chosen calendar_id to create_google_event.'
     : 'Google Calendar is not connected — use list_events and create_event for Firestore-based calendar.'
 
   // The lens: how this family wants to be helped.

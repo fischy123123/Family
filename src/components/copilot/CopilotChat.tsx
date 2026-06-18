@@ -66,13 +66,17 @@ function ActionPills({ actions }: { actions: string[] }) {
 function AssistantBubble({
   msg,
   members,
+  availableCalendars,
   onConfirm,
   onCancel,
+  onActionChange,
 }: {
   msg: Message
   members: FamilyMember[]
+  availableCalendars: Array<{ id: string; name: string; primary: boolean }>
   onConfirm: () => void
   onCancel: () => void
+  onActionChange: (actionId: string, field: string, value: string) => void
 }) {
   return (
     <div className="flex items-start gap-3 animate-slide-up">
@@ -90,9 +94,11 @@ function AssistantBubble({
           <ProposedActions
             actions={msg.pendingActions}
             members={members}
+            availableCalendars={availableCalendars}
             status={msg.actionStatus ?? 'pending'}
             onConfirm={onConfirm}
             onCancel={onCancel}
+            onActionChange={onActionChange}
           />
         )}
         {msg.actions && <ActionPills actions={msg.actions} />}
@@ -177,6 +183,7 @@ export function CopilotChat() {
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
+  const [availableCalendars, setAvailableCalendars] = useState<Array<{ id: string; name: string; primary: boolean }>>([])
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -245,7 +252,7 @@ export function CopilotChat() {
         let buffer = ''
         let streamingStarted = false
 
-        type DoneEvent = { type: 'done'; reply: string; pendingActions: PendingAction[]; actions: string[] }
+        type DoneEvent = { type: 'done'; reply: string; pendingActions: PendingAction[]; actions: string[]; availableCalendars?: Array<{ id: string; name: string; primary: boolean }> }
         type SSEEvent = { type: 'token'; token: string } | DoneEvent | { type: 'error'; error: string }
 
         while (true) {
@@ -281,7 +288,8 @@ export function CopilotChat() {
                 })
               }
             } else if (event.type === 'done') {
-              const { reply, pendingActions, actions } = event as DoneEvent
+              const { reply, pendingActions, actions, availableCalendars: cals } = event as DoneEvent
+              if (cals?.length) setAvailableCalendars(cals)
               const hasPending = (pendingActions?.length ?? 0) > 0
               setMessages((prev) => {
                 const msgs = [...prev]
@@ -366,7 +374,8 @@ export function CopilotChat() {
 
         const failed = (data.results ?? []).filter((r: { ok: boolean }) => !r.ok)
         if (failed.length > 0) {
-          toast(`${failed.length} change(s) couldn't be applied`, 'error')
+          const reasons = failed.map((r: { error?: string }) => r.error).filter(Boolean).join('; ')
+          toast(reasons ? `Couldn't apply: ${reasons}` : `${failed.length} change(s) couldn't be applied`, 'error')
         } else {
           toast('Changes applied', 'success')
         }
@@ -393,6 +402,20 @@ export function CopilotChat() {
   const handleCancel = useCallback((msgIndex: number) => {
     setMessages((prev) =>
       prev.map((m, i) => (i === msgIndex ? { ...m, actionStatus: 'cancelled' } : m)),
+    )
+  }, [])
+
+  const handleActionChange = useCallback((msgIndex: number, actionId: string, field: string, value: string) => {
+    setMessages((prev) =>
+      prev.map((m, i) => {
+        if (i !== msgIndex) return m
+        return {
+          ...m,
+          pendingActions: (m.pendingActions ?? []).map((a) =>
+            a.id === actionId ? { ...a, input: { ...a.input, [field]: value } } : a,
+          ),
+        }
+      }),
     )
   }, [])
 
@@ -439,8 +462,10 @@ export function CopilotChat() {
                     key={i}
                     msg={msg}
                     members={members}
+                    availableCalendars={availableCalendars}
                     onConfirm={() => handleConfirm(i)}
                     onCancel={() => handleCancel(i)}
+                    onActionChange={(actionId, field, value) => handleActionChange(i, actionId, field, value)}
                   />
                 ),
               )}

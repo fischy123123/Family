@@ -214,7 +214,17 @@ function describe(action: PendingAction, members: FamilyMember[]): ActionView {
   }
 }
 
-function ActionCard({ action, members }: { action: PendingAction; members: FamilyMember[] }) {
+function ActionCard({
+  action,
+  members,
+  availableCalendars = [],
+  onActionChange,
+}: {
+  action: PendingAction
+  members: FamilyMember[]
+  availableCalendars?: Array<{ id: string; name: string; primary: boolean }>
+  onActionChange?: (actionId: string, field: string, value: string) => void
+}) {
   const v = describe(action, members)
   const Icon = v.icon
   return (
@@ -234,6 +244,25 @@ function ActionCard({ action, members }: { action: PendingAction; members: Famil
             ))}
           </div>
         )}
+        {(action.tool === 'create_google_event' || action.tool === 'create_event') && availableCalendars.length > 0 && (
+          <div className="mt-2">
+            <p className="text-[11px] text-slate-400 mb-1">Calendar</p>
+            <select
+              value={action.input.calendar_id ?? ''}
+              onChange={(e) => onActionChange?.(action.id, 'calendar_id', e.target.value)}
+              className="w-full text-[13px] rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-slate-700 focus:outline-none focus:border-blue-300"
+            >
+              {!action.input.calendar_id && (
+                <option value="">Primary calendar</option>
+              )}
+              {availableCalendars.map((cal) => (
+                <option key={cal.id} value={cal.id}>
+                  {cal.name}{cal.primary ? ' (personal)' : ''}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
       </div>
     </div>
   )
@@ -242,15 +271,19 @@ function ActionCard({ action, members }: { action: PendingAction; members: Famil
 export function ProposedActions({
   actions,
   members,
+  availableCalendars = [],
   status,
   onConfirm,
   onCancel,
+  onActionChange,
 }: {
   actions: PendingAction[]
   members: FamilyMember[]
+  availableCalendars?: Array<{ id: string; name: string; primary: boolean }>
   status: ActionStatus
   onConfirm: () => void
   onCancel: () => void
+  onActionChange?: (actionId: string, field: string, value: string) => void
 }) {
   if (!actions.length) return null
 
@@ -267,7 +300,7 @@ export function ProposedActions({
 
       <div className="space-y-2">
         {actions.map((a) => (
-          <ActionCard key={a.id} action={a} members={members} />
+          <ActionCard key={a.id} action={a} members={members} availableCalendars={availableCalendars} onActionChange={onActionChange} />
         ))}
       </div>
 

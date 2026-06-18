@@ -111,6 +111,7 @@ export async function POST(request: NextRequest) {
       const actions: string[] = []
       const toolCtx: ToolContext = { db, familyId, userEmail, googleTokens, actions, timezone, members }
       const pendingActions: PendingAction[] = []
+      let availableCalendars: Array<{ id: string; name: string; primary: boolean }> = []
       let reply = ''
 
       // Tool-use loop — up to 5 iterations.
@@ -165,6 +166,10 @@ export async function POST(request: NextRequest) {
             let result: unknown
             try {
               result = await executeTool(block.name, block.input as Record<string, unknown>, toolCtx)
+              // Capture calendars so the client can show a picker in the confirmation card
+              if (block.name === 'list_google_calendars' && Array.isArray((result as {calendars?: unknown[]}).calendars)) {
+                availableCalendars = (result as {calendars: Array<{id: string; name: string; primary: boolean}>}).calendars
+              }
             } catch (e: unknown) {
               result = { error: e instanceof Error ? e.message : String(e) }
             }
@@ -201,7 +206,7 @@ export async function POST(request: NextRequest) {
         break
       }
 
-      send({ type: 'done', reply, pendingActions, actions })
+      send({ type: 'done', reply, pendingActions, actions, availableCalendars })
     } catch (e: unknown) {
       console.error('[agent] error:', e)
       send({ type: 'error', error: e instanceof Error ? e.message : 'Internal error' })
