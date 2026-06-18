@@ -6,7 +6,6 @@ import {
   CalendarDays, ShoppingCart, ListChecks, Plane, AudioLines,
 } from 'lucide-react'
 import { RealtimeVoiceMode } from '@/components/copilot/RealtimeVoiceMode'
-import { format } from 'date-fns'
 import { useAuth } from '@/contexts/AuthContext'
 import { useFamily } from '@/contexts/FamilyContext'
 import { useFirestore } from '@/hooks/useFirestore'
@@ -237,7 +236,7 @@ export function CopilotChat() {
             googleTokens,
             context: {
               members,
-              today: format(new Date(), "yyyy-MM-dd'T'HH:mm:ss (EEEE, MMMM d, yyyy)"),
+              today: new Date().toISOString(),
               timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
             },
           }),

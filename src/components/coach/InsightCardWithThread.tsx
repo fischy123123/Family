@@ -105,7 +105,7 @@ export function InsightCardWithThread({
           googleTokens,
           context: {
             members,
-            today: new Date().toLocaleString(),
+            today: new Date().toISOString(),
             timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
           },
         }),
