@@ -14,10 +14,18 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'ANTHROPIC_API_KEY not configured' }, { status: 500 })
   }
 
-  const ctx: FamilyContextInput & { tier?: 'fast' | 'deep' } = await request.json()
+  const ctx: FamilyContextInput & { tier?: 'fast' | 'deep'; suppressedTitles?: string[] } = await request.json()
   // Build context as two parts: the static data block (cacheable) and the
   // dynamic time header (changes every run — not cached).
   const { timeHeader, dataBlock } = buildFamilyContextParts(ctx)
+
+  // Build suppression block from titles the user has explicitly dismissed.
+  // This goes into the dynamic (non-cached) part of the prompt so it always
+  // reflects the current session's dismissed state without busting the cache.
+  const suppressedTitles = ctx.suppressedTitles ?? []
+  const suppressionBlock = suppressedTitles.length > 0
+    ? `\n\nSUPPRESSED ITEMS (HARD RULE — do NOT include any of these, or anything semantically equivalent, in your output):\n${suppressedTitles.map((t) => `- ${t}`).join('\n')}\nThese are items the user has explicitly dismissed. Re-surfacing them breaks trust.`
+    : ''
 
   const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
@@ -139,8 +147,8 @@ For each problem, include an optional "actionType" field: "copilot" for conversa
           // family's actual data changes — cache it to avoid re-processing the
           // same context on rapid consecutive calls.
           { type: 'text', text: `FAMILY CONTEXT:\n\n${dataBlock}`, cache_control: { type: 'ephemeral' } },
-          // Time header: always fresh — current time + today's date anchor.
-          { type: 'text', text: timeHeader },
+          // Time header: always fresh — current time + today's date anchor + suppressed items.
+          { type: 'text', text: timeHeader + suppressionBlock },
         ],
       }],
     })

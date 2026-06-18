@@ -432,8 +432,10 @@ export function CommandCenter() {
       currentUserName: user?.displayName ?? undefined,
       now: new Date().toISOString(),
       timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      // Titles the user has explicitly dismissed — the engine must not re-surface them.
+      suppressedTitles: Array.from(dismissedTitles),
     }
-  }, [members, events, tasks, reminders, chores, plans, lists, profile, memories, emailSuggestions, user])
+  }, [members, events, tasks, reminders, chores, plans, lists, profile, memories, emailSuggestions, user, dismissedTitles])
 
   const runEngine = useCallback(async (overrideContext?: { eventTitle: string; context: string }[], silent?: boolean) => {
     if (silent) setRefreshing(true)
