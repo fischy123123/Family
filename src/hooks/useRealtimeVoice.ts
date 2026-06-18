@@ -83,31 +83,41 @@ export function useRealtimeVoice(opts: Options) {
   }, [send])
 
   const handleEvent = useCallback((evt: RealtimeEvent) => {
-    switch (evt.type) {
-      case 'input_audio_buffer.speech_started':
-        setState('listening')
-        break
-      case 'response.created':
-        setState('thinking')
-        break
-      case 'response.audio.delta':
-        setState('speaking')
-        break
-      case 'response.done':
-        if (activeRef.current) setState('listening')
-        break
-      case 'conversation.item.input_audio_transcription.completed':
-        if (evt.transcript) optsRef.current.onUserText?.(String(evt.transcript).trim())
-        break
-      case 'response.audio_transcript.done':
-        if (evt.transcript) optsRef.current.onAssistantText?.(String(evt.transcript).trim())
-        break
-      case 'response.function_call_arguments.done':
-        runToolCall(evt.call_id, evt.name, evt.arguments)
-        break
-      case 'error':
-        optsRef.current.onError?.(evt.error?.message ?? 'Realtime error')
-        break
+    const t: string = evt.type ?? ''
+
+    // User started talking.
+    if (t === 'input_audio_buffer.speech_started') {
+      setState('listening')
+    // Model is composing a response.
+    } else if (t === 'response.created') {
+      setState('thinking')
+    // Assistant audio is playing (handle GA + legacy event names).
+    } else if (
+      t === 'output_audio_buffer.started' ||
+      t === 'response.output_audio.delta' ||
+      t === 'response.audio.delta'
+    ) {
+      setState('speaking')
+    // Assistant finished this turn.
+    } else if (
+      t === 'output_audio_buffer.stopped' ||
+      t === 'response.done'
+    ) {
+      if (activeRef.current) setState('listening')
+    // User's speech transcribed.
+    } else if (t === 'conversation.item.input_audio_transcription.completed') {
+      if (evt.transcript) optsRef.current.onUserText?.(String(evt.transcript).trim())
+    // Assistant's spoken text (GA + legacy names).
+    } else if (
+      t === 'response.output_audio_transcript.done' ||
+      t === 'response.audio_transcript.done'
+    ) {
+      if (evt.transcript) optsRef.current.onAssistantText?.(String(evt.transcript).trim())
+    // Tool / function call.
+    } else if (t === 'response.function_call_arguments.done') {
+      runToolCall(evt.call_id, evt.name, evt.arguments)
+    } else if (t === 'error') {
+      optsRef.current.onError?.(evt.error?.message ?? 'Realtime error')
     }
   }, [runToolCall])
 
@@ -150,7 +160,7 @@ export function useRealtimeVoice(opts: Options) {
       })
       const sessionData = await sessionRes.json()
       if (!sessionRes.ok) throw new Error(sessionData.error ?? 'Could not start session')
-      const ephemeralKey: string = sessionData.session?.client_secret?.value
+      const ephemeralKey: string = sessionData.clientSecret
       const model: string = sessionData.model
       if (!ephemeralKey) throw new Error('No session token returned')
 
@@ -190,7 +200,7 @@ export function useRealtimeVoice(opts: Options) {
       const offer = await pc.createOffer()
       await pc.setLocalDescription(offer)
 
-      const sdpRes = await fetch(`https://api.openai.com/v1/realtime?model=${model}`, {
+      const sdpRes = await fetch(`https://api.openai.com/v1/realtime/calls?model=${model}`, {
         method: 'POST',
         body: offer.sdp,
         headers: {

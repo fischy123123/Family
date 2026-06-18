@@ -4,7 +4,7 @@ import { getFirestore } from 'firebase-admin/firestore'
 import { TOOLS, buildSystemPrompt } from '@/lib/agent/tools'
 import type { FamilyMember, FamilyMemory, FamilyProfile } from '@/lib/types'
 
-const REALTIME_MODEL = 'gpt-4o-realtime-preview-2024-12-17'
+const REALTIME_MODEL = 'gpt-realtime'
 const VOICE = 'shimmer'
 
 // ---------------------------------------------------------------------------
@@ -84,27 +84,34 @@ export async function POST(request: NextRequest) {
     parameters: t.input_schema,
   }))
 
-  const res = await fetch('https://api.openai.com/v1/realtime/sessions', {
+  // GA Realtime API: create an ephemeral client secret. Config nests under
+  // `session`; audio settings live under audio.input / audio.output.
+  const res = await fetch('https://api.openai.com/v1/realtime/client_secrets', {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${apiKey}`,
       'Content-Type': 'application/json',
-      // Required for the Realtime API — without it OpenAI returns "Invalid URL"
-      'OpenAI-Beta': 'realtime=v1',
     },
     body: JSON.stringify({
-      model: REALTIME_MODEL,
-      voice: VOICE,
-      instructions: voicePrompt,
-      tools: activeTools,
-      tool_choice: 'auto',
-      turn_detection: {
-        type: 'server_vad',
-        threshold: 0.5,
-        prefix_padding_ms: 300,
-        silence_duration_ms: 600,
+      session: {
+        type: 'realtime',
+        model: REALTIME_MODEL,
+        instructions: voicePrompt,
+        tools: activeTools,
+        tool_choice: 'auto',
+        audio: {
+          input: {
+            transcription: { model: 'whisper-1' },
+            turn_detection: {
+              type: 'server_vad',
+              threshold: 0.5,
+              prefix_padding_ms: 300,
+              silence_duration_ms: 600,
+            },
+          },
+          output: { voice: VOICE },
+        },
       },
-      input_audio_transcription: { model: 'whisper-1' },
     }),
   })
 
@@ -113,6 +120,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: msg }, { status: res.status })
   }
 
-  const session = await res.json()
-  return NextResponse.json({ session, model: REALTIME_MODEL })
+  const data = await res.json()
+  // Token is the top-level `value` (starts with "ek_").
+  return NextResponse.json({ clientSecret: data.value, model: REALTIME_MODEL })
 }
