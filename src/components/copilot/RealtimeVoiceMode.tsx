@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { X, Mic } from 'lucide-react'
 import { useRealtimeVoice, type RealtimeState } from '@/hooks/useRealtimeVoice'
+import { useWakeLock } from '@/hooks/useWakeLock'
 import { cn } from '@/lib/utils'
 import type { FamilyMember } from '@/lib/types'
 
@@ -65,6 +66,10 @@ export function RealtimeVoiceMode({
 }) {
   const [lastUser, setLastUser] = useState('')
   const startedRef = useRef(false)
+
+  // Keep the screen awake for the whole time voice mode is open so the device
+  // doesn't lock itself mid-conversation from lack of touch input.
+  useWakeLock(true)
 
   const { state, error, start, stop } = useRealtimeVoice({
     getContext,
