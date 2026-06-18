@@ -157,6 +157,16 @@ For each problem, include an optional "actionType" field: "copilot" for conversa
       }],
     })
 
+    // Log cache stats so they're visible in Vercel function logs.
+    const u = response.usage as unknown as Record<string, number>
+    const cacheRead = u.cache_read_input_tokens ?? 0
+    const cacheWrite = u.cache_creation_input_tokens ?? 0
+    const uncached = u.input_tokens ?? 0
+    console.log(
+      `[attention] input=${uncached} cache_write=${cacheWrite} cache_read=${cacheRead} output=${u.output_tokens ?? 0}` +
+      (cacheRead > 0 ? ` (CACHE HIT — saved ${Math.round((cacheRead * 0.9) / 1000)}k tokens)` : ' (CACHE MISS — first call this hour)')
+    )
+
     // Detect truncation before trying to parse — a truncated JSON is not useful
     // and shouldn't overwrite the client's existing good report. Return a 500 so
     // the client keeps showing the cached briefing and offers a retry button.
