@@ -63,10 +63,18 @@ const CLAR_PREFIX = 'fam-clar-'
 const GMAIL_PREFIX = 'fam-gmail-'
 const LAST_RUN_PREFIX = 'fam-lastrun-'
 const CTX_SIG_PREFIX = 'fam-ctxsig-'
+// The ctxSignature that was in effect when the AI last ran. Compared in the
+// auto-run throttle to detect "nothing changed — skip the AI call."
+const LAST_RUN_SIG_PREFIX = 'fam-lastrun-sig-'
 
-// 15-minute throttle: skip the engine if the family data hasn't meaningfully
-// changed and we already ran recently (survives navigation + PWA re-opens).
+// 15-minute minimum between AI calls. Additionally, if the data signature hasn't
+// changed since the last run, we extend the effective throttle to 45 minutes:
+// time-buckets (now/next/later) shift over time even without data changes, so
+// a periodic re-run is still needed — just much less often than 15 min.
 const ENGINE_THROTTLE_MS = 15 * 60 * 1000
+// How long to reuse a cached briefing when data hasn't changed (45 min).
+// After this, re-run anyway so time-buckets (now/next/later) stay fresh.
+const ENGINE_DATA_UNCHANGED_TTL_MS = 45 * 60 * 1000
 
 // Open a specific Gmail message in the system browser (Safari), NOT inside the
 // app's own webview. We use #all/<id> rather than #inbox/<id> so the message is
@@ -140,6 +148,7 @@ export function CommandCenter() {
   const gmailKey = familyId ? GMAIL_PREFIX + familyId : null
   const lastRunKey = familyId ? LAST_RUN_PREFIX + familyId : null
   const ctxSigKey = familyId ? CTX_SIG_PREFIX + familyId : null
+  const lastRunSigKey = familyId ? LAST_RUN_SIG_PREFIX + familyId : null
 
   const [report, setReport] = useState<AttentionReport | null>(null)
   // Buffered result from a background run. Applied only when the user taps the
@@ -152,6 +161,9 @@ export function CommandCenter() {
   const [googleLoaded, setGoogleLoaded] = useState(false)
   const [hydrated, setHydrated] = useState(false)
   const lastRun = useRef<number>(0)
+  // ctxSignature that was active when the AI last actually ran. Compared in the
+  // periodic auto-run to detect unchanged data so we can skip the AI call.
+  const lastRunSig = useRef<string>('')
   // When true, the next engine run writes directly to report (not pendingReport),
   // even when called silently. Used after cache reset or when the cached report
   // is stale, so the fresh result appears immediately without a "tap to see" step.
@@ -196,12 +208,13 @@ export function CommandCenter() {
   // Keeping report/googleEvents visible prevents the blank-then-reload flicker.
   const clearCaches = useCallback(() => {
     if (!familyId) return
-    const prefixes = [ATTN_PREFIX, GCAL_PREFIX, CLAR_PREFIX, GMAIL_PREFIX, LAST_RUN_PREFIX, CTX_SIG_PREFIX]
+    const prefixes = [ATTN_PREFIX, GCAL_PREFIX, CLAR_PREFIX, GMAIL_PREFIX, LAST_RUN_PREFIX, CTX_SIG_PREFIX, LAST_RUN_SIG_PREFIX]
     prefixes.forEach((p) => {
       try { localStorage.removeItem(p + familyId) } catch { /* ignore */ }
     })
     lastRun.current = 0
     lastCtxSig.current = ''
+    lastRunSig.current = ''
     setEngineError(null)
     setPendingReport(null)
     // Next run bypasses the pendingReport buffer so the corrected data appears
@@ -239,8 +252,10 @@ export function CommandCenter() {
     // on remount doesn't look like "new context" and trigger an immediate re-run.
     const savedCtxSig = readCache<string>(ctxSigKey)
     if (savedCtxSig) lastCtxSig.current = savedCtxSig
+    const savedRunSig = readCache<string>(lastRunSigKey)
+    if (savedRunSig) lastRunSig.current = savedRunSig
     setHydrated(true)
-  }, [familyId, attnKey, gcalKey, clarKey, gmailKey, dismissKey, lastRunKey, ctxSigKey])
+  }, [familyId, attnKey, gcalKey, clarKey, gmailKey, dismissKey, lastRunKey, ctxSigKey, lastRunSigKey])
 
   // Scan Gmail for actionable items — once per session, using the main Google
   // connection's token (it already includes the gmail.readonly scope). Results
@@ -474,6 +489,10 @@ export function CommandCenter() {
         setEngineError(null)
         writeCache(attnKey, data)
         writeCache(lastRunKey, runAt)
+        // Record which data snapshot produced this briefing. If the same
+        // snapshot is still current when the next throttle fires, skip the AI.
+        lastRunSig.current = lastCtxSig.current
+        if (lastRunSigKey) writeCache(lastRunSigKey, lastRunSig.current)
       } else {
         // Surface the error so it's visible instead of silently showing nothing.
         // Don't overwrite the existing report or cache — keep showing the last
@@ -503,6 +522,17 @@ export function CommandCenter() {
     if (isConnected && !googleLoaded && events.length === 0) return
     if (members.length === 0 && events.length === 0 && tasks.length === 0) return
     if (Date.now() - lastRun.current < ENGINE_THROTTLE_MS) return
+    // Core data-change optimization: if the data fingerprint hasn't changed since
+    // the last AI run AND the cached briefing is still fresh enough for time-bucket
+    // accuracy (within ENGINE_DATA_UNCHANGED_TTL_MS), skip the AI call entirely.
+    // The change-detection effect below already handles the case where data *did*
+    // change — this guard only suppresses the wasteful periodic "nothing changed" runs.
+    const timeSinceLastRun = Date.now() - lastRun.current
+    if (
+      lastRunSig.current !== '' &&
+      lastRunSig.current === lastCtxSig.current &&
+      timeSinceLastRun < ENGINE_DATA_UNCHANGED_TTL_MS
+    ) return
     runEngine(undefined, !!report)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hydrated, googleLoaded, members.length, events.length, tasks.length, reminders.length, googleEvents.length])
