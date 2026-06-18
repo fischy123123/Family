@@ -3,8 +3,9 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import {
   Send, Sparkles, Bot, CheckCircle2, AlertTriangle,
-  CalendarDays, ShoppingCart, ListChecks, Plane,
+  CalendarDays, ShoppingCart, ListChecks, Plane, Mic, Square, Loader2,
 } from 'lucide-react'
+import { useVoiceRecorder, type VoiceState } from '@/hooks/useVoiceRecorder'
 import { format } from 'date-fns'
 import { useAuth } from '@/contexts/AuthContext'
 import { useFamily } from '@/contexts/FamilyContext'
@@ -169,6 +170,32 @@ function EmptyState({ onPrompt }: { onPrompt: (prompt: string) => void }) {
   )
 }
 
+function MicButton({ voiceState, onToggle, disabled }: { voiceState: VoiceState; onToggle: () => void; disabled?: boolean }) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      disabled={disabled || voiceState === 'transcribing'}
+      aria-label={voiceState === 'recording' ? 'Stop recording' : 'Start voice input'}
+      className={cn(
+        'w-12 h-12 rounded-full flex items-center justify-center shrink-0 transition-all duration-200',
+        voiceState === 'idle' && 'bg-white border border-slate-200 text-slate-500 hover:bg-slate-50 hover:text-blue-600 shadow-card active:scale-95',
+        voiceState === 'recording' && 'bg-red-500 text-white shadow-lg ring-4 ring-red-200 animate-pulse active:scale-95',
+        voiceState === 'transcribing' && 'bg-white border border-slate-200 text-slate-300 shadow-card cursor-not-allowed',
+        disabled && 'opacity-40 cursor-not-allowed',
+      )}
+    >
+      {voiceState === 'transcribing' ? (
+        <Loader2 size={18} className="animate-spin" />
+      ) : voiceState === 'recording' ? (
+        <Square size={15} fill="white" strokeWidth={0} />
+      ) : (
+        <Mic size={18} />
+      )}
+    </button>
+  )
+}
+
 // ---------------------------------------------------------------------------
 // Main component
 // ---------------------------------------------------------------------------
@@ -187,6 +214,9 @@ export function CopilotChat() {
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
+  // Stable ref so useVoiceRecorder always calls the latest handleSend even
+  // if messages state changed between mic-press and transcript-received.
+  const handleSendRef = useRef<(text?: string) => void>(() => {})
 
   // Seed the conversation from another screen (e.g. tapping the Home briefing).
   useEffect(() => {
@@ -341,6 +371,14 @@ export function CopilotChat() {
     [input, loading, familyId, user?.email, members, messages, getFreshTokens, toast],
   )
 
+  // Keep the ref current so voice recorder always calls the latest handleSend.
+  useEffect(() => { handleSendRef.current = handleSend }, [handleSend])
+
+  const { state: voiceState, toggle: toggleVoice } = useVoiceRecorder({
+    onTranscript: useCallback((text: string) => handleSendRef.current(text), []),
+    onError: useCallback((msg: string) => toast(msg, 'error'), [toast]),
+  })
+
   // Apply the queued actions for a given message after the user confirms
   const handleConfirm = useCallback(
     async (msgIndex: number) => {
@@ -480,14 +518,40 @@ export function CopilotChat() {
       {/* Sticky input bar */}
       <div className="shrink-0 border-t border-slate-100 bg-slate-50/80 backdrop-blur px-5 sm:px-8 py-4">
         <div className="max-w-3xl mx-auto">
+          {/* Recording indicator banner */}
+          {voiceState === 'recording' && (
+            <div className="flex items-center justify-center gap-2 mb-3 text-sm font-medium text-red-600 animate-pulse">
+              <span className="w-2 h-2 rounded-full bg-red-500 inline-block" />
+              Listening… tap to send
+            </div>
+          )}
+          {voiceState === 'transcribing' && (
+            <div className="flex items-center justify-center gap-2 mb-3 text-sm font-medium text-slate-500">
+              <Loader2 size={14} className="animate-spin" />
+              Transcribing…
+            </div>
+          )}
           <div className="flex items-center gap-3">
+            <MicButton
+              voiceState={voiceState}
+              onToggle={toggleVoice}
+              disabled={loading || !familyId}
+            />
             <input
               ref={inputRef}
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder={loading ? 'Thinking…' : 'Message Copilot…'}
-              disabled={loading || !familyId}
+              placeholder={
+                voiceState === 'recording'
+                  ? 'Listening…'
+                  : voiceState === 'transcribing'
+                  ? 'Transcribing…'
+                  : loading
+                  ? 'Thinking…'
+                  : 'Message Copilot…'
+              }
+              disabled={loading || !familyId || voiceState !== 'idle'}
               className={cn(
                 'flex-1 rounded-full border border-slate-200 bg-white px-5 py-3 text-[15px] text-slate-900 shadow-card',
                 'placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-300',
@@ -496,7 +560,7 @@ export function CopilotChat() {
             />
             <button
               onClick={() => handleSend()}
-              disabled={loading || !input.trim() || !familyId}
+              disabled={loading || !input.trim() || !familyId || voiceState !== 'idle'}
               className={cn(
                 'w-12 h-12 rounded-full flex items-center justify-center shrink-0 transition-all duration-150',
                 'bg-gradient-to-br from-blue-600 to-purple-600 text-white shadow-card',
