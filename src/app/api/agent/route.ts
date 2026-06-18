@@ -108,6 +108,26 @@ export async function POST(request: NextRequest) {
         ? TOOLS
         : TOOLS.filter((t) => t.name !== 'get_google_events' && t.name !== 'create_google_event')
 
+      // ── Prompt caching ──────────────────────────────────────────────────
+      // The tool definitions (~23 schemas) never change, and the system prompt
+      // is stable for the whole conversation (same family, same day). Without
+      // caching, both are re-sent at full price on every message AND on every
+      // tool-loop iteration below (up to 5×). With cache breakpoints, the API
+      // re-reads them at 10% of input cost after the first call.
+      //   - breakpoint on the last tool → caches all tools (hits across days /
+      //     sessions / users, since tools are 100% static)
+      //   - breakpoint on system → caches tools+system (hits within a day/session)
+      // 1-hour TTL so the cached prefix survives a whole Copilot conversation
+      // and tool-loop iterations (the default 5-min TTL can lapse between turns).
+      const cachedTools = activeTools.map((t, i) =>
+        i === activeTools.length - 1
+          ? { ...t, cache_control: { type: 'ephemeral' as const, ttl: '1h' as const } }
+          : t,
+      )
+      const cachedSystem: Anthropic.TextBlockParam[] = [
+        { type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral', ttl: '1h' } },
+      ]
+
       const actions: string[] = []
       const toolCtx: ToolContext = { db, familyId, userEmail, googleTokens, actions, timezone, members }
       const pendingActions: PendingAction[] = []
@@ -123,8 +143,8 @@ export async function POST(request: NextRequest) {
         const streamObj = anthropic.messages.stream({
           model: AI_MODEL,
           max_tokens: 1024,
-          system: systemPrompt,
-          tools: activeTools,
+          system: cachedSystem,
+          tools: cachedTools,
           messages: conversationMessages,
         })
 
@@ -188,8 +208,8 @@ export async function POST(request: NextRequest) {
             const finalStream = anthropic.messages.stream({
               model: AI_MODEL,
               max_tokens: 512,
-              system: systemPrompt,
-              tools: activeTools,
+              system: cachedSystem,
+              tools: cachedTools,
               messages: conversationMessages,
             })
             finalStream.on('text', (token) => send({ type: 'token', token }))

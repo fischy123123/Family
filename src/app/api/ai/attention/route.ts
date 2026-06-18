@@ -136,17 +136,21 @@ For each problem, include an optional "actionType" field: "copilot" for conversa
       // 4096 provides a firm ceiling above any realistic briefing so the JSON
       // is never truncated — a truncated response drops every status card.
       max_tokens: 4096,
-      // System prompt: static → cache it (saves ~600 tokens on every cache hit).
+      // System prompt: static → cache it (saves ~1800 tokens on every cache hit).
+      // 1-hour TTL (not the 5-min default): briefings run ~15 min apart per the
+      // client throttle, and multiple family members load within the same hour,
+      // so a 5-min cache almost always expired before the next run. A 1h TTL
+      // lets these calls actually hit the cache.
       system: [
-        { type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } },
+        { type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral', ttl: '1h' } },
       ],
       messages: [{
         role: 'user',
         content: [
           // Data block: members, events, tasks, etc. Changes only when the
-          // family's actual data changes — cache it to avoid re-processing the
-          // same context on rapid consecutive calls.
-          { type: 'text', text: `FAMILY CONTEXT:\n\n${dataBlock}`, cache_control: { type: 'ephemeral' } },
+          // family's actual data changes — cache it (1h) so unchanged data
+          // re-reads at 10% cost across the throttle window and between users.
+          { type: 'text', text: `FAMILY CONTEXT:\n\n${dataBlock}`, cache_control: { type: 'ephemeral', ttl: '1h' } },
           // Time header: always fresh — current time + today's date anchor + suppressed items.
           { type: 'text', text: timeHeader + suppressionBlock },
         ],

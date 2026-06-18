@@ -5,7 +5,7 @@
 // rather than instructs. Shared by the on-demand API route and the weekly cron.
 
 import Anthropic from '@anthropic-ai/sdk'
-import { buildFamilyContext, type FamilyContextInput } from '@/lib/familyContext'
+import { buildFamilyContextParts, type FamilyContextInput } from '@/lib/familyContext'
 import { LIFE_AREAS } from '@/lib/types'
 import type {
   FamilyGoal, Reflection, CoachingInsight, CalendarEvent, Task,
@@ -31,16 +31,21 @@ function fmtDate(iso: string, tz?: string): string {
   }
 }
 
-// Builds the coaching-specific context: the standard family context plus the
-// longer-horizon material the coach needs — goals, reflections, recent history,
-// momentum, and the insights it has already given (so it doesn't repeat).
-export function buildCoachingContext(input: CoachInput): string {
+// Builds the coaching-specific context, split into a static data block (members,
+// events, goals, reflections, history — eligible for prompt caching) and a
+// dynamic time header (current time — changes every run, never cached). All the
+// longer-horizon coaching material (goals, reflections, recent history,
+// momentum, prior insights) lives in the cacheable data block.
+export function buildCoachingContextParts(input: CoachInput): {
+  timeHeader: string
+  dataBlock: string
+} {
   const { goals, reflections, recentInsights, pastEvents, completedTasks, timezone, now } = input
   const tz = timezone || undefined
   const nowDate = new Date(now)
 
-  const base = buildFamilyContext(input)
-  const sections: string[] = [base]
+  const { timeHeader, dataBlock: baseData } = buildFamilyContextParts(input)
+  const sections: string[] = [baseData]
 
   // Standing commitments — the heart of accountability.
   if (goals?.length) {
@@ -125,7 +130,7 @@ export function buildCoachingContext(input: CoachInput): string {
     }
   }
 
-  return sections.join('\n\n')
+  return { timeHeader, dataBlock: sections.join('\n\n') }
 }
 
 const COACH_SYSTEM_PROMPT = `You are the Family Life Coach inside FamilyOS — a warm, perceptive guide who helps a family live in line with what they say matters most. You are NOT a task manager or a reporter. You are the voice that steps back and asks "how are we REALLY doing?" — and you know the difference between what a calendar shows and what's actually true.
@@ -199,15 +204,27 @@ export interface CoachResult {
 export async function generateCoaching(input: CoachInput): Promise<CoachResult> {
   if (!process.env.ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY not configured')
   const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
-  const context = buildCoachingContext(input)
+  const { timeHeader, dataBlock } = buildCoachingContextParts(input)
 
   const response = await anthropic.messages.create({
     model: COACH_MODEL,
     max_tokens: 2000,
+    // System prompt: static → cache it (1h TTL so it survives between check-ins).
     system: [
-      { type: 'text', text: COACH_SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } },
+      { type: 'text', text: COACH_SYSTEM_PROMPT, cache_control: { type: 'ephemeral', ttl: '1h' } },
     ],
-    messages: [{ role: 'user', content: `FAMILY CONTEXT:\n\n${context}` }],
+    messages: [{
+      role: 'user',
+      content: [
+        // Data block: members, events, goals, reflections, 45-day history, etc.
+        // The single largest part of the prompt. Cache it (1h) so repeat
+        // check-ins (e.g. the "Refresh now" flow after saving a note) re-read it
+        // at 10% cost instead of re-paying for the whole context.
+        { type: 'text', text: `FAMILY CONTEXT:\n\n${dataBlock}`, cache_control: { type: 'ephemeral', ttl: '1h' } },
+        // Time header: always fresh — current time + today's date anchor.
+        { type: 'text', text: timeHeader },
+      ],
+    }],
   })
 
   const text = response.content[0].type === 'text' ? response.content[0].text : '{}'
