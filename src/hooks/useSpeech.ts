@@ -4,12 +4,9 @@ import { useState, useEffect, useRef } from 'react'
 
 export type SpeechState = 'idle' | 'loading' | 'playing'
 
-// Fetches TTS audio from the server (/api/tts → OpenAI) and plays it via an
-// HTMLAudioElement. Calling speak() while loading or playing stops playback
-// (toggle behaviour). Automatically stops on unmount (navigation).
 export function useSpeech() {
   const [state, setState] = useState<SpeechState>('idle')
-  // Use a ref to read current state inside async callbacks without stale closures.
+  const [error, setError] = useState<string | null>(null)
   const stateRef = useRef<SpeechState>('idle')
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const objectUrlRef = useRef<string | null>(null)
@@ -35,15 +32,26 @@ export function useSpeech() {
     track('idle')
   }
 
-  // Stop when the component that owns this hook navigates away.
   useEffect(() => stop, [])
 
   async function speak(text: string) {
-    // Toggle: speaking or loading → stop.
+    setError(null)
+
     if (stateRef.current !== 'idle') {
       stop()
       return
     }
+
+    // ── iOS Safari / PWA audio unlock ──────────────────────────────────────
+    // iOS requires HTMLAudioElement.play() to be invoked synchronously within
+    // a user-gesture handler. After any await (including fetch), the gesture
+    // context is lost and play() is silently rejected. The fix: create the
+    // Audio element and call play() right now (it will fail because there's
+    // no src — that's fine). iOS marks this element as "user-activated", so
+    // the later play() call after we set .src succeeds even though it's async.
+    const audio = new Audio()
+    audioRef.current = audio
+    audio.play().catch(() => {}) // intentional — primes element, errors ignored
 
     track('loading')
     const ctrl = new AbortController()
@@ -56,8 +64,13 @@ export function useSpeech() {
         body: JSON.stringify({ text }),
         signal: ctrl.signal,
       })
-      if (!res.ok) throw new Error(`TTS ${res.status}`)
+
       if (ctrl.signal.aborted) return
+
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({})) as { error?: string }
+        throw new Error(body.error ?? `Server error ${res.status}`)
+      }
 
       const blob = await res.blob()
       if (ctrl.signal.aborted) return
@@ -65,26 +78,19 @@ export function useSpeech() {
       const url = URL.createObjectURL(blob)
       objectUrlRef.current = url
 
-      const audio = new Audio(url)
-      audioRef.current = audio
+      audio.src = url
       audio.onended = stop
-      audio.onerror = stop
+      audio.onerror = () => { setError('Playback failed'); stop() }
 
       track('playing')
       await audio.play()
     } catch (e) {
-      // AbortError = user tapped stop while loading — not a real error.
-      if (!(e instanceof DOMException && e.name === 'AbortError')) {
-        stop()
-      }
+      if (e instanceof DOMException && e.name === 'AbortError') return
+      const msg = e instanceof Error ? e.message : 'TTS failed'
+      setError(msg)
+      stop()
     }
   }
 
-  return {
-    speak,
-    stop,
-    state,
-    speaking: state !== 'idle',
-    loading: state === 'loading',
-  }
+  return { speak, stop, state, speaking: state !== 'idle', loading: state === 'loading', error }
 }
