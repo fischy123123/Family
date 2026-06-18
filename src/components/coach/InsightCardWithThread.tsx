@@ -111,8 +111,68 @@ export function InsightCardWithThread({
         }),
       })
 
-      const data = await res.json()
-      setThread(prev => [...prev, { role: 'assistant', content: data.reply || 'Got it.' }])
+      if (!res.ok || !res.body) {
+        const err = await res.json().catch(() => ({ error: 'Request failed' }))
+        throw new Error((err as { error?: string }).error ?? `HTTP ${res.status}`)
+      }
+
+      // /api/agent streams Server-Sent Events: token deltas, then a final
+      // "done" event carrying the authoritative reply. Accumulate tokens into a
+      // live assistant bubble and finalize with the done reply.
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      let streamingStarted = false
+      let reply = ''
+
+      type DoneEvent = { type: 'done'; reply: string }
+      type SSEEvent = { type: 'token'; token: string } | DoneEvent | { type: 'error'; error: string }
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() ?? ''
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue
+          let event: SSEEvent
+          try { event = JSON.parse(line.slice(6)) } catch { continue }
+
+          if (event.type === 'token') {
+            if (!streamingStarted) {
+              streamingStarted = true
+              setThread(prev => [...prev, { role: 'assistant', content: event.token }])
+            } else {
+              setThread(prev => {
+                const msgs = [...prev]
+                const last = msgs[msgs.length - 1]
+                if (last?.role === 'assistant') msgs[msgs.length - 1] = { ...last, content: last.content + event.token }
+                return msgs
+              })
+            }
+          } else if (event.type === 'done') {
+            reply = (event as DoneEvent).reply || ''
+          } else if (event.type === 'error') {
+            throw new Error(event.error)
+          }
+        }
+      }
+
+      // Use the authoritative reply from "done" (covers tool-call turns where
+      // text is assembled server-side and may diverge from streamed tokens).
+      setThread(prev => {
+        const msgs = [...prev]
+        const last = msgs[msgs.length - 1]
+        if (last?.role === 'assistant') {
+          msgs[msgs.length - 1] = { ...last, content: reply || last.content || 'Got it.' }
+        } else {
+          msgs.push({ role: 'assistant', content: reply || 'Got it.' })
+        }
+        return msgs
+      })
 
       // Persist the user's clarification as a memory so future coaching sessions
       // know about it and don't repeat the same assumption.
