@@ -5,12 +5,10 @@ import { useRouter } from 'next/navigation'
 import {
   Compass, Sparkles, RefreshCw, Plus, Trash2, Target, X, Check, PenLine, Send,
 } from 'lucide-react'
-import { SpeakButton } from '@/components/ui/SpeakButton'
 import { InsightCardWithThread } from './InsightCardWithThread'
 import { useCoaching } from '@/hooks/useCoaching'
 import { useFirestore } from '@/hooks/useFirestore'
 import { useCapture } from '@/contexts/CaptureContext'
-import { MicButton } from '@/components/ui/MicButton'
 import { generateId } from '@/lib/utils'
 import { LIFE_AREAS } from '@/lib/types'
 import type { LifeArea, CoachingInsight, FamilyMemory } from '@/lib/types'
@@ -101,9 +99,6 @@ export function CoachView() {
             <Sparkles size={18} className="mt-0.5 shrink-0 opacity-90" />
             <p className="text-[15px] leading-relaxed font-medium flex-1">{summary.summary}</p>
           </div>
-          <div className="flex justify-end mt-2">
-            <SpeakButton text={summary.summary} color="white" size={15} />
-          </div>
         </div>
       )}
 
@@ -118,7 +113,6 @@ export function CoachView() {
             placeholder="Tell the coach something real-time…"
             className="flex-1 text-sm text-slate-700 placeholder:text-slate-400 bg-transparent focus:outline-none"
           />
-          <MicButton size={30} onText={s => setQuickNote(p => (p ? p.trim() + ' ' : '') + s)} />
           <button
             onClick={saveQuickNote}
             disabled={!quickNote.trim()}
@@ -307,7 +301,6 @@ function GoalForm({
           className="flex-1 text-sm rounded-lg px-3 py-2 border border-slate-200 focus:outline-none focus:border-rose-300 bg-slate-50"
           autoFocus
         />
-        <MicButton size={34} onText={(s) => setText((p) => (p ? p.trim() + ' ' : '') + s)} />
       </div>
       <div>
         <p className="text-xs font-medium text-slate-500 mb-1.5">Life area</p>
@@ -390,7 +383,6 @@ function ReflectionForm({
               rows={2}
               className="flex-1 text-sm rounded-lg px-3 py-2 border border-slate-200 focus:outline-none focus:border-rose-300 bg-slate-50 resize-none"
             />
-            <MicButton size={34} onText={(s) => f.set((f.value ? f.value.trim() + ' ' : '') + s)} />
           </div>
         </div>
       ))}

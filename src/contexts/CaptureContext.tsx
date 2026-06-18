@@ -8,7 +8,6 @@ import { useToast } from '@/contexts/ToastContext'
 import { useGoogleTokens } from '@/hooks/useGoogleTokens'
 import { generateId } from '@/lib/utils'
 import { resolveMemberRef } from '@/lib/members'
-import { MicButton } from '@/components/ui/MicButton'
 import type { FamilyMember, Task, CalendarEvent, SmartList, ExtractedOutcome, FamilyMemory, GroceryItem } from '@/lib/types'
 
 interface GCalendar {
@@ -382,13 +381,6 @@ export function CaptureProvider({ children }: { children: React.ReactNode }) {
                   rows={3}
                   className="w-full input-premium px-4 py-3 pr-14 text-sm text-slate-800 resize-none"
                 />
-                <div className="absolute top-2.5 right-2.5">
-                  <MicButton
-                    size={38}
-                    title="Tap to speak"
-                    onText={(spoken) => setText((prev) => (prev ? prev.trim() + ' ' : '') + spoken)}
-                  />
-                </div>
               </div>
 
               {/* Outcomes */}

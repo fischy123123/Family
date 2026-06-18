@@ -17,8 +17,6 @@ import { useCapture } from '@/contexts/CaptureContext'
 import { useFamily } from '@/contexts/FamilyContext'
 import { useToast } from '@/contexts/ToastContext'
 import { ConnectGooglePrompt } from '@/components/dashboard/ConnectGooglePrompt'
-import { MicButton } from '@/components/ui/MicButton'
-import { SpeakButton } from '@/components/ui/SpeakButton'
 import { generateId } from '@/lib/utils'
 import { resolveMemberRef } from '@/lib/members'
 import { BUCKET_META } from '@/lib/types'
@@ -868,7 +866,6 @@ export function CommandCenter() {
               <MessageCircle size={13} className="shrink-0" />
               Ask a follow-up
             </button>
-            <SpeakButton text={report.greeting} color="white" size={15} />
           </div>
         </div>
       )}
@@ -946,15 +943,6 @@ export function CommandCenter() {
                       onChange={(e) => setClarificationAnswers((prev) => ({ ...prev, [c.id]: e.target.value }))}
                       onKeyDown={(e) => { if (e.key === 'Enter') saveClarification(c) }}
                       className="flex-1 text-xs rounded-lg px-3 py-2 border border-slate-200 focus:outline-none focus:border-blue-300 bg-slate-50"
-                    />
-                    <MicButton
-                      size={34}
-                      onText={(spoken) =>
-                        setClarificationAnswers((prev) => ({
-                          ...prev,
-                          [c.id]: (prev[c.id] ? prev[c.id].trim() + ' ' : '') + spoken,
-                        }))
-                      }
                     />
                     <button
                       onClick={() => saveClarification(c)}
@@ -1501,10 +1489,6 @@ function AttentionCard({
               placeholder={`e.g. "This is a work thing, not family"`}
               className="flex-1 text-xs rounded-lg px-3 py-2 border border-slate-200 focus:outline-none focus:border-blue-300 bg-slate-50"
               autoFocus
-            />
-            <MicButton
-              size={34}
-              onText={(spoken) => setContextDraft((p) => (p ? p.trim() + ' ' : '') + spoken)}
             />
             <button
               onClick={submitContext}

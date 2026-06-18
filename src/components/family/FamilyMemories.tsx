@@ -4,7 +4,6 @@ import { useState } from 'react'
 import { Brain, Pin, PinOff, Trash2, Loader2, CornerDownLeft } from 'lucide-react'
 import { useFirestore } from '@/hooks/useFirestore'
 import { useToast } from '@/contexts/ToastContext'
-import { MicButton } from '@/components/ui/MicButton'
 import { generateId } from '@/lib/utils'
 import type { FamilyMemory } from '@/lib/types'
 
@@ -66,13 +65,6 @@ export function FamilyMemories() {
           rows={2}
           className="w-full input-premium px-3 py-2.5 pr-14 text-sm text-slate-800 resize-none"
         />
-        <div className="absolute top-2 right-2">
-          <MicButton
-            size={36}
-            title="Tap to speak"
-            onText={(spoken) => setDraft((prev) => (prev ? prev.trim() + ' ' : '') + spoken)}
-          />
-        </div>
       </div>
       <button
         onClick={add}

@@ -5,7 +5,6 @@ import { Plus, Trash2, ShoppingCart, Sparkles, Loader2, ChevronRight, Check } fr
 import { useFirestore } from '@/hooks/useFirestore'
 import { useAuth } from '@/contexts/AuthContext'
 import { generateId } from '@/lib/utils'
-import { MicButton } from '@/components/ui/MicButton'
 import { cn } from '@/lib/utils'
 import type { GroceryItem, GroceryCategory } from '@/lib/types'
 
@@ -278,12 +277,6 @@ export function GroceryView() {
                 placeholder="Add item…"
                 className="w-full pr-12 pl-4 py-2.5 rounded-xl border border-slate-200 bg-slate-50 text-sm text-slate-800 placeholder-slate-400 focus:outline-none focus:border-emerald-400 focus:bg-white transition-colors"
               />
-              <div className="absolute right-1.5 top-1/2 -translate-y-1/2">
-                <MicButton
-                  size={34}
-                  onText={(spoken) => setNewName((prev) => (prev ? prev.trim() + ' ' : '') + spoken)}
-                />
-              </div>
             </div>
             <button
               type="submit"

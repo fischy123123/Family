@@ -4,7 +4,6 @@ import { useState, useRef, useEffect, useCallback } from 'react'
 import {
   Send, Sparkles, Bot, CheckCircle2, AlertTriangle,
   CalendarDays, ShoppingCart, ListChecks, Plane,
-  Mic, MicOff, Volume2, Loader2, X,
 } from 'lucide-react'
 import { format } from 'date-fns'
 import { useAuth } from '@/contexts/AuthContext'
@@ -12,9 +11,6 @@ import { useFamily } from '@/contexts/FamilyContext'
 import { useFirestore } from '@/hooks/useFirestore'
 import { useGoogleTokens } from '@/hooks/useGoogleTokens'
 import { useToast } from '@/contexts/ToastContext'
-import { useSpeech } from '@/hooks/useSpeech'
-import { useVoiceRecorder } from '@/hooks/useVoiceRecorder'
-import { MicButton } from '@/components/ui/MicButton'
 import { Markdown } from '@/components/ui/Markdown'
 import { ProposedActions, type PendingAction, type ActionStatus } from '@/components/copilot/ProposedActions'
 import { cn } from '@/lib/utils'
@@ -27,6 +23,7 @@ import type { FamilyMember } from '@/lib/types'
 interface Message {
   role: 'user' | 'assistant'
   content: string
+  isStreaming?: boolean
   actions?: string[]
   pendingActions?: PendingAction[]
   actionStatus?: ActionStatus
@@ -85,6 +82,9 @@ function AssistantBubble({
       <div className="flex-1 min-w-0 max-w-[85%]">
         <div className="bg-white border border-slate-100 shadow-card rounded-2xl rounded-tl-md px-4 py-3">
           <Markdown content={msg.content} />
+          {msg.isStreaming && (
+            <span className="inline-block w-0.5 h-4 bg-blue-400 ml-0.5 animate-pulse align-middle" />
+          )}
         </div>
         {msg.pendingActions && msg.pendingActions.length > 0 && (
           <ProposedActions
@@ -163,19 +163,6 @@ function EmptyState({ onPrompt }: { onPrompt: (prompt: string) => void }) {
   )
 }
 
-// Strip markdown symbols so TTS reads naturally without saying "asterisk" etc.
-function plainText(md: string): string {
-  return md
-    .replace(/#{1,6}\s*/g, '')
-    .replace(/\*\*(.*?)\*\*/g, '$1')
-    .replace(/\*(.*?)\*/g, '$1')
-    .replace(/`{1,3}[^`]*`{1,3}/g, '')
-    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
-    .replace(/^\s*[-*+]\s+/gm, '')
-    .replace(/\n{2,}/g, '. ')
-    .trim()
-}
-
 // ---------------------------------------------------------------------------
 // Main component
 // ---------------------------------------------------------------------------
@@ -190,28 +177,9 @@ export function CopilotChat() {
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
-  const [voiceMode, setVoiceMode] = useState(false)
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
-  const prevLoadingRef = useRef(false)
-  const prevSpeechStateRef = useRef<'idle' | 'loading' | 'playing'>('idle')
-
-  const { speak, stop: stopSpeech, state: speechState } = useSpeech()
-
-  // Whisper prompt: seed with family member names for better recognition.
-  const whisperPrompt = members.length
-    ? `Family members: ${members.map((m) => m.name).join(', ')}. Family calendar and task management.`
-    : 'Family calendar and task management.'
-
-  // handleSendRef lets the onTranscript callback always call the latest handleSend
-  // without creating a stale closure (handleSend changes whenever messages changes).
-  const handleSendRef = useRef<(text: string) => void>(() => {})
-
-  const { state: recorderState, start: startRecording, stop: stopRecording, cleanup: cleanupRecorder } = useVoiceRecorder({
-    prompt: whisperPrompt,
-    onTranscript: (text: string) => { handleSendRef.current(text) },
-  })
 
   // Seed the conversation from another screen (e.g. tapping the Home briefing).
   useEffect(() => {
@@ -229,49 +197,12 @@ export function CopilotChat() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, loading])
 
-  // Voice loop — step 1: when the AI finishes responding, read it aloud.
-  useEffect(() => {
-    if (!voiceMode) return
-    // Detect loading → false transition (AI just responded).
-    if (prevLoadingRef.current && !loading) {
-      const last = messages[messages.length - 1]
-      if (last?.role === 'assistant' && last.content) {
-        speak(plainText(last.content))
-      }
-    }
-    prevLoadingRef.current = loading
-  }, [loading, voiceMode, messages, speak])
-
-  // Voice loop — step 2: when TTS finishes, auto-restart the mic.
-  useEffect(() => {
-    if (!voiceMode) return
-    // Detect playing → idle transition (TTS just ended naturally).
-    if (prevSpeechStateRef.current === 'playing' && speechState === 'idle' && !loading) {
-      startRecording()
-    }
-    prevSpeechStateRef.current = speechState
-  }, [speechState, voiceMode, loading, startRecording])
-
-  function enterVoiceMode() {
-    setVoiceMode(true)
-    startRecording()
-  }
-
-  function exitVoiceMode() {
-    setVoiceMode(false)
-    stopRecording()
-    cleanupRecorder()
-    stopSpeech()
-  }
-
-
   const handleSend = useCallback(
     async (text?: string) => {
       const content = (text ?? input).trim()
       if (!content || loading || !familyId || !user?.email) return
 
       const userMsg: Message = { role: 'user', content }
-
       setMessages((prev) => [...prev, userMsg])
       setInput('')
       setLoading(true)
@@ -303,33 +234,94 @@ export function CopilotChat() {
           }),
         })
 
-        if (!res.ok) {
+        if (!res.ok || !res.body) {
           const err = await res.json().catch(() => ({ error: 'Request failed' }))
           throw new Error((err as { error?: string }).error ?? `HTTP ${res.status}`)
         }
 
-        const data = (await res.json()) as {
-          reply: string
-          actions: string[]
-          pendingActions?: PendingAction[]
-        }
+        // ── Stream the response ─────────────────────────────────────────────
+        const reader = res.body.getReader()
+        const decoder = new TextDecoder()
+        let buffer = ''
+        let streamingStarted = false
 
-        const hasPending = (data.pendingActions?.length ?? 0) > 0
-        const assistantMsg: Message = {
-          role: 'assistant',
-          content: data.reply || (hasPending ? "Here's what I'll do — confirm to apply." : 'Done.'),
-          actions: hasPending ? [] : (data.actions ?? []),
-          pendingActions: data.pendingActions ?? [],
-          actionStatus: hasPending ? 'pending' : undefined,
+        type DoneEvent = { type: 'done'; reply: string; pendingActions: PendingAction[]; actions: string[] }
+        type SSEEvent = { type: 'token'; token: string } | DoneEvent | { type: 'error'; error: string }
+
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+
+          buffer += decoder.decode(value, { stream: true })
+          const lines = buffer.split('\n')
+          buffer = lines.pop() ?? ''
+
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue
+            let event: SSEEvent
+            try { event = JSON.parse(line.slice(6)) } catch { continue }
+
+            if (event.type === 'token') {
+              if (!streamingStarted) {
+                // First token — replace the loading bubble with the live message.
+                streamingStarted = true
+                setLoading(false)
+                setMessages((prev) => [
+                  ...prev,
+                  { role: 'assistant', content: event.token, isStreaming: true },
+                ])
+              } else {
+                setMessages((prev) => {
+                  const msgs = [...prev]
+                  const last = msgs[msgs.length - 1]
+                  if (last?.role === 'assistant' && last.isStreaming) {
+                    msgs[msgs.length - 1] = { ...last, content: last.content + event.token }
+                  }
+                  return msgs
+                })
+              }
+            } else if (event.type === 'done') {
+              const { reply, pendingActions, actions } = event as DoneEvent
+              const hasPending = (pendingActions?.length ?? 0) > 0
+              setMessages((prev) => {
+                const msgs = [...prev]
+                const last = msgs[msgs.length - 1]
+                if (last?.role === 'assistant') {
+                  msgs[msgs.length - 1] = {
+                    ...last,
+                    isStreaming: false,
+                    // Use the authoritative full reply from 'done' in case the
+                    // streamed tokens and final reply diverge (e.g. tool-call turns
+                    // where the text block is assembled server-side).
+                    content: reply || last.content || (hasPending ? "Here's what I'll do — confirm to apply." : 'Done.'),
+                    actions: hasPending ? [] : (actions ?? []),
+                    pendingActions: pendingActions ?? [],
+                    actionStatus: hasPending ? 'pending' : undefined,
+                  }
+                } else {
+                  // No tokens were streamed (pure tool-call response with no text).
+                  msgs.push({
+                    role: 'assistant',
+                    content: reply || (hasPending ? "Here's what I'll do — confirm to apply." : 'Done.'),
+                    actions: hasPending ? [] : (actions ?? []),
+                    pendingActions: pendingActions ?? [],
+                    actionStatus: hasPending ? 'pending' : undefined,
+                  })
+                }
+                return msgs
+              })
+            } else if (event.type === 'error') {
+              throw new Error(event.error)
+            }
+          }
         }
-        setMessages((prev) => [...prev, assistantMsg])
       } catch (e: unknown) {
-        const errorReply: Message = {
-          role: 'assistant',
-          content: 'Sorry, something went wrong.',
-          actions: [],
-        }
-        setMessages((prev) => [...prev, errorReply])
+        setMessages((prev) => {
+          const msgs = [...prev]
+          // Remove a stale streaming placeholder if one exists.
+          if (msgs[msgs.length - 1]?.isStreaming) msgs.pop()
+          return [...msgs, { role: 'assistant', content: 'Sorry, something went wrong.', actions: [] }]
+        })
         toast('Something went wrong. Please try again.', 'error')
         // eslint-disable-next-line no-console
         console.error('[copilot] error:', e)
@@ -340,10 +332,6 @@ export function CopilotChat() {
     },
     [input, loading, familyId, user?.email, members, messages, getFreshTokens, toast],
   )
-
-  // Keep the voice-recorder ref pointing to the latest handleSend so that
-  // the onTranscript callback (created once) always calls the correct closure.
-  useEffect(() => { handleSendRef.current = handleSend }, [handleSend])
 
   // Apply the queued actions for a given message after the user confirms
   const handleConfirm = useCallback(
@@ -369,9 +357,6 @@ export function CopilotChat() {
             familyId,
             userEmail: user.email,
             googleTokens,
-            // Required so Google Calendar events created from queued actions get
-            // the user's timezone. Without it Google rejects datetimes that have
-            // no UTC offset (which is how the AI emits them).
             timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
           }),
         })
@@ -419,6 +404,8 @@ export function CopilotChat() {
   }
 
   const isEmpty = messages.length === 0 && !loading
+  // Show the typing-dots bubble only while waiting for the first token.
+  const hasStreamingMessage = messages.some((m) => m.isStreaming)
 
   return (
     <div className="flex flex-col h-screen bg-slate-50">
@@ -457,7 +444,8 @@ export function CopilotChat() {
                   />
                 ),
               )}
-              {loading && <LoadingBubble />}
+              {/* Typing indicator only while waiting for the first token */}
+              {loading && !hasStreamingMessage && <LoadingBubble />}
             </div>
           )}
           <div ref={messagesEndRef} />
@@ -467,105 +455,35 @@ export function CopilotChat() {
       {/* Sticky input bar */}
       <div className="shrink-0 border-t border-slate-100 bg-slate-50/80 backdrop-blur px-5 sm:px-8 py-4">
         <div className="max-w-3xl mx-auto">
-          {voiceMode ? (
-            /* ── Voice conversation mode ── */
-            <div className="flex flex-col items-center gap-3 py-2">
-              {/* Big central state button */}
-              <div className="relative">
-                {/* Pulse ring while listening */}
-                {recorderState === 'listening' && (
-                  <span className="absolute inset-0 rounded-full bg-red-400 animate-ping opacity-30" />
-                )}
-                <button
-                  onClick={() => {
-                    if (recorderState === 'listening') stopRecording()
-                    else if (speechState !== 'idle') { stopSpeech(); startRecording() }
-                    else if (!loading) startRecording()
-                  }}
-                  className={cn(
-                    'relative w-20 h-20 rounded-full flex items-center justify-center transition-all shadow-elevated',
-                    recorderState === 'listening'
-                      ? 'bg-red-500 scale-110'
-                      : 'bg-gradient-to-br from-blue-600 to-purple-600',
-                  )}
-                  aria-label={recorderState === 'listening' ? 'Stop' : 'Tap to speak'}
-                >
-                  {recorderState === 'listening' && <MicOff size={28} className="text-white" />}
-                  {recorderState === 'transcribing' && <Loader2 size={28} className="text-white animate-spin" />}
-                  {recorderState === 'idle' && loading && <Loader2 size={28} className="text-white animate-spin" />}
-                  {recorderState === 'idle' && !loading && speechState !== 'idle' && <Volume2 size={28} className="text-white" />}
-                  {recorderState === 'idle' && !loading && speechState === 'idle' && <Mic size={28} className="text-white" />}
-                </button>
-              </div>
-
-              <p className="text-xs font-medium text-slate-500 h-4">
-                {recorderState === 'listening' ? 'Listening…' :
-                 recorderState === 'transcribing' ? 'Processing…' :
-                 loading ? 'Thinking…' :
-                 speechState !== 'idle' ? 'Speaking — tap to interrupt' :
-                 'Tap to speak'}
-              </p>
-
-              <button
-                onClick={exitVoiceMode}
-                className="inline-flex items-center gap-1.5 text-xs text-slate-400 hover:text-slate-600 transition-colors"
-              >
-                <X size={13} /> Exit voice mode
-              </button>
-            </div>
-          ) : (
-            /* ── Normal text input ── */
-            <div className="flex items-center gap-3">
-              <input
-                ref={inputRef}
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={handleKeyDown}
-                placeholder={loading ? 'Thinking…' : 'Message Copilot…'}
-                disabled={loading || !familyId}
-                className={cn(
-                  'flex-1 rounded-full border border-slate-200 bg-white px-5 py-3 text-[15px] text-slate-900 shadow-card',
-                  'placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-300',
-                  'disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-150',
-                )}
-              />
-              {/* Voice conversation toggle */}
-              <button
-                onClick={enterVoiceMode}
-                disabled={loading || !familyId}
-                className={cn(
-                  'w-12 h-12 rounded-full flex items-center justify-center shrink-0 transition-all',
-                  'bg-white border border-slate-200 text-slate-500 shadow-card',
-                  'hover:border-blue-300 hover:text-blue-600',
-                  'disabled:opacity-40 disabled:cursor-not-allowed',
-                  'active:scale-95',
-                )}
-                aria-label="Start voice conversation"
-                title="Voice conversation"
-              >
-                <Mic size={18} />
-              </button>
-              <MicButton
-                size={48}
-                className="!rounded-full"
-                onText={(spoken) => setInput((prev) => (prev ? prev.trim() + ' ' : '') + spoken)}
-              />
-              <button
-                onClick={() => handleSend()}
-                disabled={loading || !input.trim() || !familyId}
-                className={cn(
-                  'w-12 h-12 rounded-full flex items-center justify-center shrink-0 transition-all duration-150',
-                  'bg-gradient-to-br from-blue-600 to-purple-600 text-white shadow-card',
-                  'hover:shadow-md hover:-translate-y-0.5',
-                  'disabled:opacity-40 disabled:cursor-not-allowed disabled:shadow-none disabled:translate-y-0',
-                  'active:scale-95',
-                )}
-                aria-label="Send message"
-              >
-                <Send size={18} />
-              </button>
-            </div>
-          )}
+          <div className="flex items-center gap-3">
+            <input
+              ref={inputRef}
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder={loading ? 'Thinking…' : 'Message Copilot…'}
+              disabled={loading || !familyId}
+              className={cn(
+                'flex-1 rounded-full border border-slate-200 bg-white px-5 py-3 text-[15px] text-slate-900 shadow-card',
+                'placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-300',
+                'disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-150',
+              )}
+            />
+            <button
+              onClick={() => handleSend()}
+              disabled={loading || !input.trim() || !familyId}
+              className={cn(
+                'w-12 h-12 rounded-full flex items-center justify-center shrink-0 transition-all duration-150',
+                'bg-gradient-to-br from-blue-600 to-purple-600 text-white shadow-card',
+                'hover:shadow-md hover:-translate-y-0.5',
+                'disabled:opacity-40 disabled:cursor-not-allowed disabled:shadow-none disabled:translate-y-0',
+                'active:scale-95',
+              )}
+              aria-label="Send message"
+            >
+              <Send size={18} />
+            </button>
+          </div>
         </div>
       </div>
     </div>
