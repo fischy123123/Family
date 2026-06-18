@@ -424,8 +424,25 @@ DELETING EVENTS: Call get_google_events first to get the event_id and calendar_i
         .join('\n')}\n`
     : ''
 
+  // Build an explicit day-of-week map for the next 14 days so Claude never
+  // has to compute day names from dates and makes off-by-one errors.
+  const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
+  const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+  const todayDate = new Date(today)
+  const todayDayName = DAY_NAMES[todayDate.getDay()]
+  const todayLabel = `${todayDayName}, ${MONTH_NAMES[todayDate.getMonth()]} ${todayDate.getDate()}, ${todayDate.getFullYear()}`
+  // Build a "day name → date" lookup for the next 14 days to give the AI an unambiguous reference
+  const upcomingDays: string[] = []
+  for (let i = 0; i <= 14; i++) {
+    const d = new Date(todayDate)
+    d.setDate(todayDate.getDate() + i)
+    upcomingDays.push(`${DAY_NAMES[d.getDay()]} = ${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`)
+  }
+  const calendarRef = `DAY-DATE REFERENCE (authoritative — do not compute day names yourself, use this table):\n${upcomingDays.join(' | ')}`
+
   return `You are Copilot, the family's AI chief of staff.
-Today is ${today}${timezone ? ` (user timezone: ${timezone})` : ''}.
+Today is ${todayLabel}${timezone ? ` (user timezone: ${timezone})` : ''}.
+${calendarRef}
 All times you display to the user should be in ${timezone ? `the user's timezone (${timezone})` : 'local time'}, not UTC.
 CRITICAL — when calling create_google_event or create_event, always use LOCAL datetime strings in the format YYYY-MM-DDTHH:mm:ss with NO "Z" suffix and NO timezone offset. "3pm" means ${timezone ?? 'local time'} 3pm, output as "YYYY-MM-DDTHH:15:00:00", not UTC.
 
