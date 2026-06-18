@@ -89,6 +89,8 @@ export async function POST(request: NextRequest) {
     headers: {
       Authorization: `Bearer ${apiKey}`,
       'Content-Type': 'application/json',
+      // Required for the Realtime API — without it OpenAI returns "Invalid URL"
+      'OpenAI-Beta': 'realtime=v1',
     },
     body: JSON.stringify({
       model: REALTIME_MODEL,
