@@ -204,15 +204,13 @@ export function CopilotChat() {
     ? `Family members: ${members.map((m) => m.name).join(', ')}. Family calendar and task management.`
     : 'Family calendar and task management.'
 
+  // handleSendRef lets the onTranscript callback always call the latest handleSend
+  // without creating a stale closure (handleSend changes whenever messages changes).
+  const handleSendRef = useRef<(text: string) => void>(() => {})
+
   const { state: recorderState, start: startRecording, stop: stopRecording, cleanup: cleanupRecorder } = useVoiceRecorder({
     prompt: whisperPrompt,
-    onTranscript: useCallback((text: string) => {
-      // In voice mode: auto-send the transcript. Outside voice mode this hook
-      // isn't used (the existing MicButton handles regular text fill-in).
-      handleSend(text)
-    // handleSend is defined below — stable via useCallback, added to deps there
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []),
+    onTranscript: (text: string) => { handleSendRef.current(text) },
   })
 
   // Seed the conversation from another screen (e.g. tapping the Home briefing).
@@ -343,6 +341,10 @@ export function CopilotChat() {
     [input, loading, familyId, user?.email, members, messages, getFreshTokens, toast],
   )
 
+  // Keep the voice-recorder ref pointing to the latest handleSend so that
+  // the onTranscript callback (created once) always calls the correct closure.
+  useEffect(() => { handleSendRef.current = handleSend }, [handleSend])
+
   // Apply the queued actions for a given message after the user confirms
   const handleConfirm = useCallback(
     async (msgIndex: number) => {
@@ -470,25 +472,25 @@ export function CopilotChat() {
             <div className="flex flex-col items-center gap-3 py-2">
               {/* Big central state button */}
               <div className="relative">
-                {/* Pulse ring while recording */}
-                {recorderState === 'recording' && (
+                {/* Pulse ring while listening */}
+                {recorderState === 'listening' && (
                   <span className="absolute inset-0 rounded-full bg-red-400 animate-ping opacity-30" />
                 )}
                 <button
                   onClick={() => {
-                    if (recorderState === 'recording') stopRecording()
-                    else if (recorderState === 'idle' && speechState === 'idle' && !loading) startRecording()
+                    if (recorderState === 'listening') stopRecording()
                     else if (speechState !== 'idle') { stopSpeech(); startRecording() }
+                    else if (!loading) startRecording()
                   }}
                   className={cn(
                     'relative w-20 h-20 rounded-full flex items-center justify-center transition-all shadow-elevated',
-                    recorderState === 'recording'
+                    recorderState === 'listening'
                       ? 'bg-red-500 scale-110'
                       : 'bg-gradient-to-br from-blue-600 to-purple-600',
                   )}
-                  aria-label={recorderState === 'recording' ? 'Tap to send' : 'Tap to speak'}
+                  aria-label={recorderState === 'listening' ? 'Stop' : 'Tap to speak'}
                 >
-                  {recorderState === 'recording' && <MicOff size={28} className="text-white" />}
+                  {recorderState === 'listening' && <MicOff size={28} className="text-white" />}
                   {recorderState === 'transcribing' && <Loader2 size={28} className="text-white animate-spin" />}
                   {recorderState === 'idle' && loading && <Loader2 size={28} className="text-white animate-spin" />}
                   {recorderState === 'idle' && !loading && speechState !== 'idle' && <Volume2 size={28} className="text-white" />}
@@ -497,7 +499,7 @@ export function CopilotChat() {
               </div>
 
               <p className="text-xs font-medium text-slate-500 h-4">
-                {recorderState === 'recording' ? 'Listening — tap to send' :
+                {recorderState === 'listening' ? 'Listening…' :
                  recorderState === 'transcribing' ? 'Processing…' :
                  loading ? 'Thinking…' :
                  speechState !== 'idle' ? 'Speaking — tap to interrupt' :

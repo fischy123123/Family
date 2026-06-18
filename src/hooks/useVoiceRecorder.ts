@@ -2,120 +2,173 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react'
 
-export type RecorderState = 'idle' | 'recording' | 'transcribing'
+export type RecorderState = 'idle' | 'listening' | 'transcribing'
 
-interface UseVoiceRecorderOptions {
-  // Called with the transcribed text when Whisper returns a result.
-  onTranscript: (text: string) => void
-  // Passed to Whisper as a context hint — include family member names so
-  // Whisper biases toward recognising them correctly ("Jessy" vs "Jesse").
-  prompt?: string
-}
+// How long silence must last (after speech has started) before we auto-stop.
+const SILENCE_AFTER_SPEECH_MS = 1800
+// Minimum speech duration — prevents a background-noise blip from triggering.
+const MIN_SPEECH_MS = 400
+// Average byte-frequency amplitude below this = silence (0-255 scale).
+const SILENCE_THRESHOLD = 14
+// Safety cap — stop even if silence isn't detected (prevents infinite recording).
+const MAX_RECORDING_MS = 60_000
 
-// Picks the best supported MIME type for the current browser.
-// iOS Safari records as audio/mp4; Chrome/Android as audio/webm.
-// Whisper accepts both.
 function getBestMimeType(): string {
-  const candidates = [
-    'audio/webm;codecs=opus',
-    'audio/webm',
-    'audio/mp4',
-    'audio/ogg;codecs=opus',
-  ]
-  for (const type of candidates) {
-    if (typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(type)) {
-      return type
-    }
+  for (const t of ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus']) {
+    if (typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(t)) return t
   }
   return ''
 }
 
-// Maps a MIME type to the file extension Whisper needs.
-function extForMime(mime: string): string {
+function extForMime(mime: string) {
   if (mime.startsWith('audio/mp4')) return 'm4a'
   if (mime.startsWith('audio/ogg')) return 'ogg'
   return 'webm'
 }
 
-export function useVoiceRecorder({ onTranscript, prompt = '' }: UseVoiceRecorderOptions) {
+export function useVoiceRecorder({
+  onTranscript,
+  prompt = '',
+}: {
+  onTranscript: (text: string) => void
+  prompt?: string
+}) {
   const [state, setState] = useState<RecorderState>('idle')
-  const recorderRef = useRef<MediaRecorder | null>(null)
-  const chunksRef = useRef<Blob[]>([])
-  const streamRef = useRef<MediaStream | null>(null)
-  const mimeRef = useRef('')
-  // Stable ref so the onstop closure always has the latest prompt/callback.
+  const stateRef = useRef<RecorderState>('idle')
   const onTranscriptRef = useRef(onTranscript)
   const promptRef = useRef(prompt)
   useEffect(() => { onTranscriptRef.current = onTranscript }, [onTranscript])
   useEffect(() => { promptRef.current = prompt }, [prompt])
 
-  // Release mic and reset state.
+  const recorderRef  = useRef<MediaRecorder | null>(null)
+  const chunksRef    = useRef<Blob[]>([])
+  const streamRef    = useRef<MediaStream | null>(null)
+  const audioCtxRef  = useRef<AudioContext | null>(null)
+  const rafRef       = useRef<number | null>(null)
+  const safetyRef    = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const mimeRef      = useRef('')
+
+  function track(s: RecorderState) { stateRef.current = s; setState(s) }
+
+  // Stops the silence-detection loop and MediaRecorder, then runs Whisper.
+  const stopAndTranscribe = useCallback(() => {
+    if (stateRef.current !== 'listening') return
+
+    if (rafRef.current)  { cancelAnimationFrame(rafRef.current); rafRef.current = null }
+    if (safetyRef.current) { clearTimeout(safetyRef.current); safetyRef.current = null }
+
+    audioCtxRef.current?.close().catch(() => {})
+    audioCtxRef.current = null
+
+    streamRef.current?.getTracks().forEach(t => t.stop())
+    streamRef.current = null
+
+    recorderRef.current?.stop() // triggers onstop → transcribe
+  }, [])
+
   const cleanup = useCallback(() => {
+    if (rafRef.current)  { cancelAnimationFrame(rafRef.current); rafRef.current = null }
+    if (safetyRef.current) { clearTimeout(safetyRef.current); safetyRef.current = null }
     recorderRef.current?.stop()
     recorderRef.current = null
-    streamRef.current?.getTracks().forEach((t) => t.stop())
+    streamRef.current?.getTracks().forEach(t => t.stop())
     streamRef.current = null
-    chunksRef.current = []
-    setState('idle')
+    audioCtxRef.current?.close().catch(() => {})
+    audioCtxRef.current = null
+    track('idle')
   }, [])
 
   useEffect(() => () => { cleanup() }, [cleanup])
 
+  // ── start() must be called synchronously inside a user-gesture handler ──
+  // That's all iOS needs to allow AudioContext + mic.
   const start = useCallback(async () => {
-    if (state !== 'idle') return
+    if (stateRef.current !== 'idle') return
+
+    let stream: MediaStream
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-      streamRef.current = stream
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false })
+    } catch {
+      return // mic permission denied
+    }
+    if (stateRef.current !== 'idle') { stream.getTracks().forEach(t => t.stop()); return }
 
-      const mime = getBestMimeType()
-      mimeRef.current = mime
-      const recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined)
-      recorderRef.current = recorder
-      chunksRef.current = []
+    streamRef.current = stream
 
-      recorder.ondataavailable = (e) => {
-        if (e.data.size > 0) chunksRef.current.push(e.data)
-      }
+    // ── Web Audio silence detection ─────────────────────────────────────
+    let ctx: AudioContext
+    try {
+      ctx = new AudioContext()
+      await ctx.resume()
+    } catch {
+      stream.getTracks().forEach(t => t.stop()); return
+    }
+    audioCtxRef.current = ctx
 
-      recorder.onstop = async () => {
-        // Release the mic immediately — don't hold it during the API call.
-        streamRef.current?.getTracks().forEach((t) => t.stop())
-        streamRef.current = null
+    const analyser = ctx.createAnalyser()
+    analyser.fftSize = 256
+    ctx.createMediaStreamSource(stream).connect(analyser)
+    const buf = new Uint8Array(analyser.frequencyBinCount)
 
-        const chunks = chunksRef.current
-        chunksRef.current = []
-        if (chunks.length === 0) { setState('idle'); return }
+    let speechStarted = false
+    let silenceAt: number | null = null
+    let speechAt: number | null = null
 
-        setState('transcribing')
-        try {
-          const blob = new Blob(chunks, { type: mimeRef.current || 'audio/webm' })
-          const ext = extForMime(mimeRef.current)
-          const form = new FormData()
-          form.append('audio', blob, `recording.${ext}`)
-          if (promptRef.current) form.append('prompt', promptRef.current)
+    function tick() {
+      if (stateRef.current !== 'listening') return
+      analyser.getByteFrequencyData(buf)
+      const level = buf.reduce((s, v) => s + v, 0) / buf.length
 
-          const res = await fetch('/api/transcribe', { method: 'POST', body: form })
-          const data = await res.json() as { text?: string; error?: string }
-          if (res.ok && data.text) onTranscriptRef.current(data.text)
-        } catch { /* non-fatal — user can try again */ } finally {
-          setState('idle')
+      if (level > SILENCE_THRESHOLD) {
+        if (!speechAt) speechAt = Date.now()
+        if (Date.now() - speechAt >= MIN_SPEECH_MS) speechStarted = true
+        silenceAt = null
+      } else if (speechStarted) {
+        if (!silenceAt) silenceAt = Date.now()
+        if (Date.now() - silenceAt >= SILENCE_AFTER_SPEECH_MS) {
+          stopAndTranscribe(); return
         }
       }
-
-      recorder.start()
-      setState('recording')
-    } catch {
-      // Mic permission denied or hardware unavailable.
-      setState('idle')
+      rafRef.current = requestAnimationFrame(tick)
     }
-  }, [state])
+    rafRef.current = requestAnimationFrame(tick)
 
-  const stop = useCallback(() => {
-    if (recorderRef.current?.state === 'recording') {
-      recorderRef.current.stop()
-      // setState('transcribing') is set inside onstop
+    // Safety cutoff
+    safetyRef.current = setTimeout(stopAndTranscribe, MAX_RECORDING_MS)
+
+    // ── MediaRecorder ───────────────────────────────────────────────────
+    const mime = getBestMimeType()
+    mimeRef.current = mime
+    const recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined)
+    recorderRef.current = recorder
+    chunksRef.current = []
+
+    recorder.ondataavailable = (e) => { if (e.data.size > 0) chunksRef.current.push(e.data) }
+
+    recorder.onstop = async () => {
+      const chunks = chunksRef.current
+      chunksRef.current = []
+
+      if (!speechStarted || chunks.length === 0) { track('idle'); return }
+
+      track('transcribing')
+      try {
+        const blob = new Blob(chunks, { type: mimeRef.current || 'audio/webm' })
+        const form = new FormData()
+        form.append('audio', blob, `rec.${extForMime(mimeRef.current)}`)
+        if (promptRef.current) form.append('prompt', promptRef.current)
+
+        const res  = await fetch('/api/transcribe', { method: 'POST', body: form })
+        const data = await res.json() as { text?: string }
+        if (res.ok && data.text?.trim()) onTranscriptRef.current(data.text.trim())
+      } catch { /* non-fatal */ } finally {
+        track('idle')
+      }
     }
-  }, [])
 
-  return { state, start, stop, cleanup }
+    recorder.start(250) // collect in 250 ms chunks for reliability
+    track('listening')
+  }, [stopAndTranscribe])
+
+  return { state, start, stop: stopAndTranscribe, cleanup }
 }
