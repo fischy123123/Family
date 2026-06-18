@@ -18,6 +18,7 @@ import { useFamily } from '@/contexts/FamilyContext'
 import { useToast } from '@/contexts/ToastContext'
 import { ConnectGooglePrompt } from '@/components/dashboard/ConnectGooglePrompt'
 import { MicButton } from '@/components/ui/MicButton'
+import { SpeakButton } from '@/components/ui/SpeakButton'
 import { generateId } from '@/lib/utils'
 import { resolveMemberRef } from '@/lib/members'
 import { BUCKET_META } from '@/lib/types'
@@ -857,13 +858,16 @@ export function CommandCenter() {
             <Sparkles size={18} className="mt-0.5 shrink-0 opacity-90" />
             <p className="text-[15px] leading-relaxed font-medium">{report.greeting}</p>
           </button>
-          <button
-            onClick={() => openBriefingInCopilot(report.greeting!)}
-            className="flex items-center gap-1.5 mt-3 text-[12px] font-semibold text-white/90 hover:text-white transition-colors"
-          >
-            <MessageCircle size={13} className="shrink-0" />
-            Ask a follow-up
-          </button>
+          <div className="flex items-center justify-between mt-3">
+            <button
+              onClick={() => openBriefingInCopilot(report.greeting!)}
+              className="flex items-center gap-1.5 text-[12px] font-semibold text-white/90 hover:text-white transition-colors"
+            >
+              <MessageCircle size={13} className="shrink-0" />
+              Ask a follow-up
+            </button>
+            <SpeakButton text={report.greeting} color="white" size={15} />
+          </div>
         </div>
       )}
 

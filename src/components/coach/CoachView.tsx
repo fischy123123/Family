@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import {
   Compass, Sparkles, RefreshCw, Plus, Trash2, Target, X, Check, PenLine, Send,
 } from 'lucide-react'
+import { SpeakButton } from '@/components/ui/SpeakButton'
 import { InsightCardWithThread } from './InsightCardWithThread'
 import { useCoaching } from '@/hooks/useCoaching'
 import { useFirestore } from '@/hooks/useFirestore'
@@ -98,7 +99,10 @@ export function CoachView() {
         <div className="rounded-2xl p-5 bg-gradient-to-br from-rose-500 to-amber-500 text-white shadow-elevated animate-scale-in">
           <div className="flex items-start gap-3">
             <Sparkles size={18} className="mt-0.5 shrink-0 opacity-90" />
-            <p className="text-[15px] leading-relaxed font-medium">{summary.summary}</p>
+            <p className="text-[15px] leading-relaxed font-medium flex-1">{summary.summary}</p>
+          </div>
+          <div className="flex justify-end mt-2">
+            <SpeakButton text={summary.summary} color="white" size={15} />
           </div>
         </div>
       )}
