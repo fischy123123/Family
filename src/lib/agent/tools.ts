@@ -428,15 +428,36 @@ DELETING EVENTS: Call get_google_events first to get the event_id and calendar_i
   // has to compute day names from dates and makes off-by-one errors.
   const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
   const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+  const WEEKDAY_SHORT: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 }
+
+  // Date arithmetic must account for the user's timezone, not the server's (UTC on Vercel).
+  // We use Intl.DateTimeFormat so that "today" and the 14-day table reflect the user's wall clock.
+  function localParts(date: Date, tz?: string): { year: number; month: number; day: number; weekday: number } {
+    if (!tz) {
+      return { year: date.getUTCFullYear(), month: date.getUTCMonth(), day: date.getUTCDate(), weekday: date.getUTCDay() }
+    }
+    const p = Object.fromEntries(
+      new Intl.DateTimeFormat('en-US', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit', weekday: 'short' })
+        .formatToParts(date)
+        .map((x) => [x.type, x.value]),
+    )
+    return { year: Number(p.year), month: Number(p.month) - 1, day: Number(p.day), weekday: WEEKDAY_SHORT[p.weekday] ?? 0 }
+  }
+
   const todayDate = new Date(today)
-  const todayDayName = DAY_NAMES[todayDate.getDay()]
-  const todayLabel = `${todayDayName}, ${MONTH_NAMES[todayDate.getMonth()]} ${todayDate.getDate()}, ${todayDate.getFullYear()}`
-  // Build a "day name → date" lookup for the next 14 days to give the AI an unambiguous reference
+  const { year: tYear, month: tMonth, day: tDay, weekday: tWeekday } = localParts(todayDate, timezone)
+  const todayDayName = DAY_NAMES[tWeekday]
+  const todayLabel = `${todayDayName}, ${MONTH_NAMES[tMonth]} ${tDay}, ${tYear}`
+
+  // Build a "day name → date" lookup for the next 14 days to give the AI an unambiguous reference.
+  // Anchor to noon UTC on the local date to avoid DST edge cases in the addition.
+  const localTodayStr = `${tYear}-${String(tMonth + 1).padStart(2, '0')}-${String(tDay).padStart(2, '0')}`
   const upcomingDays: string[] = []
   for (let i = 0; i <= 14; i++) {
-    const d = new Date(todayDate)
-    d.setDate(todayDate.getDate() + i)
-    upcomingDays.push(`${DAY_NAMES[d.getDay()]} = ${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`)
+    const d = new Date(`${localTodayStr}T12:00:00Z`)
+    d.setUTCDate(d.getUTCDate() + i)
+    const { year: y, month: m, day: dy, weekday: dw } = localParts(d, timezone)
+    upcomingDays.push(`${DAY_NAMES[dw]} = ${y}-${String(m + 1).padStart(2, '0')}-${String(dy).padStart(2, '0')}`)
   }
   const calendarRef = `DAY-DATE REFERENCE (authoritative — do not compute day names yourself, use this table):\n${upcomingDays.join(' | ')}`
 

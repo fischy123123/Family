@@ -28,6 +28,7 @@ type RealtimeEvent = Record<string, any>
 export function useRealtimeVoice(opts: Options) {
   const [state, setState] = useState<RealtimeState>('idle')
   const [error, setError] = useState<string | null>(null)
+  const [isMuted, setIsMuted] = useState(false)
 
   const optsRef = useRef(opts)
   useEffect(() => { optsRef.current = opts }, [opts])
@@ -121,8 +122,17 @@ export function useRealtimeVoice(opts: Options) {
     }
   }, [runToolCall])
 
+  const toggleMute = useCallback(() => {
+    const stream = streamRef.current
+    if (!stream) return
+    const nextMuted = !stream.getAudioTracks().every((t) => !t.enabled)
+    stream.getAudioTracks().forEach((t) => { t.enabled = !nextMuted })
+    setIsMuted(nextMuted)
+  }, [])
+
   const stop = useCallback(() => {
     activeRef.current = false
+    setIsMuted(false)
     try { dcRef.current?.close() } catch { /* noop */ }
     dcRef.current = null
     try { pcRef.current?.close() } catch { /* noop */ }
@@ -222,5 +232,5 @@ export function useRealtimeVoice(opts: Options) {
 
   useEffect(() => () => stop(), [stop])
 
-  return { state, error, start, stop }
+  return { state, error, isMuted, start, stop, toggleMute }
 }

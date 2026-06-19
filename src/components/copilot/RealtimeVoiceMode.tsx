@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import { X, Mic } from 'lucide-react'
+import { X, Mic, MicOff } from 'lucide-react'
 import { useRealtimeVoice, type RealtimeState } from '@/hooks/useRealtimeVoice'
 import { useWakeLock } from '@/hooks/useWakeLock'
 import { cn } from '@/lib/utils'
@@ -23,8 +23,8 @@ const STATUS_TEXT: Record<RealtimeState, string> = {
   speaking: 'Speaking…',
 }
 
-function Orb({ state }: { state: RealtimeState }) {
-  const isListening = state === 'listening'
+function Orb({ state, muted }: { state: RealtimeState; muted: boolean }) {
+  const isListening = state === 'listening' && !muted
   const isSpeaking = state === 'speaking'
   const isBusy = state === 'thinking' || state === 'connecting'
 
@@ -71,7 +71,7 @@ export function RealtimeVoiceMode({
   // doesn't lock itself mid-conversation from lack of touch input.
   useWakeLock(true)
 
-  const { state, error, start, stop } = useRealtimeVoice({
+  const { state, error, isMuted, start, stop, toggleMute } = useRealtimeVoice({
     getContext,
     onUserText: (t) => { setLastUser(t); onUserText?.(t) },
     onAssistantText,
@@ -104,7 +104,7 @@ export function RealtimeVoiceMode({
       </div>
 
       <div className="flex flex-col items-center gap-8 flex-1 justify-center">
-        <Orb state={state} />
+        <Orb state={state} muted={isMuted} />
         <div className="text-center min-h-[3rem] max-w-sm">
           {error ? (
             <>
@@ -132,14 +132,29 @@ export function RealtimeVoiceMode({
 
       <div className="w-full max-w-md flex flex-col items-center gap-4">
         <p className="text-white/40 text-xs text-center flex items-center gap-1.5">
-          <Mic size={13} /> Just start talking — interrupt me anytime
+          {isMuted ? <MicOff size={13} /> : <Mic size={13} />}
+          {isMuted ? 'Microphone muted' : 'Just start talking — interrupt me anytime'}
         </p>
-        <button
-          onClick={handleClose}
-          className="px-8 py-3.5 rounded-full bg-red-500 hover:bg-red-600 text-white font-semibold shadow-lg transition-colors active:scale-95"
-        >
-          End conversation
-        </button>
+        <div className="flex items-center gap-3 w-full justify-center">
+          <button
+            onClick={toggleMute}
+            className={cn(
+              'w-12 h-12 rounded-full flex items-center justify-center transition-colors active:scale-95',
+              isMuted
+                ? 'bg-amber-500 hover:bg-amber-400 text-white'
+                : 'bg-white/10 hover:bg-white/20 text-white',
+            )}
+            aria-label={isMuted ? 'Unmute microphone' : 'Mute microphone'}
+          >
+            {isMuted ? <MicOff size={20} /> : <Mic size={20} />}
+          </button>
+          <button
+            onClick={handleClose}
+            className="px-8 py-3.5 rounded-full bg-red-500 hover:bg-red-600 text-white font-semibold shadow-lg transition-colors active:scale-95"
+          >
+            End conversation
+          </button>
+        </div>
       </div>
     </div>
   )
