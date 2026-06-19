@@ -355,6 +355,10 @@ export function CommandCenter() {
         setGoogleLoaded(true)
         return
       }
+      // Reset to false so the auto-run guard correctly waits for real calendar
+      // data. Without this, the guard sees googleLoaded=true left over from a
+      // prior non-connected run and fires the engine before events arrive.
+      setGoogleLoaded(false)
       const fresh = await getFreshTokens()
       if (!fresh || cancelled) return
       const timeMin = new Date().toISOString()
