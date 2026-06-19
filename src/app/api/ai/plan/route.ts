@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getAnthropic, MODEL_DEEP } from '@/lib/ai'
+import { getAnthropic, MODEL_DEEP, logUsage } from '@/lib/ai'
 
 interface Member {
   name?: string
@@ -90,6 +90,7 @@ Return ONLY valid JSON in exactly this shape:
         max_tokens: 2000,
         messages: [{ role: 'user', content: prompt }],
       })
+      logUsage('plan-generate', MODEL_DEEP, response.usage)
 
       const text =
         response.content[0]?.type === 'text' ? response.content[0].text : ''
@@ -176,6 +177,8 @@ readiness reflects overall preparedness given completion and time remaining. Pro
       max_tokens: 1500,
       messages: [{ role: 'user', content: prompt }],
     })
+
+    logUsage('plan-readiness', MODEL_DEEP, response.usage)
 
     const text =
       response.content[0]?.type === 'text' ? response.content[0].text : ''

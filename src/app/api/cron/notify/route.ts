@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getAdminDb, getAdminMessaging } from '@/lib/firebaseAdmin'
 import Anthropic from '@anthropic-ai/sdk'
+import { logUsage } from '@/lib/ai'
+
+const NOTIFY_MODEL = 'claude-haiku-4-5-20251001'
 
 /** Returns true if an ISO date string falls on today or is overdue (past today). */
 function isDueOrOverdue(iso?: string): boolean {
@@ -21,7 +24,7 @@ async function generateBriefing(familyName: string, summary: string): Promise<st
 
   const response = await anthropic.messages.create({
     // Short daily notification text generated on a cron — Haiku keeps recurring cost down.
-    model: 'claude-haiku-4-5-20251001',
+    model: NOTIFY_MODEL,
     max_tokens: 100,
     messages: [
       {
@@ -33,6 +36,7 @@ async function generateBriefing(familyName: string, summary: string): Promise<st
       "You are a family assistant. Given today's family data, write a morning briefing notification. Keep it under 200 characters total (notification body). Be warm, specific, and action-oriented. Mention the 2-3 most important things. Example: 'Mia has soccer at 4pm (leave by 3:40). Dentist for Jake at 2pm. Grocery run needed.'",
   })
 
+  logUsage('cron-notify', NOTIFY_MODEL, response.usage)
   return response.content[0].type === 'text' ? response.content[0].text.trim() : ''
 }
 

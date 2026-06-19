@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
 import type { CalendarEvent, FamilyMember } from '@/lib/types'
+import { logUsage } from '@/lib/ai'
 
 // Generating clarifying questions about ambiguous events is light classification
 // work that runs in the background — Haiku handles it fast and cheap.
@@ -72,6 +73,8 @@ Only include events that are genuinely ambiguous. Skip events with clear titles 
       system: systemPrompt,
       messages: [{ role: 'user', content: userMessage }],
     })
+
+    logUsage('calendar-context', AI_MODEL, response.usage)
 
     const text = response.content[0].type === 'text' ? response.content[0].text : '[]'
     const match = text.match(/\[[\s\S]*\]/)

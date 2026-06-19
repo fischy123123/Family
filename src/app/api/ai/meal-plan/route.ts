@@ -21,7 +21,7 @@ For each remaining day, choose a realistic home-cooked dinner with a concise ing
 Return ONLY a JSON array of objects: [{"day":0,"mealName":"...","ingredients":["...","..."]}]
 Vary the cuisines and proteins across the week. Return only the JSON.`
 
-    const meals = await askClaudeJSON<MealOut[]>(prompt)
+    const meals = await askClaudeJSON<MealOut[]>(prompt, 1500, undefined, 'meal-plan')
     return NextResponse.json({ meals })
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : 'AI error'

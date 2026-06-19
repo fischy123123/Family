@@ -12,6 +12,7 @@ import {
   type PendingAction,
 } from '@/lib/agent/tools'
 import type { FamilyMember, FamilyMemory, FamilyProfile } from '@/lib/types'
+import { logUsage } from '@/lib/ai'
 
 const AI_MODEL = 'claude-sonnet-4-6'
 
@@ -152,6 +153,7 @@ export async function POST(request: NextRequest) {
         streamObj.on('text', (token) => send({ type: 'token', token }))
 
         const response = await streamObj.finalMessage()
+        logUsage(`agent#${i}`, AI_MODEL, response.usage)
 
         if (response.stop_reason === 'end_turn') {
           const textBlock = response.content.find((b) => b.type === 'text')
@@ -214,6 +216,7 @@ export async function POST(request: NextRequest) {
             })
             finalStream.on('text', (token) => send({ type: 'token', token }))
             const finalResponse = await finalStream.finalMessage()
+            logUsage('agent#final', AI_MODEL, finalResponse.usage)
             const textBlock = finalResponse.content.find((b) => b.type === 'text')
             reply = textBlock?.type === 'text' ? textBlock.text : 'Done.'
           }

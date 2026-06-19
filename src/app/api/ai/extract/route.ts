@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
+import { logUsage } from '@/lib/ai'
 
 // Extraction is structured pattern work and latency-sensitive (user is capturing
 // something quickly) — Haiku is fast, cheap, and more than capable here.
@@ -104,6 +105,7 @@ If nothing actionable is found, return {"summary":"...","outcomes":[]}.`
       system: systemPrompt,
       messages: [{ role: 'user', content }],
     })
+    logUsage('extract', AI_MODEL, response.usage)
 
     const text = response.content[0].type === 'text' ? response.content[0].text : '{}'
     const match = text.match(/\{[\s\S]*\}/)

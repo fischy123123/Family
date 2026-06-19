@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
+import { logUsage } from '@/lib/ai'
+
+const GMAIL_MODEL = 'claude-haiku-4-5-20251001'
 
 export async function POST(request: NextRequest) {
   const { accessToken } = await request.json()
@@ -47,7 +50,7 @@ export async function POST(request: NextRequest) {
 
   const response = await anthropic.messages.create({
     // Email extraction is high-volume structured work — Haiku is fast and cheap.
-    model: 'claude-haiku-4-5-20251001',
+    model: GMAIL_MODEL,
     max_tokens: 2048,
     messages: [{
       role: 'user',
@@ -103,6 +106,8 @@ Emails:
 ${emails.map((e) => `[msgid:${e.id}] Subject: ${e.subject}\nSnippet: ${e.snippet}`).join('\n---\n')}`
     }]
   })
+
+  logUsage('gmail-suggestions', GMAIL_MODEL, response.usage)
 
   const text = response.content[0].type === 'text' ? response.content[0].text : '[]'
   const match = text.match(/\[[\s\S]*\]/)

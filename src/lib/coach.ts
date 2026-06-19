@@ -6,6 +6,7 @@
 
 import Anthropic from '@anthropic-ai/sdk'
 import { buildFamilyContextParts, type FamilyContextInput } from '@/lib/familyContext'
+import { logUsage } from '@/lib/ai'
 import { LIFE_AREAS } from '@/lib/types'
 import type {
   FamilyGoal, Reflection, CoachingInsight, CalendarEvent, Task,
@@ -226,6 +227,7 @@ export async function generateCoaching(input: CoachInput): Promise<CoachResult> 
       ],
     }],
   })
+  logUsage('coach', COACH_MODEL, response.usage)
 
   const text = response.content[0].type === 'text' ? response.content[0].text : '{}'
   const match = text.match(/\{[\s\S]*\}/)

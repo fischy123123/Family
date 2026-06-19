@@ -40,7 +40,7 @@ Rules:
 
 Return only the JSON array, no other text.`
 
-    const actions = await askClaudeJSON<unknown[]>(prompt, 1500, MODEL_FAST)
+    const actions = await askClaudeJSON<unknown[]>(prompt, 1500, MODEL_FAST, 'quick-add')
     return NextResponse.json({ actions })
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : 'AI error'

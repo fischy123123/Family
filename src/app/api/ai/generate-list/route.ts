@@ -18,7 +18,7 @@ Generate a practical, well-ordered list of checklist item titles. Return ONLY a 
 ["First task","Second task","..."]
 Keep it focused and realistic (8-20 items). Return only the JSON.`
 
-    const items = await askClaudeJSON<unknown[]>(prompt)
+    const items = await askClaudeJSON<unknown[]>(prompt, 1500, undefined, 'generate-list')
     return NextResponse.json({ items })
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : 'AI error'
