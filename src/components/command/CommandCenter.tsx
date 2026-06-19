@@ -859,8 +859,19 @@ export function CommandCenter() {
     } as Task)
   }
 
-  async function saveItemAsTask(title: string, detail?: string) {
+  // Resolve a list of names to member ids, used when turning AI suggestions into tasks.
+  function resolveForIds(names?: string[]): string[] {
+    if (!names?.length) return []
+    return names
+      .map((n) => resolveMemberRef(members, n))
+      .filter(Boolean)
+      .map((m) => m!.id)
+  }
+
+  async function saveItemAsTask(title: string, detail?: string, forNames?: string[]) {
     if (!familyId) return
+    const forIds = resolveForIds(forNames)
+    const self = user?.email ? members.find((m) => m.email?.toLowerCase() === user.email!.toLowerCase()) : undefined
     await createTask({
       id: generateId(),
       title,
@@ -868,6 +879,9 @@ export function CommandCenter() {
       isCompleted: false,
       priority: 'high',
       source: 'ai',
+      // Signed-in user is responsible; forIds tracks who it's about
+      ...(self ? { assigneeId: self.id, assigneeEmail: self.email ?? undefined } : {}),
+      ...(forIds.length ? { forIds } : {}),
       createdAt: new Date().toISOString(),
     } as Task)
     toast(`Saved "${title}" as a task`, 'success')
@@ -877,7 +891,7 @@ export function CommandCenter() {
   // rather than popping the Capture sheet or handing off to Copilot. One tap,
   // a confirmation toast, done — the recommendation is "nice to do", so it
   // lands at medium priority instead of high.
-  async function addRecommendationAsTask(title: string, rationale: string) {
+  async function addRecommendationAsTask(title: string, rationale: string, forNames?: string[]) {
     if (!familyId) return
     // Suppress the card immediately regardless — don't ask twice.
     setCompletedTitles((prev) => {
@@ -894,6 +908,8 @@ export function CommandCenter() {
       toast(`"${title}" is already in your tasks`, 'info')
       return
     }
+    const forIds = resolveForIds(forNames)
+    const self = user?.email ? members.find((m) => m.email?.toLowerCase() === user.email!.toLowerCase()) : undefined
     await createTask({
       id: generateId(),
       title,
@@ -901,6 +917,8 @@ export function CommandCenter() {
       isCompleted: false,
       priority: 'medium',
       source: 'ai',
+      ...(self ? { assigneeId: self.id, assigneeEmail: self.email ?? undefined } : {}),
+      ...(forIds.length ? { forIds } : {}),
       createdAt: new Date().toISOString(),
     } as Task)
     toast(`Added "${title}" to your tasks`, 'success')
@@ -1448,7 +1466,7 @@ export function CommandCenter() {
                         <button
                           onClick={() => toCopilot
                             ? openBriefingInCopilot(`${r.actionLabel}: ${r.title}. ${r.rationale}`)
-                            : addRecommendationAsTask(r.title, r.rationale)}
+                            : addRecommendationAsTask(r.title, r.rationale, r.forNames)}
                           className="mt-2 inline-flex items-center gap-1 text-xs font-medium text-purple-600 hover:text-purple-800"
                         >
                           <Icon size={11} />
@@ -1506,6 +1524,16 @@ export function CommandCenter() {
           </div>
         )}
       </section>
+
+      {/* Calendar link */}
+      <div className="text-center -mt-1">
+        <button
+          onClick={() => router.push('/calendar')}
+          className="text-xs text-slate-400 hover:text-slate-700 transition-colors"
+        >
+          Open full calendar →
+        </button>
+      </div>
 
       {/* Empty-state nudge */}
       {report && (report.items?.length ?? 0) === 0 && (report.problems?.length ?? 0) === 0 && (

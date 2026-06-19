@@ -97,13 +97,24 @@ export default function MemberProfilePage() {
   const memberTasks = tasks.filter((t) => {
     if (t.isCompleted) return false
     const explicitMatch = t.assigneeId === member?.id ||
-      (t.assigneeEmail && member?.email && t.assigneeEmail.toLowerCase() === member.email.toLowerCase())
+      (t.assigneeEmail && member?.email && t.assigneeEmail.toLowerCase() === member.email.toLowerCase()) ||
+      (member?.id && t.forIds?.includes(member.id))
     if (explicitMatch) return true
     // When viewing your own profile, also show tasks with no explicit assignee —
     // they're family tasks that fall to the signed-in user by default.
     if (isViewingOwnProfile && !t.assigneeId && !t.assigneeEmail) return true
     return false
   })
+
+  const now = new Date()
+  const in14Days = new Date(now.getTime() + 14 * 24 * 60 * 60 * 1000)
+  const memberEvents = events.filter((e) => {
+    const start = new Date(e.start)
+    if (start < now || start > in14Days) return false
+    if (e.ownerEmail && member?.email && e.ownerEmail.toLowerCase() === member.email.toLowerCase()) return true
+    if (member?.name && e.title.toLowerCase().includes(member.name.toLowerCase())) return true
+    return false
+  }).sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime())
 
   const memberChores = chores.filter(
     (c) =>
@@ -271,6 +282,7 @@ export default function MemberProfilePage() {
           memberName={member.name}
           tasks={memberTasks}
           chores={memberChores}
+          events={memberEvents}
           color={member.colorHex}
         />
 
@@ -441,15 +453,17 @@ function CarryingCard({
   memberName,
   tasks,
   chores,
+  events,
   color,
 }: {
   isSelf: boolean
   memberName: string
   tasks: Task[]
   chores: Chore[]
+  events: CalendarEvent[]
   color: string
 }) {
-  const empty = tasks.length === 0 && chores.length === 0
+  const empty = tasks.length === 0 && chores.length === 0 && events.length === 0
 
   return (
     <div className="bg-white rounded-2xl shadow-card border border-slate-100 p-5">
@@ -486,6 +500,27 @@ function CarryingCard({
                 {tasks.length > 8 && (
                   <li className="text-xs text-slate-400 pl-4.5">+{tasks.length - 8} more</li>
                 )}
+              </ul>
+            </div>
+          )}
+
+          {events.length > 0 && (
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2">Upcoming events</p>
+              <ul className="space-y-2">
+                {events.slice(0, 6).map((e) => (
+                  <li key={e.id} className="flex items-start gap-2.5">
+                    <span className="mt-1.5 h-2 w-2 rounded-full shrink-0" style={{ backgroundColor: e.color || color }} />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm text-slate-800 leading-snug truncate">{e.title}</p>
+                      <p className="text-xs text-slate-400 mt-0.5">
+                        {e.isAllDay
+                          ? new Date(e.start).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })
+                          : new Date(e.start).toLocaleString('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
+                      </p>
+                    </div>
+                  </li>
+                ))}
               </ul>
             </div>
           )}

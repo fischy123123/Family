@@ -65,8 +65,12 @@ export function FamilyCalendar() {
     return () => { cancelled = true }
   }, [isConnected, tokens])
 
-  // Use Google events when connected, otherwise Firestore
-  const events = isConnected ? googleEvents : firestoreEvents
+  // Show Google events merged with any Firestore-only events (e.g. Copilot-created).
+  // When not connected, Firestore is the sole source.
+  const googleIds = new Set(googleEvents.map((e) => e.id))
+  const events = isConnected
+    ? [...googleEvents, ...firestoreEvents.filter((e) => !googleIds.has(e.id))]
+    : firestoreEvents
 
   const fcEvents = events.map((e) => ({
     id: e.id,
