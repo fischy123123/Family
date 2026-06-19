@@ -203,9 +203,9 @@ For each problem, include an optional "actionType" field: "copilot" for conversa
         })
 
         const finalMsg = await ai.finalMessage()
-        const u = finalMsg.usage as Record<string, number>
-        const cacheRead = u.cache_read_input_tokens ?? 0
-        const cacheWrite = u.cache_creation_input_tokens ?? 0
+        const u = finalMsg.usage
+        const cacheRead = (u as unknown as Record<string, number>).cache_read_input_tokens ?? 0
+        const cacheWrite = (u as unknown as Record<string, number>).cache_creation_input_tokens ?? 0
         console.log(
           `[perf/attention] total=${Date.now() - aiStart}ms wall=${Date.now() - reqStart}ms` +
           ` cache=${cacheRead > 0 ? 'HIT' : cacheWrite > 0 ? 'WRITE' : 'MISS'}` +
