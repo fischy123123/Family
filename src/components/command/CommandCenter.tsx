@@ -648,18 +648,13 @@ export function CommandCenter() {
 
   // Auto-run once the data we expect is loaded. Always silent when a report is
   // already on screen (cached or fresh) so content updates in place, never via a
-  // skeleton flash. We wait for Google to settle first to avoid an empty run.
+  // skeleton flash. We always wait for Google Calendar to finish before firing so
+  // the engine never runs with a partial picture. Non-connected users get
+  // googleLoaded=true immediately, so they are never blocked.
   useEffect(() => {
     if (!hydrated) return
-    // Require at least some substantive data before firing. Members arrive from
-    // Firestore first; events and tasks arrive slightly later. Running with only
-    // members causes the AI to produce an "onboarding" view because it sees no
-    // calendar or tasks. We wait until either (a) events or tasks have loaded,
-    // OR (b) Google Calendar has finished its check (meaning the empty state is
-    // real, not a race). Non-connected users get googleLoaded=true immediately.
-    const hasSubstantiveData = events.length > 0 || tasks.length > 0 || reminders.length > 0
-    if (!hasSubstantiveData && !googleLoaded) return
-    if (members.length === 0 && !hasSubstantiveData) return
+    if (!googleLoaded) return   // always wait for the Google sync to settle
+    if (members.length === 0) return
     if (Date.now() - lastRun.current < ENGINE_THROTTLE_MS) return
     // Core data-change optimization: if the data fingerprint hasn't changed since
     // the last AI run AND the cached briefing is still fresh enough for time-bucket
