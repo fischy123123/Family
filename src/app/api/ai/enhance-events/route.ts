@@ -96,7 +96,7 @@ Aim for at least 50% of events having suggestions. If all events already have th
   let rawText = ''
   try {
     const message = await anthropic.messages.create({
-      model: 'claude-opus-4-8',
+      model: 'claude-sonnet-4-6',
       max_tokens: 16000,
       system: systemPrompt,
       messages: [
