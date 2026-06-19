@@ -97,7 +97,7 @@ Aim for at least 50% of events having suggestions. If all events already have th
   try {
     const message = await anthropic.messages.create({
       model: 'claude-opus-4-8',
-      max_tokens: 4096,
+      max_tokens: 16000,
       system: systemPrompt,
       messages: [
         {
@@ -109,6 +109,10 @@ Aim for at least 50% of events having suggestions. If all events already have th
 
     rawText = message.content[0]?.type === 'text' ? message.content[0].text : ''
     console.log(`[enhance-events] stop_reason=${message.stop_reason} raw_length=${rawText.length} preview=${rawText.slice(0, 200)}`)
+    if (message.stop_reason === 'max_tokens') {
+      console.error('[enhance-events] hit max_tokens — response truncated, JSON will be invalid')
+      return NextResponse.json({ error: 'Response too large — try again with fewer events', suggestions: [] }, { status: 500 })
+    }
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : 'AI call failed'
     console.error('[enhance-events] AI error:', msg)
