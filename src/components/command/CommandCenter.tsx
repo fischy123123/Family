@@ -3,7 +3,7 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import {
-  collection, doc, setDoc, writeBatch, getDocs, query, where,
+  collection, doc, setDoc, updateDoc, writeBatch, getDocs, query, where,
 } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
 import {
@@ -23,7 +23,7 @@ import { BUCKET_META } from '@/lib/types'
 import type {
   FamilyMember, CalendarEvent, Task, Chore, Plan, SmartList,
   AttentionReport, AttentionItem, AttentionBucket, PotentialProblem,
-  FamilyMemory, FamilyProfile, FamilyReminder,
+  FamilyMemory, FamilyProfile, FamilyReminder, EventAssignmentSuggestion,
 } from '@/lib/types'
 
 type CalendarClarification = {
@@ -90,6 +90,7 @@ const CTX_SIG_PREFIX = 'fam-ctxsig-'
 // The ctxSignature that was in effect when the AI last ran. Compared in the
 // auto-run throttle to detect "nothing changed — skip the AI call."
 const LAST_RUN_SIG_PREFIX = 'fam-lastrun-sig-'
+const SKIP_EA_PREFIX = 'fam-skip-ea-'
 
 // 15-minute minimum between AI calls. Additionally, if the data signature hasn't
 // changed since the last run, we extend the effective throttle to 45 minutes:
@@ -300,6 +301,9 @@ export function CommandCenter() {
   const COMPLETED_PREFIX = 'fam-completed-'
   const completedKey = familyId ? COMPLETED_PREFIX + familyId : null
   const [completedTitles, setCompletedTitles] = useState<Set<string>>(new Set())
+  // Event assignment suggestions the user has skipped. Key = "title|YYYY-MM-DD".
+  const skipEaKey = familyId ? SKIP_EA_PREFIX + familyId : null
+  const [skippedAssignments, setSkippedAssignments] = useState<Set<string>>(new Set())
   // When a user dismisses something, offer to teach the assistant once.
   const [teachPrompt, setTeachPrompt] = useState<{ title: string; reason: string } | null>(null)
   // After saving calendar context, show a brief inline confirmation telling the
@@ -322,7 +326,7 @@ export function CommandCenter() {
     if (!familyId) return
     // Include the dismissed-items list so "Reset cached data" also brings back
     // any cards the user dismissed (e.g. an accidental tap on the X).
-    const prefixes = [ATTN_PREFIX, GCAL_PREFIX, CLAR_PREFIX, GMAIL_PREFIX, LAST_RUN_PREFIX, CTX_SIG_PREFIX, LAST_RUN_SIG_PREFIX, DISMISS_PREFIX, COMPLETED_PREFIX]
+    const prefixes = [ATTN_PREFIX, GCAL_PREFIX, CLAR_PREFIX, GMAIL_PREFIX, LAST_RUN_PREFIX, CTX_SIG_PREFIX, LAST_RUN_SIG_PREFIX, DISMISS_PREFIX, COMPLETED_PREFIX, SKIP_EA_PREFIX]
     prefixes.forEach((p) => {
       try { localStorage.removeItem(p + familyId) } catch { /* ignore */ }
     })
@@ -366,6 +370,8 @@ export function CommandCenter() {
     if (dism?.length) setDismissedTitles(new Set(dism))
     const comp = readCache<string[]>(completedKey)
     if (comp?.length) setCompletedTitles(new Set(comp))
+    const skipEa = readCache<string[]>(skipEaKey)
+    if (skipEa?.length) setSkippedAssignments(new Set(skipEa))
     // Restore the last context signature so Firestore delivering the same data
     // on remount doesn't look like "new context" and trigger an immediate re-run.
     const savedCtxSig = readCache<string>(ctxSigKey)
@@ -373,7 +379,7 @@ export function CommandCenter() {
     const savedRunSig = readCache<string>(lastRunSigKey)
     if (savedRunSig) lastRunSig.current = savedRunSig
     setHydrated(true)
-  }, [familyId, attnKey, gcalKey, clarKey, gmailKey, dismissKey, lastRunKey, ctxSigKey, lastRunSigKey])
+  }, [familyId, attnKey, gcalKey, clarKey, gmailKey, dismissKey, lastRunKey, ctxSigKey, lastRunSigKey, skipEaKey])
 
   // Scan Gmail incrementally — only emails newer than the last scan.
   // Cache stores { signals, lastScanTs } so we never re-process seen emails.
@@ -1184,6 +1190,42 @@ export function CommandCenter() {
 
   const busy = loading || refreshing
 
+  // Event assignment suggestions: filter out already-skipped and already-assigned ones.
+  const pendingAssignments = useMemo<EventAssignmentSuggestion[]>(() => {
+    if (!report?.eventAssignments?.length) return []
+    return report.eventAssignments.filter((s) => {
+      if (skippedAssignments.has(`${s.eventTitle}|${s.eventDate}`)) return false
+      const event = events.find(
+        (e) => e.title === s.eventTitle && e.start.startsWith(s.eventDate)
+      )
+      return !event?.forIds?.length
+    })
+  }, [report?.eventAssignments, skippedAssignments, events])
+
+  const confirmEventAssignment = useCallback(async (s: EventAssignmentSuggestion) => {
+    if (!familyId) return
+    const event = events.find((e) => e.title === s.eventTitle && e.start.startsWith(s.eventDate))
+    if (!event) return
+    const resolvedIds = s.forNames
+      .map((name) => resolveMemberRef(members, name)?.id)
+      .filter((id): id is string => Boolean(id))
+    if (!resolvedIds.length) return
+    try {
+      await updateDoc(doc(db, 'families', familyId, 'events', event.id), { forIds: resolvedIds })
+      toast(`"${event.title}" assigned to ${s.forNames.join(' & ')}`, 'success')
+    } catch (err) {
+      console.error('Failed to assign event:', err)
+      toast('Could not save assignment', 'error')
+    }
+  }, [familyId, events, members])
+
+  const skipEventAssignment = useCallback((s: EventAssignmentSuggestion) => {
+    const key = `${s.eventTitle}|${s.eventDate}`
+    const next = new Set(Array.from(skippedAssignments).concat(key))
+    setSkippedAssignments(next)
+    writeCache(skipEaKey, Array.from(next))
+  }, [skippedAssignments, skipEaKey])
+
   return (
     <div className="max-w-3xl mx-auto px-4 sm:px-6 py-6 space-y-6">
       <TopProgressBar active={busy} />
@@ -1598,6 +1640,55 @@ export function CommandCenter() {
                 </div>
                 ),
               )}
+          </div>
+        </section>
+      )}
+
+      {/* EVENT ASSIGNMENT CONFIRMATIONS */}
+      {pendingAssignments.length > 0 && (
+        <section>
+          <SectionLabel icon={Users} color="#7c3aed">Confirm Event Assignments</SectionLabel>
+          <div className="space-y-2 stagger-children">
+            {pendingAssignments.map((s) => {
+              const key = `${s.eventTitle}|${s.eventDate}`
+              const displayDate = (() => {
+                try {
+                  return new Date(s.eventDate + 'T12:00:00').toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })
+                } catch { return s.eventDate }
+              })()
+              return (
+                <div key={key} className="rounded-2xl px-4 py-3 bg-white shadow-card animate-slide-up flex items-start gap-3">
+                  <div className="w-7 h-7 rounded-lg bg-violet-50 flex items-center justify-center shrink-0 mt-0.5">
+                    <Users size={13} className="text-violet-500" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-slate-900 truncate">"{s.eventTitle}"</p>
+                    <p className="text-xs text-slate-500 mt-0.5">{displayDate} · {s.reason}</p>
+                    <div className="flex items-center gap-2 mt-2.5 flex-wrap">
+                      <button
+                        onClick={() => confirmEventAssignment(s)}
+                        className="inline-flex items-center gap-1 text-xs font-semibold text-white bg-violet-600 hover:bg-violet-700 active:bg-violet-800 px-3 py-1.5 rounded-lg transition-colors"
+                      >
+                        <Check size={11} /> Yes, for {s.forNames.join(' & ')}
+                      </button>
+                      <button
+                        onClick={() => skipEventAssignment(s)}
+                        className="text-xs text-slate-400 hover:text-slate-600 transition-colors"
+                      >
+                        Not quite
+                      </button>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => skipEventAssignment(s)}
+                    className="p-1.5 rounded-lg text-slate-300 hover:text-slate-500 hover:bg-slate-100 transition-colors shrink-0"
+                    title="Skip"
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
+              )
+            })}
           </div>
         </section>
       )}

@@ -328,12 +328,15 @@ export function buildFamilyContextParts(input: FamilyContextInput): {
     `UPCOMING EVENTS (next 14 days):\n${
       upcomingEvents.length
         ? upcomingEvents
-            .map(
-              (e) =>
-                `- ${e.title} | ${e.isAllDay ? 'all-day ' : ''}${fmtDatetime(e.start, tz)}${
-                  e.location ? ` @ ${e.location}` : ''
-                }${e.ownerEmail ? ` (${e.ownerEmail})` : ''}`
-            )
+            .map((e) => {
+              const forNames = (e.forIds ?? [])
+                .map((id) => memberById(members, id)?.name)
+                .filter((n): n is string => Boolean(n))
+              const forStr = forNames.length ? ` [for: ${forNames.join(', ')}]` : ''
+              return `- ${e.title} | ${e.isAllDay ? 'all-day ' : ''}${fmtDatetime(e.start, tz)}${
+                e.location ? ` @ ${e.location}` : ''
+              }${e.ownerEmail ? ` (${e.ownerEmail})` : ''}${forStr}`
+            })
             .join('\n')
         : '(none)'
     }`

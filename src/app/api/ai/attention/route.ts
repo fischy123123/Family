@@ -104,8 +104,28 @@ Given the family context, produce a JSON report with this exact shape:
       "actionType": "capture" | "copilot",
       "forNames": ["name of each family member this recommendation is specifically for or about — omit if family-wide or unclear"]
     }
+  ],
+  "eventAssignments": [
+    {
+      "eventTitle": "exact title as it appears in UPCOMING EVENTS",
+      "eventDate": "YYYY-MM-DD date of the event",
+      "forNames": ["exact name(s) from FAMILY MEMBERS this event is for/about"],
+      "confidence": "high" | "medium" | "low",
+      "reason": "one sentence: why you think this event belongs to these people"
+    }
   ]
 }
+
+EVENT OWNERSHIP INFERENCE (populate eventAssignments):
+For each event in UPCOMING EVENTS that does NOT already have a "[for: ...]" label, decide if you can reasonably infer who it is for:
+- Use the event title: if a member's name appears, or the activity is clearly associated with one person (e.g. "Maddie's recital", "Liam dentist", "Rowan swim meet")
+- Use task context: if an open task has [for: Name] and its title or notes reference this event, the event is for the same person
+- Use family member info: if a child's routines/summary mention an activity (soccer, theater, therapy), events matching that activity are for them
+- Set confidence: "high" = name in title or unambiguous task link; "medium" = activity clearly matches one member; "low" = plausible guess only
+- SKIP events already labeled "[for: ...]" — already assigned
+- SKIP events that are clearly family-wide ("Family dinner", "Vacation") or where you truly cannot infer
+- SKIP events owned by a parent email (ownerEmail) where the event is clearly the parent's own (e.g. "Eric Training" owned by Eric's email = for Eric; no need to suggest)
+- Return at most 8 suggestions. Prefer high/medium confidence. Include low-confidence ones only if no higher-confidence options fill the list.
 
 Bucket guidance — ALWAYS verify the actual date before assigning a bucket:
 - "now": happening or due within the next ~1 hour (must be confirmed as TODAY in UPCOMING EVENTS)
@@ -228,6 +248,7 @@ For each problem, include an optional "actionType" field: "copilot" for conversa
           items?: Record<string, unknown>[]
           problems?: Record<string, unknown>[]
           recommendations?: Record<string, unknown>[]
+          eventAssignments?: Record<string, unknown>[]
         } = {}
         if (match) {
           try {
@@ -244,6 +265,7 @@ For each problem, include an optional "actionType" field: "copilot" for conversa
         const items = (parsed.items ?? []).map((it, i) => ({ id: `att-${i}`, ...it }))
         const problems = (parsed.problems ?? []).map((p, i) => ({ id: `prob-${i}`, ...p }))
         const recommendations = (parsed.recommendations ?? []).map((r, i) => ({ id: `rec-${i}`, ...r }))
+        const eventAssignments = (parsed.eventAssignments ?? []).map((a, i) => ({ id: `ea-${i}`, ...a }))
 
         send({
           t: 'final',
@@ -253,6 +275,7 @@ For each problem, include an optional "actionType" field: "copilot" for conversa
           items,
           problems,
           recommendations,
+          eventAssignments,
         })
         try { controller.close() } catch { /* noop */ }
       } catch (e: unknown) {
