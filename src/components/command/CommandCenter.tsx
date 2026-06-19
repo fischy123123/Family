@@ -220,8 +220,10 @@ export function CommandCenter() {
   const DISMISS_PREFIX = 'fam-dismissed-'
   const dismissKey = familyId ? DISMISS_PREFIX + familyId : null
   const [dismissedTitles, setDismissedTitles] = useState<Set<string>>(new Set())
-  // Titles checked off this session. Hidden from view immediately so the card
-  // disappears on tap, rather than waiting for the engine to re-run and drop it.
+  // Titles of recommendations the user has acted on (tapped "Add"). Persisted so
+  // the card stays gone across page refreshes and the AI doesn't re-surface them.
+  const COMPLETED_PREFIX = 'fam-completed-'
+  const completedKey = familyId ? COMPLETED_PREFIX + familyId : null
   const [completedTitles, setCompletedTitles] = useState<Set<string>>(new Set())
   // When a user dismisses something, offer to teach the assistant once.
   const [teachPrompt, setTeachPrompt] = useState<{ title: string; reason: string } | null>(null)
@@ -245,11 +247,12 @@ export function CommandCenter() {
     if (!familyId) return
     // Include the dismissed-items list so "Reset cached data" also brings back
     // any cards the user dismissed (e.g. an accidental tap on the X).
-    const prefixes = [ATTN_PREFIX, GCAL_PREFIX, CLAR_PREFIX, GMAIL_PREFIX, LAST_RUN_PREFIX, CTX_SIG_PREFIX, LAST_RUN_SIG_PREFIX, DISMISS_PREFIX]
+    const prefixes = [ATTN_PREFIX, GCAL_PREFIX, CLAR_PREFIX, GMAIL_PREFIX, LAST_RUN_PREFIX, CTX_SIG_PREFIX, LAST_RUN_SIG_PREFIX, DISMISS_PREFIX, COMPLETED_PREFIX]
     prefixes.forEach((p) => {
       try { localStorage.removeItem(p + familyId) } catch { /* ignore */ }
     })
     setDismissedTitles(new Set())
+    setCompletedTitles(new Set())
     lastRun.current = 0
     lastCtxSig.current = ''
     lastRunSig.current = ''
@@ -286,6 +289,8 @@ export function CommandCenter() {
     if (em?.length) setEmailSuggestions(em)
     const dism = readCache<string[]>(dismissKey)
     if (dism?.length) setDismissedTitles(new Set(dism))
+    const comp = readCache<string[]>(completedKey)
+    if (comp?.length) setCompletedTitles(new Set(comp))
     // Restore the last context signature so Firestore delivering the same data
     // on remount doesn't look like "new context" and trigger an immediate re-run.
     const savedCtxSig = readCache<string>(ctxSigKey)
@@ -487,10 +492,10 @@ export function CommandCenter() {
       currentUserName: user?.displayName ?? undefined,
       now: new Date().toISOString(),
       timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-      // Titles the user has explicitly dismissed — the engine must not re-surface them.
-      suppressedTitles: Array.from(dismissedTitles),
+      // Titles dismissed or already acted on — the engine must not re-surface them.
+      suppressedTitles: [...Array.from(dismissedTitles), ...Array.from(completedTitles)],
     }
-  }, [members, events, tasks, reminders, chores, plans, lists, profile, memories, emailSuggestions, user, dismissedTitles])
+  }, [members, events, tasks, reminders, chores, plans, lists, profile, memories, emailSuggestions, user, dismissedTitles, completedTitles])
 
   const runEngine = useCallback(async (overrideContext?: { eventTitle: string; context: string }[], silent?: boolean) => {
     // Cancel any previous in-flight request before starting a new one.
@@ -820,6 +825,21 @@ export function CommandCenter() {
   // lands at medium priority instead of high.
   async function addRecommendationAsTask(title: string, rationale: string) {
     if (!familyId) return
+    // Suppress the card immediately regardless — don't ask twice.
+    setCompletedTitles((prev) => {
+      const next = new Set(prev).add(title)
+      writeCache(completedKey, Array.from(next))
+      return next
+    })
+    // Dedup: if an open task with the same title already exists, skip creation.
+    const titleLower = title.toLowerCase()
+    const alreadyExists = [...tasks, ...reminders].some(
+      (t) => !t.isCompleted && t.title.toLowerCase() === titleLower,
+    )
+    if (alreadyExists) {
+      toast(`"${title}" is already in your tasks`, 'info')
+      return
+    }
     await createTask({
       id: generateId(),
       title,
@@ -829,7 +849,6 @@ export function CommandCenter() {
       source: 'ai',
       createdAt: new Date().toISOString(),
     } as Task)
-    setCompletedTitles((prev) => new Set(prev).add(title))
     toast(`Added "${title}" to your tasks`, 'success')
   }
 
