@@ -70,6 +70,10 @@ export function useRealtimeVoice(opts: Options) {
       output = data.result ?? data
       if (Array.isArray(data.actions)) {
         for (const a of data.actions) optsRef.current.onAction?.(a)
+        // Signal CommandCenter to refresh calendar when the user navigates home.
+        if (data.actions.length > 0) {
+          try { sessionStorage.setItem('cal-changed', '1') } catch { /* non-fatal */ }
+        }
       }
     } catch (e) {
       output = { error: e instanceof Error ? e.message : 'Tool failed' }

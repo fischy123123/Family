@@ -623,12 +623,15 @@ export function CommandCenter() {
   // skeleton flash. We wait for Google to settle first to avoid an empty run.
   useEffect(() => {
     if (!hydrated) return
-    // If connected but no events at all yet, wait for Google Calendar to load
-    // so we don't generate a "nothing happening" briefing that's immediately stale.
-    // If we have cached events (local or google), fire immediately; a silent
-    // re-run will follow when fresh Google data arrives via ctxSignature.
-    if (isConnected && !googleLoaded && events.length === 0) return
-    if (members.length === 0 && events.length === 0 && tasks.length === 0) return
+    // Require at least some substantive data before firing. Members arrive from
+    // Firestore first; events and tasks arrive slightly later. Running with only
+    // members causes the AI to produce an "onboarding" view because it sees no
+    // calendar or tasks. We wait until either (a) events or tasks have loaded,
+    // OR (b) Google Calendar has finished its check (meaning the empty state is
+    // real, not a race). Non-connected users get googleLoaded=true immediately.
+    const hasSubstantiveData = events.length > 0 || tasks.length > 0 || reminders.length > 0
+    if (!hasSubstantiveData && !googleLoaded) return
+    if (members.length === 0 && !hasSubstantiveData) return
     if (Date.now() - lastRun.current < ENGINE_THROTTLE_MS) return
     // Core data-change optimization: if the data fingerprint hasn't changed since
     // the last AI run AND the cached briefing is still fresh enough for time-bucket
@@ -689,9 +692,17 @@ export function CommandCenter() {
       if (document.visibilityState !== 'visible') return
       // Always refresh calendar data when foregrounded.
       if (isConnected) setCalSyncKey((k) => k + 1)
+      // If Copilot (or voice) made a calendar change, force a briefing re-run
+      // so stale events don't linger. The flag is set by CopilotChat after any
+      // confirmed action and by useRealtimeVoice after any tool execution.
+      const calChanged = sessionStorage.getItem('cal-changed')
+      if (calChanged) {
+        try { sessionStorage.removeItem('cal-changed') } catch { /* non-fatal */ }
+        lastRun.current = 0
+      }
       const hasError = !!engineErrorRef.current
       const hasNoReport = !reportRef.current
-      if (hasError || hasNoReport) {
+      if (hasError || hasNoReport || calChanged) {
         setEngineError(null)
         lastRun.current = 0
         runEngine(undefined, !hasNoReport)

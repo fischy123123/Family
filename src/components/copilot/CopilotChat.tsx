@@ -394,6 +394,10 @@ export function CopilotChat() {
           toast(reasons ? `Couldn't apply: ${reasons}` : `${failed.length} change(s) couldn't be applied`, 'error')
         } else {
           toast('Changes applied', 'success')
+          // Signal CommandCenter to refresh calendar + re-run briefing when the
+          // user navigates back home. Any confirmed action may have touched Google
+          // Calendar, so we flag it unconditionally rather than inspecting actions.
+          try { sessionStorage.setItem('cal-changed', '1') } catch { /* non-fatal */ }
         }
 
         setMessages((prev) =>
