@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getAdminApp } from '@/lib/firebaseAdmin'
 import { getFirestore } from 'firebase-admin/firestore'
-import { getAuth } from 'firebase-admin/auth'
+import { verifyFirebaseIdToken } from '@/lib/verifyFirebaseToken'
 
 export const dynamic = 'force-dynamic'
 
@@ -37,8 +37,7 @@ export async function POST(request: NextRequest) {
 
   let uid: string
   try {
-    const decoded = await getAuth(adminApp).verifyIdToken(idToken)
-    uid = decoded.uid
+    ;({ uid } = await verifyFirebaseIdToken(idToken))
   } catch {
     return NextResponse.json({ error: 'Invalid token' }, { status: 401 })
   }

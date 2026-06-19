@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getAdminApp } from '@/lib/firebaseAdmin'
 import { getFirestore } from 'firebase-admin/firestore'
-import { getAuth } from 'firebase-admin/auth'
+import { verifyFirebaseIdToken } from '@/lib/verifyFirebaseToken'
 import { isAdminEmail } from '@/lib/admin'
 
 export const dynamic = 'force-dynamic'
@@ -21,11 +21,11 @@ async function requireAdmin(
     return { ok: false, res: NextResponse.json({ error: 'Unauthorized' }, { status: 401 }) }
   }
   try {
-    const decoded = await getAuth(adminApp).verifyIdToken(idToken)
-    if (!isAdminEmail(decoded.email, process.env.ADMIN_EMAILS)) {
+    const { email } = await verifyFirebaseIdToken(idToken)
+    if (!isAdminEmail(email, process.env.ADMIN_EMAILS)) {
       return { ok: false, res: NextResponse.json({ error: 'Admin access required' }, { status: 403 }) }
     }
-    return { ok: true, email: decoded.email ?? '' }
+    return { ok: true, email }
   } catch {
     return { ok: false, res: NextResponse.json({ error: 'Invalid token' }, { status: 401 }) }
   }

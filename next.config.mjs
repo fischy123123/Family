@@ -12,34 +12,18 @@ const withPWA = withPWAInit({
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  // firebase-admin v14 → google-auth-library v10 → jwks-rsa v4 → jose v6 (ESM-only).
-  // Webpack transforms dynamic import('jose') inside jwks-rsa into require(),
-  // breaking at runtime. Marking the full chain as external keeps them out of
-  // the webpack bundle so Node.js resolves them natively (handles ESM correctly).
+  // firebase-admin and its firestore/messaging sub-packages use native Node.js
+  // bindings that can't be webpack-bundled. Keep them external so Node.js
+  // resolves them from node_modules at runtime.
+  // Note: we no longer import firebase-admin/auth anywhere (replaced with a
+  // direct jose-based verifier), so the jwks-rsa → jose ESM chain never loads.
   experimental: {
     serverComponentsExternalPackages: [
       'firebase-admin',
       'firebase-admin/app',
-      'firebase-admin/auth',
       'firebase-admin/firestore',
-      'google-auth-library',
-      'jwks-rsa',
-      'jose',
+      'firebase-admin/messaging',
     ],
-  },
-  webpack: (config, { isServer }) => {
-    if (isServer) {
-      // Belt-and-suspenders: also add these to webpack externals so the
-      // bundler never touches them regardless of where they're imported from.
-      config.externals = [
-        ...(Array.isArray(config.externals) ? config.externals : [config.externals].filter(Boolean)),
-        'firebase-admin',
-        'google-auth-library',
-        'jwks-rsa',
-        'jose',
-      ]
-    }
-    return config
   },
   // Security headers
   async headers() {
