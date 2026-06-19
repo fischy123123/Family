@@ -169,6 +169,18 @@ function getCacheTtl(key: string): number | undefined {
   }
 }
 
+// Returns how old a cached value is in ms, or Infinity if absent / no timestamp.
+function cacheAgeMs(key: string | null): number {
+  if (!key) return Infinity
+  try {
+    const raw = localStorage.getItem(key)
+    if (!raw) return Infinity
+    const parsed = JSON.parse(raw) as { ts?: number }
+    if (typeof parsed?.ts === 'number') return Date.now() - parsed.ts
+  } catch { /* ignore */ }
+  return Infinity
+}
+
 function readCache<T>(key: string | null): T | null {
   if (!key) return null
   try {
@@ -356,12 +368,17 @@ export function CommandCenter() {
     setHydrated(true)
   }, [familyId, attnKey, gcalKey, clarKey, gmailKey, dismissKey, lastRunKey, ctxSigKey, lastRunSigKey])
 
-  // Scan Gmail for actionable items — once per session, using the main Google
-  // connection's token (it already includes the gmail.readonly scope). Results
-  // are cached so they paint instantly on return and refresh quietly.
+  // Scan Gmail for actionable items. Skip the Haiku call entirely if the cache
+  // is still fresh (< 6h) — no point re-reading 40 emails we already processed.
+  // When the cache is stale, fetch once per session and update it.
+  const GMAIL_TTL = CACHE_TTL_MS['gmail']!
   useEffect(() => {
     if (!isConnected || emailFetched.current) return
     emailFetched.current = true
+
+    // Cache still fresh → nothing to do; state was already hydrated on mount.
+    if (cacheAgeMs(gmailKey) < GMAIL_TTL) return
+
     let cancelled = false
     ;(async () => {
       const fresh = await getFreshTokens()
