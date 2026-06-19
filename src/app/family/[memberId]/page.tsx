@@ -23,7 +23,7 @@ import { useFirestore } from '@/hooks/useFirestore'
 import { AppShell } from '@/components/layout/AppShell'
 import { Button } from '@/components/ui/button'
 import { generateId } from '@/lib/utils'
-import type { FamilyMember, Task, Chore, FamilyMemory, FamilyProfile } from '@/lib/types'
+import type { FamilyMember, Task, Chore, FamilyMemory, FamilyProfile, CalendarEvent, FamilyReminder } from '@/lib/types'
 
 // ── Types ──────────────────────────────────────────────────────
 
@@ -50,17 +50,41 @@ export default function MemberProfilePage() {
   const { user, loading: authLoading } = useAuth()
 
   const { data: members, loading: membersLoading } = useFirestore<FamilyMember>('members')
-  const { data: tasks, loading: tasksLoading, create: createTask } = useFirestore<Task>('tasks')
+  const { data: rawTasks, loading: tasksLoading, create: createTask } = useFirestore<Task>('tasks')
+  const { data: reminders, loading: remindersLoading } = useFirestore<FamilyReminder>('reminders')
   const { data: chores, loading: choresLoading } = useFirestore<Chore>('chores')
   const { data: memories, loading: memoriesLoading } = useFirestore<FamilyMemory>('memories')
+  const { data: events } = useFirestore<CalendarEvent>('events')
   const { data: profiles } = useFirestore<FamilyProfile>('profile')
+
+  // Merge reminders into tasks (same shape the attention engine uses) so
+  // Copilot-created reminders appear in "What you're carrying".
+  const tasks: Task[] = [
+    ...rawTasks,
+    ...reminders
+      .filter((r) => !rawTasks.some((t) => t.id === r.id))
+      .map((r): Task => ({
+        id: r.id,
+        title: r.title,
+        notes: r.notes,
+        isCompleted: r.isCompleted,
+        completedAt: r.completedAt,
+        dueDate: r.dueDate,
+        assigneeId: r.assigneeId,
+        assigneeEmail: r.assigneeEmail,
+        priority: r.priority,
+        recurrence: r.recurrence,
+        source: 'ai' as const,
+        createdAt: r.dueDate ?? new Date().toISOString(),
+      })),
+  ]
 
   const [brief, setBrief] = useState<MemberBrief | null>(null)
   const [briefLoading, setBriefLoading] = useState(false)
   const [briefError, setBriefError] = useState<string | null>(null)
   const [addedSupports, setAddedSupports] = useState<Set<number>>(new Set())
 
-  const dataLoading = membersLoading || tasksLoading || choresLoading || memoriesLoading
+  const dataLoading = membersLoading || tasksLoading || choresLoading || memoriesLoading || remindersLoading
 
   useEffect(() => {
     if (!authLoading && !user) router.replace('/signin')
@@ -69,11 +93,17 @@ export default function MemberProfilePage() {
   const member = members.find((m) => m.id === memberId)
   const profile = profiles[0] ?? null
 
-  const memberTasks = tasks.filter(
-    (t) =>
-      !t.isCompleted &&
-      (t.assigneeId === member?.id || t.assigneeEmail?.toLowerCase() === member?.email?.toLowerCase()),
-  )
+  const isViewingOwnProfile = member?.email?.toLowerCase() === user?.email?.toLowerCase()
+  const memberTasks = tasks.filter((t) => {
+    if (t.isCompleted) return false
+    const explicitMatch = t.assigneeId === member?.id ||
+      (t.assigneeEmail && member?.email && t.assigneeEmail.toLowerCase() === member.email.toLowerCase())
+    if (explicitMatch) return true
+    // When viewing your own profile, also show tasks with no explicit assignee —
+    // they're family tasks that fall to the signed-in user by default.
+    if (isViewingOwnProfile && !t.assigneeId && !t.assigneeEmail) return true
+    return false
+  })
 
   const memberChores = chores.filter(
     (c) =>
@@ -94,6 +124,7 @@ export default function MemberProfilePage() {
           tasks,
           chores,
           memories,
+          events,
           profile,
           now: new Date().toISOString(),
           timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
@@ -107,7 +138,7 @@ export default function MemberProfilePage() {
     } finally {
       setBriefLoading(false)
     }
-  }, [member, user, tasks, chores, memories, profile])
+  }, [member, user, tasks, chores, memories, events, profile])
 
   // Auto-fetch when data is ready
   useEffect(() => {

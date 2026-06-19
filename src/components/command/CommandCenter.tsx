@@ -687,16 +687,22 @@ export function CommandCenter() {
   const eventsFingerprint = events.map((e) => `${e.id}:${e.start}`).sort().join(',')
   const ctxSignature = `${emailSuggestions.length}|${memories.length}|${profile?.updatedAt ?? ''}|${completedCount}|${eventsFingerprint}`
   const lastCtxSig = useRef<string>('')
+  const lastEmailCount = useRef<number>(0)
   useEffect(() => {
     if (!hydrated) return
     if (lastCtxSig.current === ctxSignature) return
     const prev = lastCtxSig.current
+    const prevEmailCount = lastEmailCount.current
     lastCtxSig.current = ctxSignature
+    lastEmailCount.current = emailSuggestions.length
     writeCache(ctxSigKey, ctxSignature)
     // Skip on the very first hydration pass (prev was '' or the cached value).
-    // Only run when data *genuinely* changes after the initial load, and only if
-    // at least 60 seconds have elapsed since the last run (prevents rapid-fire).
-    if (prev === '' || Date.now() - lastRun.current < 60_000) return
+    if (prev === '') return
+    // When inbox signals arrive for the first time (0 → N), re-run immediately
+    // even within the throttle window — the first-pass briefing was incomplete
+    // without them, so we want to enrich it as soon as they land.
+    const inboxJustArrived = prevEmailCount === 0 && emailSuggestions.length > 0
+    if (!inboxJustArrived && Date.now() - lastRun.current < 60_000) return
     // Silent if a report exists, cold-start otherwise (so the user sees the loader).
     runEngine(undefined, !!report)
     // eslint-disable-next-line react-hooks/exhaustive-deps

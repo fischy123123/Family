@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
-import type { FamilyMember, Task, Chore, FamilyMemory, FamilyProfile } from '@/lib/types'
+import type { FamilyMember, Task, Chore, FamilyMemory, FamilyProfile, CalendarEvent } from '@/lib/types'
 import { memoryConcernsMember } from '@/lib/types'
 
 const MODEL = 'claude-sonnet-4-6'
@@ -11,6 +11,7 @@ interface MemberBriefRequest {
   tasks: Task[]
   chores: Chore[]
   memories: FamilyMemory[]
+  events: CalendarEvent[]
   profile: FamilyProfile | null
   now: string
   timezone?: string
@@ -33,7 +34,7 @@ function matchesMember(member: FamilyMember, assigneeId?: string, assigneeEmail?
 }
 
 function buildMemberContext(req: MemberBriefRequest): string {
-  const { member, tasks, chores, memories, now } = req
+  const { member, tasks, chores, memories, events, now } = req
   const lines: string[] = []
 
   if (member.summary) lines.push(`Summary: ${member.summary}`)
@@ -96,6 +97,25 @@ function buildMemberContext(req: MemberBriefRequest): string {
     })
   }
 
+  // Upcoming events for this member: owned by them, or title mentions their name.
+  const horizon = nowMs + 14 * 24 * 60 * 60 * 1000
+  const nameLower = member.name.toLowerCase()
+  const memberEvents = (events ?? []).filter((e) => {
+    const start = new Date(e.start).getTime()
+    if (start < nowMs - 30 * 60 * 1000 || start > horizon) return false
+    if (member.email && e.ownerEmail?.toLowerCase() === member.email.toLowerCase()) return true
+    if (e.title?.toLowerCase().includes(nameLower)) return true
+    return false
+  }).sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime())
+
+  if (memberEvents.length) {
+    lines.push('Upcoming calendar events (next 14 days):')
+    memberEvents.forEach((e) => {
+      const start = new Date(e.start).toLocaleString('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+      lines.push(`  - ${e.title} — ${start}${e.location ? ` @ ${e.location}` : ''}`)
+    })
+  }
+
   return lines.join('\n') || 'No details on file yet for this person.'
 }
 
@@ -135,11 +155,11 @@ export async function POST(request: NextRequest) {
     systemPrompt = `You are a personal assistant writing a brief, warm check-in for a family member looking at their own profile.
 Tone: honest, warm, like a trusted friend summing up their situation.
 CRITICAL RULES:
-- Write ONLY about what is explicitly listed in the context below. Do not invent, infer, or extrapolate.
-- If the task/chore list is empty or sparse, say so honestly — "not much on your plate" is fine.
-- Do NOT reference anything that happened in the past (past-due items, old events). Today is ${nowFmt}.
-- If you see "[PAST DUE]" tags, do not surface those as current obligations.
-- Be specific — reference tasks and chores by name if they exist.
+- Focus on what is CURRENTLY ACTIVE: open tasks, upcoming calendar events (next 14 days), and ongoing chores.
+- Memories and notes are background context — use them only when directly relevant to a current task or upcoming event. Do NOT turn a static memory or general responsibility pattern into a headline ("Jessy is responsible for vet visits" is background, not news).
+- If the task/chore/event list is empty or sparse, say so honestly — "not much on your plate" is fine.
+- Do NOT reference past-due items as current obligations. Today is ${nowFmt}.
+- Be specific — reference tasks and events by name when they exist.
 Return ONLY valid JSON.`
 
     userPrompt = `Right now: ${nowFmt}
@@ -147,8 +167,8 @@ ${householdContext ? `Household context:\n${householdContext}\n` : ''}
 Data for ${member.name} (their own view — address them as "you"):
 ${memberContext}
 
-Write a 2-4 sentence check-in about what's on their plate RIGHT NOW. Be warm and specific about what's actually listed above.
-If nothing is listed, say they seem to have a light plate and note 1 routine if any exist.
+Write a 2-4 sentence check-in about what's on their plate RIGHT NOW, prioritising upcoming calendar events and open tasks. Be warm and specific about what's actually listed above.
+If nothing active is listed, say they seem to have a light plate and note 1 routine if any exist.
 
 Return this exact JSON (no markdown):
 {
@@ -156,13 +176,14 @@ Return this exact JSON (no markdown):
 }`
   } else {
     systemPrompt = `You are a family relationship assistant helping someone understand a family member.
-Your job: help the viewer see what this person is carrying and how to support them.
+Your job: help the viewer see what this person is actively carrying and how to support them.
 Tone: warm, grounded — like a thoughtful friend who knows this family.
 CRITICAL RULES:
-- Write ONLY about what is explicitly listed in the context below for this specific person.
+- Focus the narrative on what is CURRENTLY ACTIVE: upcoming calendar events, open tasks, ongoing challenges.
+- Memories and background notes are context only — do NOT make them the headline of the narrative. A memory like "Jessy handles vet appointments" is a general responsibility pattern, not a current event; only surface it if there's an actual upcoming vet appointment or related open task.
 - Do NOT invent tasks, responsibilities, or situations that aren't listed. Do not attribute other family members' work to this person.
-- If the context is sparse, be honest about that — "not much on their plate" is accurate and fine.
-- Do NOT reference past events as current. Today is ${nowFmt}. Anything marked [PAST DUE] may already be resolved.
+- If the context is sparse on active items, be honest about that — "not much on their plate right now" is accurate and fine.
+- Do NOT reference past-due items as current. Today is ${nowFmt}.
 - For children/pets: keep suggestions age-appropriate. Don't attribute work tasks or adult responsibilities to kids.
 Return ONLY valid JSON.`
 
@@ -173,15 +194,14 @@ ${memberContext}
 
 Based ONLY on what's listed above:
 
-1. Write a 2-4 sentence narrative about where ${member.name} is right now. Be honest — if the list is sparse, reflect that.
+1. Write a 2-4 sentence narrative about where ${member.name} is right now, prioritising upcoming events and active tasks. Be honest — if the list is sparse on active items, reflect that rather than filling space with background facts.
 
-2. Suggest 2-3 specific ways the viewer can support ${member.name}. Must be grounded in the actual data above.
+2. Suggest 2-3 specific ways the viewer can support ${member.name}. Must be grounded in the actual data above — tie each suggestion to a real upcoming event, task, or pattern from the list.
    - "task": something the viewer should add to their own to-do list
    - "reminder": something to be reminded about later
    - "copilot": best explored in a conversation
 
-3. List 2-3 key facts about ${member.name} from their profile data above (routines, preferences, importantInfo).
-   Only include facts that are explicitly listed — do not make things up.
+3. List 2-3 key facts about ${member.name} from their profile data above (routines, preferences, importantInfo). Only include facts that are explicitly listed.
 
 4. One optional reflective sentence for the viewer about their relationship with ${member.name}.
 
