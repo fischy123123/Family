@@ -283,14 +283,15 @@ export default function SettingsPage() {
         <section className="bg-white rounded-2xl border border-slate-200 divide-y divide-slate-100 mb-4">
           <div className="px-5 py-4 flex items-center gap-2">
             <RotateCcw size={15} className="text-slate-400" />
-            <p className="text-xs font-semibold text-slate-400 uppercase tracking-widest">Daily Briefing</p>
+            <p className="text-xs font-semibold text-slate-400 uppercase tracking-widest">Briefing Data</p>
           </div>
           <div className="px-5 py-4">
-            <p className="text-sm font-medium text-slate-700 mb-1">Refresh briefing</p>
+            <p className="text-sm font-medium text-slate-700 mb-1">Force re-sync from Google</p>
             <p className="text-xs text-slate-400 leading-relaxed mb-4">
-              The briefing is cached so it loads instantly on return visits. If something looks wrong — a deleted event
-              still showing, stale information, or nothing loading — tap this to wipe the cache and fetch everything
-              fresh from your calendar and inbox. You'll be taken back to the home screen.
+              The briefing's refresh button (top of the home screen) re-runs the AI using data it already has. This
+              goes further: it discards that cached data and pulls everything fresh from Google Calendar and your
+              inbox before re-running. Use this when something is factually wrong — a deleted event that keeps
+              showing up, last week's appointments still appearing, or the briefing not loading at all.
             </p>
             <button
               onClick={resetBriefingCache}
@@ -302,7 +303,7 @@ export default function SettingsPage() {
               ) : (
                 <RotateCcw size={15} />
               )}
-              {resetDone ? 'Done — loading fresh data…' : resetting ? 'Clearing…' : 'Refresh briefing'}
+              {resetDone ? 'Done — re-syncing from Google…' : resetting ? 'Clearing…' : 'Re-sync from Google'}
             </button>
           </div>
         </section>
