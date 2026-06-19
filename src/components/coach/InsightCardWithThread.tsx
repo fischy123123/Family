@@ -26,7 +26,7 @@ export function InsightCardWithThread({
   const { familyId } = useFamily()
   const { data: members } = useFirestore<FamilyMember>('members')
   const { getFreshTokens } = useGoogleTokens()
-  const { create: createMemory } = useFirestore<FamilyMemory>('memories')
+  const { data: memories, create: createMemory, remove: removeMemory } = useFirestore<FamilyMemory>('memories')
 
   const [open, setOpen] = useState(false)
   const [thread, setThread] = useState<ThreadMsg[]>([])
@@ -191,12 +191,19 @@ export function InsightCardWithThread({
         return msgs
       })
 
-      // Persist the user's clarification as a memory so future coaching sessions
-      // know about it and don't repeat the same assumption.
+      // Persist a single memory per insight — upsert so multiple messages in
+      // the same thread don't create duplicate entries. We save the latest
+      // user message + the AI reply as one clean fact, replacing any prior
+      // memory for this insight.
       try {
+        const memoryText = `Re coaching insight "${insight.title}": ${content}${reply ? ` → ${reply.slice(0, 120)}${reply.length > 120 ? '…' : ''}` : ''}`
+        // Remove any existing memory for this insight before creating the new one
+        const prefix = `Re coaching insight "${insight.title}":`
+        const existing = memories.filter((m) => m.text.startsWith(prefix))
+        await Promise.all(existing.map((m) => removeMemory(m.id)))
         await createMemory({
           id: generateId(),
-          text: `Re coaching insight "${insight.title}": ${content}`,
+          text: memoryText,
           category: 'other',
           source: 'ai',
           createdAt: new Date().toISOString(),
