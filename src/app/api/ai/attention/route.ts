@@ -93,7 +93,8 @@ Given the family context, produce a JSON report with this exact shape:
       "title": "a proactive action that reduces future stress",
       "rationale": "why it helps",
       "actionLabel": "short button text (optional)",
-      "actionType": "capture" | "copilot"
+      "actionType": "capture" | "copilot",
+      "forNames": ["name of each family member this recommendation is specifically for or about — omit if family-wide or unclear"]
     }
   ]
 }

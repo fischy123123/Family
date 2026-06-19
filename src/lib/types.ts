@@ -238,6 +238,9 @@ export interface Recommendation {
   // 'copilot' hands off to a conversation only when genuine back-and-forth is
   // needed (e.g. "help me plan a date night").
   actionType?: 'copilot' | 'capture' | 'calendar'
+  // Names of family members the recommended action is for/about (e.g. ["Maddie"]).
+  // Used to auto-assign the task when the user taps the action button.
+  forNames?: string[]
 }
 
 export interface AttentionReport {
@@ -261,6 +264,7 @@ export interface Task {
   dueDate?: string
   assigneeId?: string           // canonical assignment key (member id)
   assigneeEmail?: string        // legacy / AI-derived fallback
+  forIds?: string[]             // who the task is FOR/ABOUT (e.g. a child's appt)
   priority: 'none' | 'low' | 'medium' | 'high'
   recurrence?: RecurrenceRule
   planId?: string               // if part of a Plan
