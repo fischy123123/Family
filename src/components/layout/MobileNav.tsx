@@ -2,16 +2,17 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { LayoutGrid, Users, ShoppingCart, Sparkles, Compass, CheckSquare } from 'lucide-react'
+import { LayoutGrid, Users, ShoppingCart, Sparkles, Compass, CheckSquare, Settings } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 const NAV_ITEMS = [
   { href: '/command', label: 'Home', icon: LayoutGrid },
   { href: '/coach', label: 'Coach', icon: Compass },
   { href: '/tasks', label: 'To Do', icon: CheckSquare },
-  { href: '/lists', label: 'Groceries', icon: ShoppingCart },
+  { href: '/lists', label: 'Grocery', icon: ShoppingCart },
   { href: '/family', label: 'Family', icon: Users },
   { href: '/copilot', label: 'Copilot', icon: Sparkles },
+  { href: '/settings', label: 'Settings', icon: Settings },
 ]
 
 export function MobileNav() {
@@ -40,7 +41,7 @@ export function MobileNav() {
                 <span className="absolute top-0 left-1/2 -translate-x-1/2 w-6 h-0.5 bg-blue-500 rounded-full" />
               )}
               <Icon
-                size={22}
+                size={20}
                 strokeWidth={active ? 2.5 : 1.8}
                 className={cn(
                   'transition-colors',

@@ -1499,18 +1499,6 @@ export function CommandCenter() {
         </div>
       )}
 
-      {/* Escape hatch — if a deleted event or wrong data keeps appearing, this
-          nukes all local caches and forces a fresh pull from Google + AI. */}
-      {(report || engineError) && (
-        <div className="text-center pb-2">
-          <button
-            onClick={() => clearCaches()}
-            className="text-xs text-slate-300 hover:text-slate-500 transition-colors"
-          >
-            Seeing something wrong? Reset cached data
-          </button>
-        </div>
-      )}
     </div>
   )
 }

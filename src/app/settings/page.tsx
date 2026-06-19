@@ -4,11 +4,31 @@ export const dynamic = 'force-dynamic'
 
 import { useState, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
-import { LogOut, Trash2, UserMinus, ArrowLeft, ShieldAlert, RefreshCw, Loader2 } from 'lucide-react'
+import {
+  LogOut, Trash2, UserMinus, ArrowLeft, ShieldAlert, RefreshCw,
+  Loader2, RotateCcw, Sparkles, Brain,
+} from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { useFamily } from '@/contexts/FamilyContext'
+import { useFirestore } from '@/hooks/useFirestore'
 import { auth } from '@/lib/firebase'
 import { isAdminEmail } from '@/lib/admin'
+import { generateId } from '@/lib/utils'
+import type { FamilyMemory, FamilyMember } from '@/lib/types'
+
+// All localStorage key prefixes used by CommandCenter — must stay in sync with
+// the constants defined there.
+const CACHE_PREFIXES = [
+  'fam-attn-',
+  'fam-gcal-',
+  'fam-clar-',
+  'fam-gmail-',
+  'fam-lastrun-',
+  'fam-ctxsig-',
+  'fam-lastrun-sig-',
+  'fam-dismissed-',
+  'fam-completed-',
+]
 
 interface FamilyRow {
   id: string
@@ -23,11 +43,18 @@ export default function SettingsPage() {
   const router = useRouter()
   const { user, signOut } = useAuth()
   const { familyId, inviteCode, resetFamily, deleteFamily } = useFamily()
+  const { data: memories, create, update, remove } = useFirestore<FamilyMemory>('memories')
+  const { data: members } = useFirestore<FamilyMember>('members')
 
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [leaving, setLeaving] = useState(false)
   const [error, setError] = useState('')
+
+  const [resetting, setResetting] = useState(false)
+  const [resetDone, setResetDone] = useState(false)
+  const [cleaning, setCleaning] = useState(false)
+  const [cleanResult, setCleanResult] = useState<string | null>(null)
 
   // --- Admin panel state ---
   const isAdmin = isAdminEmail(user?.email, process.env.NEXT_PUBLIC_ADMIN_EMAILS)
@@ -37,6 +64,84 @@ export default function SettingsPage() {
   const [purgingId, setPurgingId] = useState<string | null>(null)
   const [confirmPurgeAll, setConfirmPurgeAll] = useState(false)
 
+  // ── Briefing reset ────────────────────────────────────────────
+  function resetBriefingCache() {
+    if (!familyId) return
+    setResetting(true)
+    CACHE_PREFIXES.forEach((prefix) => {
+      try { localStorage.removeItem(prefix + familyId) } catch { /* ignore */ }
+    })
+    setResetDone(true)
+    setResetting(false)
+    // Navigate home after a beat so the user sees the fresh briefing load
+    setTimeout(() => router.push('/command'), 800)
+  }
+
+  // ── Memory cleanup ────────────────────────────────────────────
+  async function cleanupMemories() {
+    if (memories.length < 2) return
+    setCleaning(true)
+    setCleanResult(null)
+    try {
+      const memberRefs = members.map((m) => ({
+        id: m.id,
+        name: m.name,
+        email: m.email || undefined,
+        role: m.role,
+      }))
+      const res = await fetch('/api/ai/cleanup-memories', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ memories, members: memberRefs }),
+      })
+      if (!res.ok) throw new Error('cleanup failed')
+      const result = await res.json()
+
+      const toDelete: string[] = result.toDelete ?? []
+      const toMerge: Array<{ supersededIds: string[]; consolidatedText: string; subjectIdentifier: string | null }> = result.toMerge ?? []
+      const toTag: Array<{ id: string; subjectIdentifier: string }> = result.toTag ?? []
+
+      for (const { id, subjectIdentifier } of toTag) {
+        const memory = memories.find((m) => m.id === id)
+        if (memory) await update({ ...memory, subjectEmail: subjectIdentifier })
+      }
+      for (const id of toDelete) {
+        await remove(id)
+      }
+      for (const group of toMerge) {
+        for (const id of group.supersededIds) {
+          await remove(id)
+        }
+        await create({
+          id: generateId(),
+          text: group.consolidatedText,
+          source: 'manual',
+          createdAt: new Date().toISOString(),
+          ...(group.subjectIdentifier ? { subjectEmail: group.subjectIdentifier } : {}),
+        } as FamilyMemory)
+      }
+
+      const removed = toDelete.length + toMerge.reduce((n, g) => n + g.supersededIds.length, 0)
+      const tagged = toTag.length
+      const merged = toMerge.length
+
+      if (removed === 0 && tagged === 0 && merged === 0) {
+        setCleanResult('Already clean — nothing to do.')
+      } else {
+        const parts: string[] = []
+        if (removed > 0) parts.push(`${removed} removed`)
+        if (merged > 0) parts.push(`${merged} merged`)
+        if (tagged > 0) parts.push(`${tagged} linked to family members`)
+        setCleanResult(`Done: ${parts.join(', ')}.`)
+      }
+    } catch {
+      setCleanResult('Cleanup failed — try again.')
+    } finally {
+      setCleaning(false)
+    }
+  }
+
+  // ── Admin helpers ─────────────────────────────────────────────
   const loadFamilies = useCallback(async () => {
     setAdminLoading(true)
     setAdminError('')
@@ -72,7 +177,6 @@ export default function SettingsPage() {
       try { data = text ? JSON.parse(text) : {} } catch { /* non-JSON */ }
       if (!res.ok) throw new Error(data.error ?? `Purge failed (${res.status})`)
 
-      // If we purged our own family, drop our local pointer and head to setup
       const ownPurged = opts.all || opts.familyId === familyId
       if (ownPurged && familyId) {
         Object.keys(localStorage).forEach((k) => {
@@ -108,8 +212,6 @@ export default function SettingsPage() {
     setDeleting(true)
     setError('')
     try {
-      // Prefer the server-side admin endpoint (clears every member's pointer),
-      // but tolerate it being unavailable or returning a non-JSON error page.
       let serverOk = false
       try {
         const idToken = await auth.currentUser?.getIdToken()
@@ -119,28 +221,17 @@ export default function SettingsPage() {
         })
         const text = await res.text()
         let data: { error?: string } = {}
-        try {
-          data = text ? JSON.parse(text) : {}
-        } catch {
-          // Non-JSON response (e.g. an HTML error page) — treat as server failure
-        }
+        try { data = text ? JSON.parse(text) : {} } catch { /* */ }
         if (res.ok) serverOk = true
         else if (res.status === 401 || res.status === 403) {
           throw new Error(data.error ?? 'Not authorized to delete this family')
         }
-        // Other failures fall through to the client-side wipe below
       } catch (serverErr) {
-        // Network or auth error — fall back to client-side deletion
         console.warn('Admin reset unavailable, using client-side wipe:', serverErr)
       }
 
-      // Always ensure the data is gone via the client SDK (idempotent if the
-      // server already deleted it). Guarantees we never leave the user stuck.
-      if (!serverOk) {
-        await deleteFamily()
-      }
+      if (!serverOk) await deleteFamily()
 
-      // Clear localStorage caches
       Object.keys(localStorage).forEach((k) => {
         if (k.startsWith('attn:') || k.startsWith('gcal:') || k.startsWith('clar:')) {
           localStorage.removeItem(k)
@@ -168,7 +259,7 @@ export default function SettingsPage() {
         {/* Account */}
         <section className="bg-white rounded-2xl border border-slate-200 divide-y divide-slate-100 mb-4">
           <div className="px-5 py-4">
-            <p className="text-xs font-semibold text-slate-400 uppercase tracking-widest mb-0.5">Account</p>
+            <p className="text-xs font-semibold text-slate-400 uppercase tracking-widest">Account</p>
           </div>
           <div className="px-5 py-4 flex items-center gap-3">
             <div className="w-10 h-10 rounded-full bg-blue-100 flex items-center justify-center text-blue-600 font-bold text-sm shrink-0">
@@ -188,11 +279,73 @@ export default function SettingsPage() {
           </button>
         </section>
 
+        {/* Briefing */}
+        <section className="bg-white rounded-2xl border border-slate-200 divide-y divide-slate-100 mb-4">
+          <div className="px-5 py-4 flex items-center gap-2">
+            <RotateCcw size={15} className="text-slate-400" />
+            <p className="text-xs font-semibold text-slate-400 uppercase tracking-widest">Daily Briefing</p>
+          </div>
+          <div className="px-5 py-4">
+            <p className="text-sm font-medium text-slate-700 mb-1">Refresh briefing</p>
+            <p className="text-xs text-slate-400 leading-relaxed mb-4">
+              The briefing is cached so it loads instantly on return visits. If something looks wrong — a deleted event
+              still showing, stale information, or nothing loading — tap this to wipe the cache and fetch everything
+              fresh from your calendar and inbox. You'll be taken back to the home screen.
+            </p>
+            <button
+              onClick={resetBriefingCache}
+              disabled={resetting || resetDone}
+              className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold text-blue-700 bg-blue-50 hover:bg-blue-100 border border-blue-200 disabled:opacity-50 transition-all"
+            >
+              {resetting ? (
+                <Loader2 size={15} className="animate-spin" />
+              ) : (
+                <RotateCcw size={15} />
+              )}
+              {resetDone ? 'Done — loading fresh data…' : resetting ? 'Clearing…' : 'Refresh briefing'}
+            </button>
+          </div>
+        </section>
+
+        {/* Memories */}
+        <section className="bg-white rounded-2xl border border-slate-200 divide-y divide-slate-100 mb-4">
+          <div className="px-5 py-4 flex items-center gap-2">
+            <Brain size={15} className="text-slate-400" />
+            <p className="text-xs font-semibold text-slate-400 uppercase tracking-widest">Memories</p>
+          </div>
+          <div className="px-5 py-4">
+            <p className="text-sm font-medium text-slate-700 mb-1">Clean up memories</p>
+            <p className="text-xs text-slate-400 leading-relaxed mb-4">
+              Over time you may accumulate outdated or repetitive facts — like multiple entries about the same grounding
+              situation. This reviews all {memories.length > 0 ? `${memories.length} ` : ''}saved memories and
+              consolidates duplicates, removes stale entries, and links each memory to the right family member so the
+              AI uses only relevant context when building each person's briefing.
+            </p>
+            {memories.length < 2 ? (
+              <p className="text-xs text-slate-400 italic">
+                {memories.length === 0 ? 'No memories saved yet.' : 'Add more memories before cleaning up.'}
+              </p>
+            ) : (
+              <button
+                onClick={cleanupMemories}
+                disabled={cleaning}
+                className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold text-violet-700 bg-violet-50 hover:bg-violet-100 border border-violet-200 disabled:opacity-50 transition-all"
+              >
+                {cleaning ? <Loader2 size={15} className="animate-spin" /> : <Sparkles size={15} />}
+                {cleaning ? 'Reviewing memories…' : 'Clean up memories'}
+              </button>
+            )}
+            {cleanResult && (
+              <p className="text-xs text-slate-500 mt-3">{cleanResult}</p>
+            )}
+          </div>
+        </section>
+
         {/* Family */}
         {familyId && (
           <section className="bg-white rounded-2xl border border-slate-200 divide-y divide-slate-100 mb-4">
             <div className="px-5 py-4">
-              <p className="text-xs font-semibold text-slate-400 uppercase tracking-widest mb-0.5">Family</p>
+              <p className="text-xs font-semibold text-slate-400 uppercase tracking-widest">Family</p>
             </div>
             {inviteCode && (
               <div className="px-5 py-4">
@@ -242,11 +395,9 @@ export default function SettingsPage() {
           </section>
         )}
 
-        {error && (
-          <p className="text-sm text-red-500 text-center mt-2">{error}</p>
-        )}
+        {error && <p className="text-sm text-red-500 text-center mt-2">{error}</p>}
 
-        {/* Admin — purge any/all families (gated to admin accounts) */}
+        {/* Admin */}
         {isAdmin && (
           <section className="bg-white rounded-2xl border border-red-200 mb-4 overflow-hidden">
             <div className="px-5 py-4 flex items-center gap-2 border-b border-slate-100">
