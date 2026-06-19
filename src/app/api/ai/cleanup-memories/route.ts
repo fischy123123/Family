@@ -60,11 +60,20 @@ export async function POST(request: NextRequest) {
 2. DELETE fully redundant memories: entries that are stale, superseded, or already captured elsewhere
 3. MERGE related entries: when two or more memories are multiple versions of the same evolving fact, collapse them into one clean sentence
 
-Rules:
-- Only merge when entries are clearly about the same fact. Leave unrelated memories alone.
-- For subjectIdentifier: use email if the member has one, their id if not, null for family-wide facts
-- A memory being merged/deleted should NOT also appear in toTag
-- Return ONLY valid JSON`,
+Tagging rules:
+- Tag based on who the memory is ABOUT, not who is narrating it. "I ordered a memory jar for Jessy's pinning" is about Jessy, not the narrator.
+- Memories mentioning a specific person's name, event, appointment, or milestone belong to that person.
+- "Assignment · X: it concerns Y; Y is responsible" → tag to Y (the person it concerns).
+- "Re coaching insight about [Person]'s [thing]" → tag to that person.
+- Only use null (family-wide) for genuinely household-level facts like "trash goes out Tuesday" that don't belong to any one person.
+
+Merge rules:
+- Only merge when entries are clearly about the same evolving fact. Leave unrelated memories alone.
+- Two entries about the same event/situation from different angles should be merged into one complete sentence.
+
+For subjectIdentifier: use email if the member has one, their id if not, null for family-wide facts.
+A memory being merged/deleted should NOT also appear in toTag.
+Return ONLY valid JSON.`,
     messages: [
       {
         role: 'user',

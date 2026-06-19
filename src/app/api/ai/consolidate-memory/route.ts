@@ -54,7 +54,12 @@ When new information arrives, determine:
 2. Whether it updates, extends, or supersedes any existing memories — or is genuinely new
 3. The best single memory text to store (consolidating old + new context when relevant)
 
-Rules:
+Attribution rules:
+- Attribute based on who the memory is ABOUT, not who is narrating. "I ordered a gift for Jessy's pinning" → Jessy.
+- A memory mentioning one person's name, appointment, or milestone belongs to that person.
+- Only use null for genuinely household-level facts (e.g. "trash goes out Tuesday") with no single owner.
+
+Consolidation rules:
 - Only supersede memories that are clearly about the same fact and are now outdated or contradicted
 - When merging, write a concise single sentence capturing the full current state
 - Never supersede unrelated memories
