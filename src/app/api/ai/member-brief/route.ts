@@ -54,10 +54,20 @@ function buildMemberContext(req: MemberBriefRequest): string {
     member.importantInfo.forEach((i) => lines.push(`  - [${i.category}] ${i.label}: ${i.value}`))
   }
 
-  // Strict: only memories explicitly tagged to this member's email
-  const memberMemories = member.email
-    ? memories.filter((m) => m.subjectEmail?.toLowerCase() === member.email!.toLowerCase())
-    : []
+  // Include notes stored directly on the member document (MemoryEntry[])
+  if (member.memories?.length) {
+    lines.push('Personal notes (from their profile):')
+    member.memories.slice(0, 6).forEach((me) => lines.push(`  - ${me.text}`))
+  }
+
+  // Family memories explicitly tagged to this member — by email or by member id
+  // (emailless members like pets/young kids use id as the subjectEmail identifier)
+  const memberMemories = memories.filter((m) => {
+    if (!m.subjectEmail) return false
+    if (member.email && m.subjectEmail.toLowerCase() === member.email.toLowerCase()) return true
+    if (m.subjectEmail === member.id) return true
+    return false
+  })
   if (memberMemories.length) {
     lines.push('Notes about this person:')
     memberMemories.slice(0, 8).forEach((m) => lines.push(`  - ${m.text}`))

@@ -1,35 +1,59 @@
 'use client'
 
 import { useState } from 'react'
-import { Brain, Pin, PinOff, Trash2, Loader2, CornerDownLeft } from 'lucide-react'
+import { Brain, Pin, PinOff, Trash2, Loader2, CornerDownLeft, Tags } from 'lucide-react'
 import { useFirestore } from '@/hooks/useFirestore'
 import { useToast } from '@/contexts/ToastContext'
 import { generateId } from '@/lib/utils'
-import type { FamilyMemory } from '@/lib/types'
+import type { FamilyMemory, FamilyMember } from '@/lib/types'
 
 // "What your assistant knows" — durable facts that shape every briefing. The
 // add box is intentionally dead-simple: type or speak anything, and it sticks.
 export function FamilyMemories() {
   const { data: memories, create, update, remove } = useFirestore<FamilyMemory>('memories')
+  const { data: members } = useFirestore<FamilyMember>('members')
   const { toast } = useToast()
   const [draft, setDraft] = useState('')
   const [saving, setSaving] = useState(false)
+  const [backfilling, setBackfilling] = useState(false)
 
   const ordered = [...memories].sort((a, b) => {
     if (!!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1
     return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
   })
 
+  const untaggedCount = memories.filter((m) => !m.subjectEmail).length
+
+  async function classifyMemory(text: string): Promise<string | null> {
+    try {
+      const res = await fetch('/api/ai/classify-memory', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text,
+          members: members.map((m) => ({ id: m.id, name: m.name, email: m.email || undefined, role: m.role })),
+        }),
+      })
+      if (!res.ok) return null
+      const data = await res.json()
+      return data.subjectIdentifier ?? null
+    } catch {
+      return null
+    }
+  }
+
   async function add() {
     const text = draft.trim()
     if (!text) return
     setSaving(true)
     try {
+      const subjectIdentifier = members.length ? await classifyMemory(text) : null
       await create({
         id: generateId(),
         text,
         source: 'manual',
         createdAt: new Date().toISOString(),
+        ...(subjectIdentifier ? { subjectEmail: subjectIdentifier } : {}),
       } as FamilyMemory)
       setDraft('')
     } catch {
@@ -39,8 +63,37 @@ export function FamilyMemories() {
     }
   }
 
+  async function backfillTags() {
+    const untagged = memories.filter((m) => !m.subjectEmail)
+    if (!untagged.length) return
+    setBackfilling(true)
+    let tagged = 0
+    try {
+      for (const memory of untagged) {
+        const subjectIdentifier = await classifyMemory(memory.text)
+        if (subjectIdentifier) {
+          await update({ ...memory, subjectEmail: subjectIdentifier })
+          tagged++
+        }
+      }
+      toast(`Tagged ${tagged} of ${untagged.length} memories`, 'success')
+    } catch {
+      toast('Tagging stopped early', 'error')
+    } finally {
+      setBackfilling(false)
+    }
+  }
+
   async function togglePin(m: FamilyMemory) {
     await update({ ...m, pinned: !m.pinned })
+  }
+
+  function memberNameForId(identifier: string): string | null {
+    const byEmail = members.find((m) => m.email?.toLowerCase() === identifier.toLowerCase())
+    if (byEmail) return byEmail.name
+    const byId = members.find((m) => m.id === identifier)
+    if (byId) return byId.name
+    return null
   }
 
   return (
@@ -78,42 +131,62 @@ export function FamilyMemories() {
       {/* Known facts */}
       {ordered.length > 0 && (
         <div className="mt-5 space-y-2">
-          {ordered.map((m) => (
-            <div
-              key={m.id}
-              className="group flex items-start gap-3 p-3 rounded-xl border border-slate-100 bg-slate-50/50"
+          {/* Backfill button — only when untagged memories exist */}
+          {untaggedCount > 0 && members.length > 0 && (
+            <button
+              onClick={backfillTags}
+              disabled={backfilling}
+              className="w-full flex items-center justify-center gap-2 py-2 rounded-xl text-xs font-semibold text-amber-700 bg-amber-50 hover:bg-amber-100 border border-amber-200 disabled:opacity-50 transition-all"
             >
-              <div className="flex-1 min-w-0">
-                <p className="text-sm text-slate-800 leading-relaxed">{m.text}</p>
-                <div className="flex items-center gap-2 mt-1">
-                  {m.source && m.source !== 'manual' && (
-                    <span className="text-[10px] uppercase tracking-wide text-slate-400">via {m.source}</span>
-                  )}
-                  {m.pinned && (
-                    <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-amber-600">
-                      <Pin size={9} /> pinned
-                    </span>
-                  )}
+              {backfilling ? <Loader2 size={12} className="animate-spin" /> : <Tags size={12} />}
+              {backfilling ? 'Tagging memories…' : `Auto-tag ${untaggedCount} unlinked ${untaggedCount === 1 ? 'memory' : 'memories'}`}
+            </button>
+          )}
+
+          {ordered.map((m) => {
+            const taggedName = m.subjectEmail ? memberNameForId(m.subjectEmail) : null
+            return (
+              <div
+                key={m.id}
+                className="group flex items-start gap-3 p-3 rounded-xl border border-slate-100 bg-slate-50/50"
+              >
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm text-slate-800 leading-relaxed">{m.text}</p>
+                  <div className="flex items-center gap-2 mt-1">
+                    {m.source && m.source !== 'manual' && (
+                      <span className="text-[10px] uppercase tracking-wide text-slate-400">via {m.source}</span>
+                    )}
+                    {taggedName && (
+                      <span className="text-[10px] font-medium text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded-full">
+                        {taggedName}
+                      </span>
+                    )}
+                    {m.pinned && (
+                      <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-amber-600">
+                        <Pin size={9} /> pinned
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <div className="flex gap-0.5 shrink-0">
+                  <button
+                    onClick={() => togglePin(m)}
+                    className="p-1.5 rounded-lg text-slate-300 hover:text-amber-500 hover:bg-white transition-colors"
+                    title={m.pinned ? 'Unpin' : 'Pin (always remembered)'}
+                  >
+                    {m.pinned ? <PinOff size={14} /> : <Pin size={14} />}
+                  </button>
+                  <button
+                    onClick={() => remove(m.id)}
+                    className="p-1.5 rounded-lg text-slate-300 hover:text-red-500 hover:bg-white transition-colors"
+                    title="Forget this"
+                  >
+                    <Trash2 size={14} />
+                  </button>
                 </div>
               </div>
-              <div className="flex gap-0.5 shrink-0">
-                <button
-                  onClick={() => togglePin(m)}
-                  className="p-1.5 rounded-lg text-slate-300 hover:text-amber-500 hover:bg-white transition-colors"
-                  title={m.pinned ? 'Unpin' : 'Pin (always remembered)'}
-                >
-                  {m.pinned ? <PinOff size={14} /> : <Pin size={14} />}
-                </button>
-                <button
-                  onClick={() => remove(m.id)}
-                  className="p-1.5 rounded-lg text-slate-300 hover:text-red-500 hover:bg-white transition-colors"
-                  title="Forget this"
-                >
-                  <Trash2 size={14} />
-                </button>
-              </div>
-            </div>
-          ))}
+            )
+          })}
         </div>
       )}
     </div>
