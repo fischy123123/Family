@@ -58,8 +58,32 @@ Rules:
     if (!match) return NextResponse.json({ subjectIdentifier: null })
 
     const result = JSON.parse(match[0])
-    return NextResponse.json({ subjectIdentifier: result.subjectIdentifier ?? null })
-  } catch {
-    return NextResponse.json({ subjectIdentifier: null })
+    let raw = result.subjectIdentifier ?? null
+    // The model sometimes emits the literal string "null"/"none" — normalize.
+    if (typeof raw === 'string' && ['null', 'none', ''].includes(raw.trim().toLowerCase())) {
+      raw = null
+    }
+
+    // Resolve whatever the model returned (email, id, OR name) to the canonical
+    // identifier we store: the member's email if they have one, else their id.
+    // If it matches no member, treat as family-wide (null).
+    let subjectIdentifier: string | null = null
+    if (typeof raw === 'string' && raw.trim()) {
+      const v = raw.trim().toLowerCase()
+      const member = members.find(
+        (m) =>
+          m.email?.toLowerCase() === v ||
+          m.id.toLowerCase() === v ||
+          m.name.toLowerCase() === v
+      )
+      if (member) subjectIdentifier = member.email || member.id
+    }
+
+    return NextResponse.json({ subjectIdentifier })
+  } catch (e) {
+    // Surface real API errors as 500 so the caller can distinguish a failure
+    // from a legitimate "no specific person" result.
+    const msg = e instanceof Error ? e.message : 'classify error'
+    return NextResponse.json({ error: msg }, { status: 500 })
   }
 }

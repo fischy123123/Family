@@ -45,7 +45,8 @@ export async function POST(request: NextRequest) {
 
   const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
-  const response = await anthropic.messages.create({
+  try {
+    const response = await anthropic.messages.create({
     model: MODEL,
     max_tokens: 2000,
     system: `You are deduplicating a family assistant's memory store. Your ONLY job is to find memories that are redundant or that belong together.
@@ -71,17 +72,41 @@ Return ONLY valid JSON. Only include memories that need action — omit anything
     ],
   })
 
-  try {
     const text = response.content[0].type === 'text' ? response.content[0].text : ''
     const match = text.match(/\{[\s\S]*\}/)
-    if (!match) return NextResponse.json({ toDelete: [], toMerge: [], toTag: [] })
+    if (!match) return NextResponse.json({ toDelete: [], toMerge: [] })
 
     const result = JSON.parse(match[0])
+
+    // Normalize each merge's subjectIdentifier (email/id/name) to the canonical
+    // email-or-id, or null if it matches no member.
+    const resolveId = (raw: unknown): string | null => {
+      if (typeof raw !== 'string' || !raw.trim()) return null
+      const v = raw.trim().toLowerCase()
+      if (['null', 'none'].includes(v)) return null
+      const m = members.find(
+        (mem) =>
+          mem.email?.toLowerCase() === v ||
+          mem.id.toLowerCase() === v ||
+          mem.name.toLowerCase() === v
+      )
+      return m ? (m.email || m.id) : null
+    }
+
+    const toMerge: MergeGroup[] = Array.isArray(result.toMerge)
+      ? result.toMerge.map((g: MergeGroup) => ({
+          supersededIds: Array.isArray(g.supersededIds) ? g.supersededIds : [],
+          consolidatedText: g.consolidatedText,
+          subjectIdentifier: resolveId(g.subjectIdentifier),
+        }))
+      : []
+
     return NextResponse.json({
       toDelete: Array.isArray(result.toDelete) ? result.toDelete : [],
-      toMerge: Array.isArray(result.toMerge) ? result.toMerge : [],
+      toMerge,
     } satisfies CleanupResult)
-  } catch {
-    return NextResponse.json({ toDelete: [], toMerge: [] })
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : 'cleanup error'
+    return NextResponse.json({ error: msg }, { status: 500 })
   }
 }

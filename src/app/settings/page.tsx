@@ -94,6 +94,8 @@ export default function SettingsPage() {
     let tagged = 0
     let removed = 0
     let merged = 0
+    let errors = 0
+    let lastError = ''
 
     try {
       // ── Phase 1: tag each unlinked memory individually ──────────
@@ -107,16 +109,22 @@ export default function SettingsPage() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ text: memory.text, members: refs }),
           })
-          if (res.ok) {
-            const data = await res.json()
-            if (data.subjectIdentifier) {
-              await update({ ...memory, subjectEmail: data.subjectIdentifier })
-              const idx = snapshot.findIndex((m) => m.id === memory.id)
-              if (idx >= 0) snapshot[idx] = { ...memory, subjectEmail: data.subjectIdentifier }
-              tagged++
-            }
+          const data = await res.json().catch(() => ({}))
+          if (!res.ok) {
+            errors++
+            lastError = data.error || `HTTP ${res.status}`
+            continue
           }
-        } catch { /* skip this one, move on */ }
+          if (data.subjectIdentifier) {
+            await update({ ...memory, subjectEmail: data.subjectIdentifier })
+            const idx = snapshot.findIndex((m) => m.id === memory.id)
+            if (idx >= 0) snapshot[idx] = { ...memory, subjectEmail: data.subjectIdentifier }
+            tagged++
+          }
+        } catch (e) {
+          errors++
+          lastError = e instanceof Error ? e.message : 'network error'
+        }
       }
 
       // ── Phase 2: merge and delete duplicates using updated snapshot ──
@@ -126,8 +134,11 @@ export default function SettingsPage() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ memories: snapshot, members: refs }),
         })
-        if (res.ok) {
-          const result = await res.json()
+        const result = await res.json().catch(() => ({}))
+        if (!res.ok) {
+          errors++
+          lastError = result.error || `HTTP ${res.status}`
+        } else {
           const toDelete: string[] = result.toDelete ?? []
           const toMerge: Array<{ supersededIds: string[]; consolidatedText: string; subjectIdentifier: string | null }> = result.toMerge ?? []
 
@@ -151,20 +162,25 @@ export default function SettingsPage() {
         }
       }
 
-      if (tagged === 0 && removed === 0 && merged === 0) {
+      const parts: string[] = []
+      if (tagged > 0) parts.push(`${tagged} linked to family members`)
+      if (merged > 0) parts.push(`${merged} merged`)
+      if (removed > 0) parts.push(`${removed} removed`)
+
+      if (parts.length === 0 && errors === 0) {
         setCleanResult('Already clean — nothing to do.')
         setShowMemories(true)
+      } else if (parts.length === 0 && errors > 0) {
+        // Nothing changed AND the AI calls failed — this is the real bug case.
+        setCleanResult(`Couldn't reach the AI (${errors} error${errors === 1 ? '' : 's'}): ${lastError}`)
       } else {
-        const parts: string[] = []
-        if (tagged > 0) parts.push(`${tagged} linked to family members`)
-        if (merged > 0) parts.push(`${merged} merged`)
-        if (removed > 0) parts.push(`${removed} removed`)
-        setCleanResult(`Done: ${parts.join(', ')}.`)
+        const suffix = errors > 0 ? ` · ${errors} call${errors === 1 ? '' : 's'} failed (${lastError})` : ''
+        setCleanResult(`Done: ${parts.join(', ')}.${suffix}`)
         setShowMemories(false)
         setTimeout(() => setShowMemories(true), 150)
       }
-    } catch {
-      setCleanResult('Cleanup failed — try again.')
+    } catch (e) {
+      setCleanResult(`Cleanup failed — ${e instanceof Error ? e.message : 'try again'}.`)
     } finally {
       setCleaning(false)
     }
@@ -388,13 +404,18 @@ export default function SettingsPage() {
               </button>
 
               {showMemories && (() => {
-                // Resolve member name from subjectEmail (could be email or member id)
+                // Resolve member from subjectEmail, which may be an email, a
+                // member id, or (from older mistagged data) a name.
                 function resolveLabel(subjectEmail: string | undefined): { name: string; color: string } {
                   if (!subjectEmail) return { name: 'Family-wide', color: '#6B7280' }
-                  const byEmail = members.find((m) => m.email?.toLowerCase() === subjectEmail.toLowerCase())
-                  if (byEmail) return { name: byEmail.name, color: byEmail.colorHex }
-                  const byId = members.find((m) => m.id === subjectEmail)
-                  if (byId) return { name: byId.name, color: byId.colorHex }
+                  const v = subjectEmail.toLowerCase()
+                  const m = members.find(
+                    (mem) =>
+                      mem.email?.toLowerCase() === v ||
+                      mem.id.toLowerCase() === v ||
+                      mem.name.toLowerCase() === v
+                  )
+                  if (m) return { name: m.name, color: m.colorHex }
                   return { name: 'Unknown', color: '#6B7280' }
                 }
 
