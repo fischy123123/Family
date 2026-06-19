@@ -169,6 +169,13 @@ function getCacheTtl(key: string): number | undefined {
   }
 }
 
+function saveGmailCache(key: string | null, signals: EmailSuggestion[], lastScanTs: number) {
+  if (!key) return
+  try {
+    localStorage.setItem(key, JSON.stringify({ signals, lastScanTs }))
+  } catch { /* quota / private mode */ }
+}
+
 // Returns how old a cached value is in ms, or Infinity if absent / no timestamp.
 function cacheAgeMs(key: string | null): number {
   if (!key) return Infinity
@@ -368,16 +375,44 @@ export function CommandCenter() {
     setHydrated(true)
   }, [familyId, attnKey, gcalKey, clarKey, gmailKey, dismissKey, lastRunKey, ctxSigKey, lastRunSigKey])
 
-  // Scan Gmail for actionable items. Skip the Haiku call entirely if the cache
-  // is still fresh (< 6h) — no point re-reading 40 emails we already processed.
-  // When the cache is stale, fetch once per session and update it.
-  const GMAIL_TTL = CACHE_TTL_MS['gmail']!
+  // Scan Gmail incrementally — only emails newer than the last scan.
+  // Cache stores { signals, lastScanTs } so we never re-process seen emails.
+  // Haiku is skipped entirely when Gmail reports no new messages.
+  const GMAIL_CHECK_INTERVAL = 2 * 60 * 60 * 1000 // re-check every 2 h
   useEffect(() => {
     if (!isConnected || emailFetched.current) return
     emailFetched.current = true
 
-    // Cache still fresh → nothing to do; state was already hydrated on mount.
-    if (cacheAgeMs(gmailKey) < GMAIL_TTL) return
+    // Read structured cache (backward-compat: old cache may be a bare array)
+    let existingSignals: EmailSuggestion[] = []
+    let lastScanTs = 0
+    if (gmailKey) {
+      try {
+        const raw = localStorage.getItem(gmailKey)
+        if (raw) {
+          const parsed = JSON.parse(raw) as
+            | { v: { signals: EmailSuggestion[]; lastScanTs: number }; ts: number }
+            | { signals: EmailSuggestion[]; lastScanTs: number }
+            | EmailSuggestion[]
+          // Unwrap timestamped envelope from the previous TTL implementation
+          const inner = 'v' in parsed ? (parsed as { v: unknown }).v : parsed
+          if (Array.isArray(inner)) {
+            // Legacy bare array — treat as signals with unknown scan time
+            existingSignals = inner as EmailSuggestion[]
+          } else {
+            const typed = inner as { signals: EmailSuggestion[]; lastScanTs: number }
+            existingSignals = typed.signals ?? []
+            lastScanTs = typed.lastScanTs ?? 0
+          }
+        }
+      } catch { /* corrupt cache — start fresh */ }
+    }
+
+    // Hydrate state immediately with what we already have
+    if (existingSignals.length > 0) setEmailSuggestions(existingSignals)
+
+    // Skip the network call if we checked recently
+    if (lastScanTs && Date.now() - lastScanTs < GMAIL_CHECK_INTERVAL) return
 
     let cancelled = false
     ;(async () => {
@@ -390,17 +425,37 @@ export function CommandCenter() {
           body: JSON.stringify({
             accessToken: fresh.accessToken,
             members: members.map((m) => ({ name: m.name, role: m.role })),
+            // Tell the server to only fetch emails newer than our last scan
+            afterEpochMs: lastScanTs || undefined,
           }),
         })
         const data = await res.json()
-        if (!cancelled && res.ok && Array.isArray(data.suggestions)) {
-          const cleaned: EmailSuggestion[] = data.suggestions.filter(
+        if (cancelled || !res.ok) return
+
+        const nowTs = Date.now()
+        const today = new Date().toISOString().split('T')[0]
+
+        if (data.noNewEmails) {
+          // Nothing new — just update the scan timestamp so we don't re-check too soon
+          saveGmailCache(gmailKey, existingSignals, nowTs)
+          return
+        }
+
+        if (Array.isArray(data.suggestions)) {
+          const newSignals: EmailSuggestion[] = data.suggestions.filter(
             (s: EmailSuggestion) => s && s.title && (s.confidence ?? 1) >= 0.6,
           )
-          setEmailSuggestions(cleaned)
-          writeCache(gmailKey, cleaned)
+          // Merge: keep existing future-dated signals + add new ones (dedup by messageId)
+          const existingIds = new Set(existingSignals.map((s) => s.messageId).filter(Boolean))
+          const kept = existingSignals.filter((s) => !s.date || s.date >= today)
+          const merged = [
+            ...kept,
+            ...newSignals.filter((s) => !s.messageId || !existingIds.has(s.messageId)),
+          ]
+          setEmailSuggestions(merged)
+          saveGmailCache(gmailKey, merged, nowTs)
         }
-      } catch { /* keep cached suggestions */ }
+      } catch { /* keep existing signals */ }
     })()
     return () => { cancelled = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps

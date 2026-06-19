@@ -105,6 +105,88 @@ export async function getEvents(
   return allEvents
 }
 
+// Thrown when a syncToken is no longer valid (Google returns 410 Gone).
+// The caller should discard stored tokens and fall back to a full sync.
+export class SyncTokenExpiredError extends Error {
+  constructor() { super('syncToken expired') }
+}
+
+export interface EventsDelta {
+  upserted: GoogleEvent[]   // new or modified events
+  deletedIds: string[]      // event ids that were deleted in Google Calendar
+  syncTokensByCalendar: Record<string, string>  // updated tokens to store
+}
+
+// Incremental sync using per-calendar syncTokens.
+// On first call (no stored tokens) it falls back to a 14-day full fetch and
+// returns the tokens to store for next time.
+// When a token is expired (410), throws SyncTokenExpiredError so the caller
+// can wipe stored tokens and retry with a full fetch.
+export async function getEventsDelta(
+  accessToken: string,
+  refreshToken: string,
+  storedTokens: Record<string, string>,  // { calendarId: syncToken }
+  timeMin: string,
+  timeMax: string,
+): Promise<EventsDelta> {
+  const auth = getAuthorizedClient(accessToken, refreshToken)
+  const calendar = google.calendar({ version: 'v3', auth })
+
+  const { data: calListData } = await calendar.calendarList.list()
+  const calendars = calListData.items ?? []
+
+  const upserted: GoogleEvent[] = []
+  const deletedIds: string[] = []
+  const newTokens: Record<string, string> = {}
+
+  for (const cal of calendars) {
+    if (!cal.id) continue
+    const storedToken = storedTokens[cal.id]
+
+    try {
+      // With a syncToken we get only changes; without we do a full time-windowed fetch
+      const params = storedToken
+        ? { calendarId: cal.id, syncToken: storedToken, showDeleted: true, singleEvents: true }
+        : { calendarId: cal.id, timeMin, timeMax, singleEvents: true, orderBy: 'startTime' as const, showDeleted: false }
+
+      const { data: eventsData } = await calendar.events.list(params)
+      if (eventsData.nextSyncToken) newTokens[cal.id] = eventsData.nextSyncToken
+
+      for (const item of eventsData.items ?? []) {
+        if (!item.id) continue
+        if (item.status === 'cancelled') {
+          deletedIds.push(item.id)
+          continue
+        }
+        const isAllDay = !item.start?.dateTime
+        const colorId = item.colorId ?? cal.colorId ?? ''
+        const event: GoogleEvent = {
+          id: item.id,
+          title: item.summary ?? '',
+          start: item.start?.dateTime ?? item.start?.date ?? '',
+          end: item.end?.dateTime ?? item.end?.date ?? '',
+          isAllDay,
+          location: item.location ?? '',
+          notes: item.description ?? '',
+          color: COLOR_MAP[colorId] ?? DEFAULT_COLOR,
+          calendarId: cal.id,
+          calendarName: cal.summary ?? '',
+          ownerEmail: cal.id?.includes('@') ? cal.id : '',
+        }
+        if (item.recurringEventId) event.recurringEventId = item.recurringEventId
+        upserted.push(event)
+      }
+    } catch (err: unknown) {
+      const status = (err as { code?: number; status?: number }).code
+        ?? (err as { code?: number; status?: number }).status
+      if (status === 410) throw new SyncTokenExpiredError()
+      console.warn(`Skipping calendar ${cal.id}:`, err)
+    }
+  }
+
+  return { upserted, deletedIds, syncTokensByCalendar: newTokens }
+}
+
 export async function createEvent(
   accessToken: string,
   refreshToken: string,

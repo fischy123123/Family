@@ -7,7 +7,11 @@ const GMAIL_MODEL = 'claude-haiku-4-5-20251001'
 interface MemberRef { name: string; role: string }
 
 export async function POST(request: NextRequest) {
-  const { accessToken, members }: { accessToken: string; members?: MemberRef[] } = await request.json()
+  const {
+    accessToken,
+    members,
+    afterEpochMs,
+  }: { accessToken: string; members?: MemberRef[]; afterEpochMs?: number } = await request.json()
 
   if (!accessToken) {
     return NextResponse.json({ error: 'No access token provided' }, { status: 401 })
@@ -17,9 +21,14 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'ANTHROPIC_API_KEY not configured' }, { status: 500 })
   }
 
-  // Fetch recent emails from Gmail (last 14 days)
+  // On first run use a 14-day window; on subsequent runs only fetch emails
+  // newer than the last scan so we never re-process emails already seen.
+  const gmailQuery = afterEpochMs
+    ? `after:${Math.floor(afterEpochMs / 1000)}`
+    : 'newer_than:14d'
+
   const listRes = await fetch(
-    'https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=40&q=newer_than:14d',
+    `https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=50&q=${encodeURIComponent(gmailQuery)}`,
     { headers: { Authorization: `Bearer ${accessToken}` } }
   )
 
@@ -30,8 +39,9 @@ export async function POST(request: NextRequest) {
   const listData = await listRes.json()
   const messages: { id: string }[] = listData.messages ?? []
 
+  // No new emails since last scan — skip Haiku entirely
   if (messages.length === 0) {
-    return NextResponse.json({ suggestions: [] })
+    return NextResponse.json({ suggestions: [], noNewEmails: true })
   }
 
   // Fetch subject + snippet for each message (keep the id for deep-linking back to Gmail)

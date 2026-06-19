@@ -2,14 +2,14 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getAdminApp } from '@/lib/firebaseAdmin'
 import { getFirestore } from 'firebase-admin/firestore'
 import { verifyFirebaseIdToken } from '@/lib/verifyFirebaseToken'
-import { getEvents } from '@/lib/google/calendar'
+import { getEventsDelta, SyncTokenExpiredError } from '@/lib/google/calendar'
 import type { CalendarEvent } from '@/lib/types'
 
 export const dynamic = 'force-dynamic'
 
 // Syncs Google Calendar events for all connected family members to Firestore.
-// Called on app load by any signed-in user so calendar data stays fresh even
-// when some family members haven't opened the app recently.
+// Uses per-calendar syncTokens so only changed/deleted events are transferred
+// after the first full sync — never re-fetches the entire calendar each time.
 export async function POST(request: NextRequest) {
   const adminApp = getAdminApp()
   if (!adminApp) {
@@ -28,15 +28,15 @@ export async function POST(request: NextRequest) {
 
   const db = getFirestore(adminApp)
 
-  // Resolve familyId for this user
   const userSnap = await db.collection('users').doc(uid).get()
   const familyId = userSnap.data()?.familyId
   if (!familyId) return NextResponse.json({ synced: 0, reason: 'no-family' })
 
-  // Read all stored Google tokens for this family
-  const tokensSnap = await db.collection('families').doc(familyId).collection('googleTokens').get()
+  const tokensSnap = await db
+    .collection('families').doc(familyId).collection('googleTokens').get()
   if (tokensSnap.empty) return NextResponse.json({ synced: 0, reason: 'no-tokens' })
 
+  // 14-day window used only on the first (full) sync per member
   const timeMin = new Date().toISOString()
   const timeMax = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString()
 
@@ -44,50 +44,80 @@ export async function POST(request: NextRequest) {
   const syncStart = Date.now()
 
   for (const tokenDoc of tokensSnap.docs) {
-    const { accessToken, refreshToken, email } = tokenDoc.data() as {
-      accessToken: string; refreshToken: string; email: string
+    const tokenData = tokenDoc.data() as {
+      accessToken: string
+      refreshToken: string
+      email: string
+      calSyncTokens?: Record<string, string>
     }
+    const { accessToken, refreshToken, email } = tokenData
     if (!accessToken || !refreshToken) continue
+
+    const storedTokens: Record<string, string> = tokenData.calSyncTokens ?? {}
+    const isIncremental = Object.keys(storedTokens).length > 0
 
     try {
       const memberStart = Date.now()
-      const rawEvents = await getEvents(accessToken, refreshToken, timeMin, timeMax)
-      const events: CalendarEvent[] = rawEvents.map((e) => ({
+
+      let delta = await (async () => {
+        try {
+          return await getEventsDelta(accessToken, refreshToken, storedTokens, timeMin, timeMax)
+        } catch (err) {
+          if (err instanceof SyncTokenExpiredError) {
+            // Stored tokens are stale — fall back to a full sync
+            console.log(`[sync] syncToken expired for ${email}, falling back to full sync`)
+            return await getEventsDelta(accessToken, refreshToken, {}, timeMin, timeMax)
+          }
+          throw err
+        }
+      })()
+
+      const eventsCol = db.collection('families').doc(familyId).collection('events')
+      const BATCH_LIMIT = 490
+
+      if (!isIncremental) {
+        // First sync: wipe old google-sourced events for this owner, then insert all
+        const oldSnap = await eventsCol
+          .where('ownerEmail', '==', email)
+          .where('source', '==', 'google')
+          .get()
+        for (let i = 0; i < oldSnap.docs.length; i += BATCH_LIMIT) {
+          const batch = db.batch()
+          oldSnap.docs.slice(i, i + BATCH_LIMIT).forEach((d) => batch.delete(d.ref))
+          await batch.commit()
+        }
+      } else {
+        // Incremental: only delete the events Google told us were removed
+        for (let i = 0; i < delta.deletedIds.length; i += BATCH_LIMIT) {
+          const batch = db.batch()
+          delta.deletedIds.slice(i, i + BATCH_LIMIT).forEach((id) => batch.delete(eventsCol.doc(id)))
+          await batch.commit()
+        }
+      }
+
+      // Upsert new/modified events
+      const upserted: CalendarEvent[] = delta.upserted.map((e) => ({
         ...e,
         ownerEmail: e.ownerEmail || email,
       }))
-
-      // Replace this owner's google-sourced events atomically
-      const eventsCol = db.collection('families').doc(familyId).collection('events')
-      const oldSnap = await eventsCol
-        .where('ownerEmail', '==', email)
-        .where('source', '==', 'google')
-        .get()
-
-      const BATCH_LIMIT = 490
-      // Delete old events
-      for (let i = 0; i < oldSnap.docs.length; i += BATCH_LIMIT) {
+      for (let i = 0; i < upserted.length; i += BATCH_LIMIT) {
         const batch = db.batch()
-        oldSnap.docs.slice(i, i + BATCH_LIMIT).forEach((d) => batch.delete(d.ref))
-        await batch.commit()
-      }
-      // Write new events
-      for (let i = 0; i < events.length; i += BATCH_LIMIT) {
-        const batch = db.batch()
-        events.slice(i, i + BATCH_LIMIT).forEach((e) => {
+        upserted.slice(i, i + BATCH_LIMIT).forEach((e) => {
           batch.set(eventsCol.doc(e.id), { ...e, source: 'google' })
         })
         await batch.commit()
       }
 
-      // Update the stored access token if it was refreshed
-      // (getEvents may have refreshed it internally — we can't detect that here,
-      // but the refresh endpoint handles token rotation on the client side)
+      // Persist updated syncTokens so next run is incremental
+      await tokenDoc.ref.update({ calSyncTokens: delta.syncTokensByCalendar })
 
-      console.log(`[perf/sync] user=${email} gcal=${Date.now() - memberStart}ms events=${rawEvents.length}`)
+      const mode = isIncremental ? 'incremental' : 'full'
+      console.log(
+        `[perf/sync] user=${email} mode=${mode} gcal=${Date.now() - memberStart}ms` +
+        ` upserted=${delta.upserted.length} deleted=${delta.deletedIds.length}`
+      )
       synced++
     } catch (err) {
-      // One member's token failing shouldn't block others
       console.error(`Calendar sync failed for ${email}:`, err)
     }
   }
