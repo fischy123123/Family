@@ -50,6 +50,7 @@ type EmailSuggestion = {
   confidence: number
   sourceEmailSubject: string
   messageId?: string
+  forNames?: string[]
 }
 
 const BUCKET_ORDER: AttentionBucket[] = ['now', 'next', 'later', 'upcoming']
@@ -340,7 +341,10 @@ export function CommandCenter() {
         const res = await fetch('/api/gmail-suggestions', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ accessToken: fresh.accessToken }),
+          body: JSON.stringify({
+            accessToken: fresh.accessToken,
+            members: members.map((m) => ({ name: m.name, role: m.role })),
+          }),
         })
         const data = await res.json()
         if (!cancelled && res.ok && Array.isArray(data.suggestions)) {
@@ -480,6 +484,7 @@ export function CommandCenter() {
       notes: s.notes,
       sourceEmailSubject: s.sourceEmailSubject,
       messageId: s.messageId,
+      forNames: s.forNames,
     }))
     // Merge Copilot-created reminders (legacy collection) with Capture tasks
     // so the attention engine sees everything regardless of how it was added.

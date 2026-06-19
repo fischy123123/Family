@@ -4,8 +4,10 @@ import { logUsage } from '@/lib/ai'
 
 const GMAIL_MODEL = 'claude-haiku-4-5-20251001'
 
+interface MemberRef { name: string; role: string }
+
 export async function POST(request: NextRequest) {
-  const { accessToken } = await request.json()
+  const { accessToken, members }: { accessToken: string; members?: MemberRef[] } = await request.json()
 
   if (!accessToken) {
     return NextResponse.json({ error: 'No access token provided' }, { status: 401 })
@@ -48,13 +50,17 @@ export async function POST(request: NextRequest) {
   // Ask Claude to extract family-relevant suggestions
   const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
+  const memberListLine = members?.length
+    ? `\nKNOWN FAMILY MEMBERS: ${members.map((m) => `${m.name} (${m.role})`).join(', ')} — when an email is clearly about or for one of these people, include their name(s) in "forNames".`
+    : ''
+
   const response = await anthropic.messages.create({
     // Email extraction is high-volume structured work — Haiku is fast and cheap.
     model: GMAIL_MODEL,
     max_tokens: 2048,
     messages: [{
       role: 'user',
-      content: `You are a family assistant. Your job is to find things a FAMILY needs to track in their shared life.
+      content: `You are a family assistant. Your job is to find things a FAMILY needs to track in their shared life.${memberListLine}
 
 INCLUDE (only these categories):
 - Medical / health: doctor, dentist, therapist, specialist appointments, prescription pickups, test results
@@ -86,6 +92,7 @@ Return ONLY a valid JSON array — no markdown, no explanation, no code fences:
   "confidence": 0.0-1.0,
   "sourceEmailSubject": "exact subject line",
   "messageId": "the ID from the [msgid:ID] prefix of the source email",
+  "forNames": ["name of each family member this item is specifically about or for — omit if it's for the whole family or unclear"],
   "details": {
     "confirmationNumber": "only if present",
     "deliveryWindow": "only for deliveries",
@@ -100,6 +107,7 @@ Rules:
 - Confidence: 0.9+ for explicit dates/confirmed bookings, 0.7-0.8 for inferred, below 0.7 skip it
 - When in doubt, leave it out. 3 high-quality signals beat 10 noisy ones.
 - Each email is prefixed with [msgid:ID] — include that ID verbatim in the "messageId" field of your output
+- forNames: look for the actual person the appointment/event/item is FOR (e.g. "Liam" in a therapy appointment email for Liam, "Maddie" in a school email about Maddie). Only fill this when the person is clearly identifiable from the email content — not just who the email is sent to.
 - If nothing passes the filter, return []
 
 Emails:
@@ -111,7 +119,7 @@ ${emails.map((e) => `[msgid:${e.id}] Subject: ${e.subject}\nSnippet: ${e.snippet
 
   const text = response.content[0].type === 'text' ? response.content[0].text : '[]'
   const match = text.match(/\[[\s\S]*\]/)
-  const raw: Array<{ date?: string | null; confidence?: number; [key: string]: unknown }> = match ? JSON.parse(match[0]) : []
+  const raw: Array<{ date?: string | null; confidence?: number; forNames?: string[]; [key: string]: unknown }> = match ? JSON.parse(match[0]) : []
 
   // Drop suggestions with dates that have already passed — stale appointment
   // reminders are noise and cause the attention engine to misidentify past

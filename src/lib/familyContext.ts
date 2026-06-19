@@ -16,6 +16,9 @@ export interface InboxSignal {
   notes?: string
   sourceEmailSubject?: string
   messageId?: string
+  // Names of the family members this item is specifically about or for.
+  // Populated by the Gmail extraction model when a name is clearly identifiable.
+  forNames?: string[]
 }
 
 export interface FamilyContextInput {
@@ -379,9 +382,10 @@ export function buildFamilyContextParts(input: FamilyContextInput): {
         .map((s) => {
           const when = s.date ? ` — ${fmtDate(s.date, tz)}` : ''
           const note = s.notes ? ` (${s.notes})` : ''
+          const forWho = s.forNames?.length ? ` [for: ${s.forNames.join(', ')}]` : ''
           const src = s.sourceEmailSubject ? ` [email: "${s.sourceEmailSubject}"]` : ''
           const mid = s.messageId ? ` [msgid:${s.messageId}]` : ''
-          return `- ${s.title}${when}${note}${src}${mid}`
+          return `- ${s.title}${when}${note}${forWho}${src}${mid}`
         })
         .join('\n')}`
     )

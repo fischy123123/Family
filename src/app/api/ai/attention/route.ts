@@ -106,6 +106,8 @@ Bucket guidance — ALWAYS verify the actual date before assigning a bucket:
 
 CRITICAL — Inbox signals and memories do NOT have confirmed dates unless the event also appears in UPCOMING EVENTS. If something comes only from the INBOX or from MEMORY (not from UPCOMING EVENTS), do NOT assign it a "now", "next", or "later" bucket based on a time mentioned in the text (e.g. "therapy at 2:00 PM" might be Wednesday, not today). Use "upcoming" for all inbox signals that lack a calendar entry, and flag them in "problems" as not yet on the calendar.
 
+CRITICAL — Inbox signal "for" attribution: Inbox signals may include a [for: Name] tag identifying who the item is specifically about or for (e.g. "[for: Liam]" on a therapy appointment). When a [for: Name] tag is present, ALWAYS set "forEmails" to that person (using their email or exact name from FAMILY MEMBERS), and set "assigneeEmail" to the responsible parent (the one viewing the briefing, unless the signal clearly indicates otherwise). Never attribute a child's appointment to the parent as if it were the parent's own appointment.
+
 CRITICAL — Inbox signal dates are pre-verified as future dates (the system strips past events before sending them to you). However, ALWAYS verify an inbox signal's date makes sense relative to CURRENT TIME before surfacing it. If an email mentions "Thursday June 11" and today is June 15, that date is in the past — do NOT surface it. And do NOT infer a future date from a past-dated signal (do not assume "they probably meant next Thursday"). If an inbox signal's date is unclear or seems past, drop it silently.
 
 Rules:
