@@ -102,18 +102,21 @@ function extractPartialGreeting(raw: string): string | null {
   return out // still streaming
 }
 
-// Open a specific Gmail message in the system browser (Safari), NOT inside the
-// app's own webview. We use #all/<id> rather than #inbox/<id> so the message is
-// found even after it's been archived out of the inbox.
+// Open a Gmail message in the system browser (SFSafariViewController on iOS).
 //
-// The key insight for iOS standalone PWAs: window.open() is silently blocked and
-// setting window.location.href just navigates the chrome-less PWA webview — which
-// is NOT signed into Gmail, so the deep link never resolves to the actual email
-// (the tap appears to "open in the app" and go nowhere). A programmatic click on
-// an <a target="_blank"> element DOES hand the URL off to Safari, where the user
-// is already signed into Gmail and #all/<id> opens the real message.
-function openGmailMessage(messageId: string) {
-  const url = `https://mail.google.com/mail/u/0/#all/${messageId}`
+// The target="_blank" programmatic click is the correct mechanism — window.open()
+// is silently blocked in standalone PWA mode, and window.location.href navigates
+// the app's own WKWebView away. The anchor click hands the URL to iOS's in-app
+// browser, which shares Safari's cookies so the user is already logged into Gmail.
+//
+// URL strategy: Gmail mobile web silently strips the #all/{id} hash fragment
+// during its mobile redirect, landing the user on inbox. Gmail search URLs
+// (#search/...) survive the redirect and work reliably on mobile — so we use
+// subject-based search when available, falling back to the message ID hash URL.
+function openGmailMessage(messageId: string, subject?: string) {
+  const url = subject
+    ? `https://mail.google.com/mail/u/0/#search/${encodeURIComponent(`subject:(${subject})`)}`
+    : `https://mail.google.com/mail/u/0/#all/${messageId}`
   try {
     const a = document.createElement('a')
     a.href = url
@@ -906,6 +909,10 @@ export function CommandCenter() {
     router.push('/copilot')
   }
 
+  function emailSubject(messageId: string): string | undefined {
+    return emailSuggestions.find((s) => s.messageId === messageId)?.sourceEmailSubject
+  }
+
   function dismissItem(title: string) {
     setDismissedTitles((prev) => {
       const next = new Set(prev).add(title)
@@ -1461,7 +1468,7 @@ function ProblemCard({
           <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">{p.detail}</p>
           {p.sourceEmailId && (
             <button
-              onClick={() => openGmailMessage(p.sourceEmailId!)}
+              onClick={() => openGmailMessage(p.sourceEmailId!, emailSubject(p.sourceEmailId!))}
               className="inline-flex items-center gap-1 mt-1 text-[11px] font-medium text-blue-600 hover:text-blue-800 hover:underline"
             >
               <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor" className="shrink-0">
@@ -1616,7 +1623,7 @@ function AttentionCard({
           <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">{item.reason}</p>
           {item.sourceEmailId && (
             <button
-              onClick={() => openGmailMessage(item.sourceEmailId!)}
+              onClick={() => openGmailMessage(item.sourceEmailId!, emailSubject(item.sourceEmailId!))}
               className="inline-flex items-center gap-1 mt-1 text-[11px] font-medium text-blue-600 hover:text-blue-800 hover:underline"
             >
               <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor" className="shrink-0">
