@@ -34,16 +34,23 @@ export function InsightCardWithThread({
   const [loading, setLoading] = useState(false)
   const [savedAt, setSavedAt] = useState<number | null>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
-  const bottomRef = useRef<HTMLDivElement>(null)
+  const scrollAreaRef = useRef<HTMLDivElement>(null)
+  const cardRef = useRef<HTMLDivElement>(null)
 
-  // For capture/copilot action types, open the thread with the coach already
-  // starting the conversation around the specific suggestion. This is much more
-  // natural than navigating to the Capture panel.
+  // For capture/copilot/calendar action types, open the thread so the coach
+  // can help plan and (for calendar) actually create the event via tool calls.
   function handleAction(i: CoachingInsight) {
-    if (i.actionType === 'capture' || i.actionType === 'copilot' || !i.actionType) {
-      const opener = i.suggestedAction
-        ? `Let's do that — ${i.suggestedAction.toLowerCase().replace(/\.$/, '')}. What are you thinking so far?`
-        : `Let's dig into this. What's on your mind?`
+    if (i.actionType === 'capture' || i.actionType === 'copilot' || i.actionType === 'calendar' || !i.actionType) {
+      let opener: string
+      if (i.actionType === 'calendar') {
+        opener = i.suggestedAction
+          ? `Let's get that on the calendar — ${i.suggestedAction.toLowerCase().replace(/\.$/, '')}. When works for you?`
+          : `Let's schedule this. What day and time would work?`
+      } else {
+        opener = i.suggestedAction
+          ? `Let's do that — ${i.suggestedAction.toLowerCase().replace(/\.$/, '')}. What are you thinking so far?`
+          : `Let's dig into this. What's on your mind?`
+      }
       setThread([{ role: 'assistant', content: opener }])
       setOpen(true)
     } else {
@@ -52,11 +59,21 @@ export function InsightCardWithThread({
   }
 
   useEffect(() => {
-    if (open) setTimeout(() => inputRef.current?.focus(), 80)
+    if (open) {
+      // Scroll the card itself into view (top-aligned), then focus the input.
+      // Using 'nearest' avoids scrolling if already visible; 'start' if not.
+      setTimeout(() => {
+        cardRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+        inputRef.current?.focus()
+      }, 80)
+    }
   }, [open])
 
+  // Scroll within the message container — never the page — when thread updates.
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    if (scrollAreaRef.current) {
+      scrollAreaRef.current.scrollTop = scrollAreaRef.current.scrollHeight
+    }
   }, [thread, loading])
 
   async function handleSend() {
@@ -196,7 +213,7 @@ export function InsightCardWithThread({
   }
 
   return (
-    <div>
+    <div ref={cardRef}>
       <InsightCard
         insight={insight}
         onDismiss={onDismiss}
@@ -225,7 +242,7 @@ export function InsightCardWithThread({
           </div>
 
           {thread.length > 0 && (
-            <div className="px-4 pb-1 space-y-3 max-h-96 overflow-y-auto">
+            <div ref={scrollAreaRef} className="px-4 pb-1 space-y-3 max-h-96 overflow-y-auto">
               {thread.map((msg, i) =>
                 msg.role === 'user' ? (
                   <div key={i} className="flex justify-end">
@@ -254,7 +271,6 @@ export function InsightCardWithThread({
                   <div className="text-xs text-slate-400 italic">thinking…</div>
                 </div>
               )}
-              <div ref={bottomRef} />
             </div>
           )}
 
