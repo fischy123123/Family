@@ -1,6 +1,7 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
+import { useRouter } from 'next/navigation'
 import { Plus, Users, Copy, Check, Brain, ChevronRight, PawPrint, Crown, Star } from 'lucide-react'
 import { useFirestore } from '@/hooks/useFirestore'
 import { useFamily } from '@/contexts/FamilyContext'
@@ -30,7 +31,19 @@ type View =
 export function FamilyBrain() {
   const { data: members, loading } = useFirestore<FamilyMember>('members')
   const { user } = useAuth()
+  const router = useRouter()
   const [view, setView] = useState<View>({ kind: 'grid' })
+
+  // When returning from a profile page with the "Edit profile" intent, open detail view.
+  useEffect(() => {
+    try {
+      const editId = sessionStorage.getItem('family-edit')
+      if (editId) {
+        sessionStorage.removeItem('family-edit')
+        setView({ kind: 'detail', memberId: editId })
+      }
+    } catch { /* non-fatal */ }
+  }, [])
 
   if (view.kind === 'form') {
     return <MemberForm member={view.member} onDone={() => setView({ kind: 'grid' })} />
@@ -65,7 +78,7 @@ export function FamilyBrain() {
         <FamilyTree
           members={members}
           userEmail={user?.email ?? null}
-          onSelect={(m) => setView({ kind: 'detail', memberId: m.id })}
+          onSelect={(m) => router.push(`/family/${m.id}`)}
           onAdd={() => setView({ kind: 'form' })}
         />
       )}
