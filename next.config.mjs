@@ -12,6 +12,11 @@ const withPWA = withPWAInit({
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  // firebase-admin (and its transitive deps: google-auth-library, jwks-rsa, jose)
+  // use require() of ESM-only packages at runtime. Telling Next.js to bundle
+  // these as external packages prevents the ERR_REQUIRE_ESM crash in Vercel
+  // serverless functions.
+  serverExternalPackages: ['firebase-admin', 'google-auth-library'],
   // Security headers
   async headers() {
     return [
