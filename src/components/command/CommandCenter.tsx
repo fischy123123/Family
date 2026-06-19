@@ -169,6 +169,12 @@ export function CommandCenter() {
   // is stale, so the fresh result appears immediately without a "tap to see" step.
   const forceDirectRef = useRef(false)
   const deepToken = useRef<number>(0)
+  const engineAbortRef = useRef<AbortController | null>(null)
+  // Refs so the visibilitychange handler can read current state without stale closures.
+  const engineErrorRef = useRef<string | null>(null)
+  const reportRef = useRef<AttentionReport | null>(null)
+  useEffect(() => { engineErrorRef.current = engineError }, [engineError])
+  useEffect(() => { reportRef.current = report }, [report])
   const [clarifications, setClarifications] = useState<CalendarClarification[]>([])
   const [clarificationAnswers, setClarificationAnswers] = useState<Record<string, string>>({})
   const [clarificationsDismissed, setClarificationsDismissed] = useState(false)
@@ -451,6 +457,11 @@ export function CommandCenter() {
   }, [members, events, tasks, reminders, chores, plans, lists, profile, memories, emailSuggestions, user, dismissedTitles])
 
   const runEngine = useCallback(async (overrideContext?: { eventTitle: string; context: string }[], silent?: boolean) => {
+    // Cancel any previous in-flight request before starting a new one.
+    engineAbortRef.current?.abort()
+    const controller = new AbortController()
+    engineAbortRef.current = controller
+
     if (silent) setRefreshing(true)
     else setLoading(true)
     // Stamp the run time immediately so manual refreshes also update the throttle.
@@ -477,6 +488,7 @@ export function CommandCenter() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(buildEngineBody(eventContext, 'fast')),
+        signal: controller.signal,
       })
       const data = await res.json() as AttentionReport & { error?: string }
       if (res.ok) {
@@ -501,7 +513,11 @@ export function CommandCenter() {
         // Reset the throttle so the engine retries automatically when new data arrives.
         lastRun.current = 0
       }
-    } catch {
+    } catch (err) {
+      // iOS Safari aborts in-flight fetches when the app goes to the background.
+      // Don't show an error for intentional aborts — the visibilitychange handler
+      // will retry automatically when the user returns.
+      if (err instanceof Error && err.name === 'AbortError') return
       setEngineError('Could not reach the server. Check your connection and tap refresh.')
       lastRun.current = 0
     } finally {
@@ -562,6 +578,24 @@ export function CommandCenter() {
     runEngine(undefined, !!report)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ctxSignature, hydrated])
+
+  // Auto-retry when the user returns to the app. iOS Safari aborts in-flight
+  // fetches when a PWA is backgrounded; when the user comes back we want a
+  // seamless retry rather than a stale error screen.
+  useEffect(() => {
+    function handleVisible() {
+      if (document.visibilityState !== 'visible') return
+      const hasError = !!engineErrorRef.current
+      const hasNoReport = !reportRef.current
+      if (hasError || hasNoReport) {
+        setEngineError(null)
+        lastRun.current = 0
+        runEngine(undefined, !hasNoReport)
+      }
+    }
+    document.addEventListener('visibilitychange', handleVisible)
+    return () => document.removeEventListener('visibilitychange', handleVisible)
+  }, [runEngine])
 
   // Auto-dismiss the "context saved" confirmation after a few seconds.
   useEffect(() => {
