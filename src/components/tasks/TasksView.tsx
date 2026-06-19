@@ -8,7 +8,7 @@ import { generateId } from '@/lib/utils'
 import type { Task, FamilyReminder, Chore, FamilyMember } from '@/lib/types'
 import { isChoreDueToday, recurrenceLabel } from '@/lib/recurrence'
 import { resolveAssignee } from '@/lib/members'
-import { AssigneePicker } from '@/components/ui/AssigneePicker'
+import { AssigneePicker, ForPicker } from '@/components/ui/AssigneePicker'
 import { ChoreForm } from './chores/ChoreForm'
 
 // Build the canonical assignment fields from a chosen member id. We store the
@@ -43,13 +43,14 @@ interface ListItem {
   dueDate?: string
   assigneeId?: string
   assigneeEmail?: string
+  forIds?: string[]
   isCompleted: boolean
   source: 'task' | 'reminder'
   raw: Task | FamilyReminder
 }
 
 function toListItem(t: Task): ListItem {
-  return { id: t.id, title: t.title, notes: t.notes, priority: t.priority, dueDate: t.dueDate, assigneeId: t.assigneeId, assigneeEmail: t.assigneeEmail, isCompleted: t.isCompleted, source: 'task', raw: t }
+  return { id: t.id, title: t.title, notes: t.notes, priority: t.priority, dueDate: t.dueDate, assigneeId: t.assigneeId, assigneeEmail: t.assigneeEmail, forIds: t.forIds, isCompleted: t.isCompleted, source: 'task', raw: t }
 }
 function reminderToListItem(r: FamilyReminder): ListItem {
   return { id: r.id, title: r.title, notes: r.notes, priority: r.priority, dueDate: r.dueDate, assigneeId: r.assigneeId, assigneeEmail: r.assigneeEmail, isCompleted: r.isCompleted, source: 'reminder', raw: r }
@@ -104,9 +105,10 @@ export function TasksView() {
     const trimmed = patch.title.trim()
     if (!trimmed) return
     const af = assignFields(members, patch.assigneeId)
+    const forIds = patch.forIds?.length ? patch.forIds : undefined
     if (item.source === 'task') {
       const t = item.raw as Task
-      await updateTask({ ...t, title: trimmed, notes: patch.notes || undefined, priority: patch.priority, dueDate: patch.dueDate || undefined, ...af })
+      await updateTask({ ...t, title: trimmed, notes: patch.notes || undefined, priority: patch.priority, dueDate: patch.dueDate || undefined, ...af, forIds })
     } else {
       const r = item.raw as FamilyReminder
       await updateReminder({ ...r, title: trimmed, notes: patch.notes || undefined, priority: patch.priority, dueDate: patch.dueDate || undefined, ...af })
@@ -372,7 +374,7 @@ function ChoresSection({ chores, members, onCreate, onUpdate, onDelete }: {
   )
 }
 
-type EditPatch = { title: string; notes: string; priority: Priority; dueDate: string; assigneeId?: string }
+type EditPatch = { title: string; notes: string; priority: Priority; dueDate: string; assigneeId?: string; forIds?: string[] }
 
 function TaskRow({ item, members, onToggle, onSave, onRemove, onQuickAssign }: {
   item: ListItem
@@ -383,7 +385,7 @@ function TaskRow({ item, members, onToggle, onSave, onRemove, onQuickAssign }: {
   onQuickAssign: (memberId?: string) => void
 }) {
   const [editing, setEditing] = useState(false)
-  const [draft, setDraft] = useState<EditPatch>({ title: '', notes: '', priority: 'none', dueDate: '', assigneeId: undefined })
+  const [draft, setDraft] = useState<EditPatch>({ title: '', notes: '', priority: 'none', dueDate: '', assigneeId: undefined, forIds: [] })
   const [saving, setSaving] = useState(false)
   const [assignOpen, setAssignOpen] = useState(false)
   const titleRef = useRef<HTMLInputElement>(null)
@@ -401,6 +403,7 @@ function TaskRow({ item, members, onToggle, onSave, onRemove, onQuickAssign }: {
       priority: item.priority,
       dueDate: item.dueDate ? item.dueDate.split('T')[0] : '',
       assigneeId: assignee?.id,
+      forIds: item.forIds ?? [],
     })
     setEditing(true)
   }
@@ -458,7 +461,15 @@ function TaskRow({ item, members, onToggle, onSave, onRemove, onQuickAssign }: {
             members={members}
             value={draft.assigneeId}
             onChange={(id) => setDraft((d) => ({ ...d, assigneeId: id }))}
-            label="Assign to"
+            label="Assign to (responsible)"
+          />
+        )}
+        {members.length > 0 && (
+          <ForPicker
+            members={members}
+            value={draft.forIds ?? []}
+            onChange={(ids) => setDraft((d) => ({ ...d, forIds: ids }))}
+            label="For (about)"
           />
         )}
         <div className="flex items-center gap-2 pt-1">
@@ -533,6 +544,23 @@ function TaskRow({ item, members, onToggle, onSave, onRemove, onQuickAssign }: {
               </span>
             )}
           </button>
+          {/* "For" members — who the task is about */}
+          {(item.forIds?.length ?? 0) > 0 && (() => {
+            const forMembers = members.filter((m) => item.forIds!.includes(m.id))
+            return forMembers.length > 0 ? (
+              <span className="inline-flex items-center gap-1 text-[11px] text-slate-400">
+                for{' '}
+                {forMembers.map((m) => (
+                  <span key={m.id} className="inline-flex items-center gap-0.5 font-medium text-slate-600">
+                    <span className="w-4 h-4 rounded-full flex items-center justify-center text-[9px]" style={{ background: `${m.colorHex}25` }}>
+                      {m.emoji}
+                    </span>
+                    {m.name}
+                  </span>
+                ))}
+              </span>
+            ) : null
+          })()}
         </div>
         {assignOpen && (
           <div className="mt-2">

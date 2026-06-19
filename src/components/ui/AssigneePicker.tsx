@@ -57,6 +57,51 @@ export function AssigneePicker({
   )
 }
 
+// Multi-select variant: who is this task FOR / ABOUT (e.g. a child's appointment).
+// Value is an array of member ids; "Anyone" = empty array.
+export function ForPicker({
+  members,
+  value,
+  onChange,
+  label = 'For (about)',
+}: {
+  members: FamilyMember[]
+  value: string[]
+  onChange: (memberIds: string[]) => void
+  label?: string
+}) {
+  const list = assignableMembers(members)
+
+  function toggle(id: string) {
+    onChange(value.includes(id) ? value.filter((v) => v !== id) : [...value, id])
+  }
+
+  return (
+    <div>
+      {label && <p className="text-[11px] font-medium text-slate-500 mb-1.5">{label}</p>}
+      <div className="flex flex-wrap gap-1.5">
+        {list.map((m) => (
+          <Chip
+            key={m.id}
+            selected={value.includes(m.id)}
+            colorHex={m.colorHex}
+            onClick={() => toggle(m.id)}
+          >
+            <span
+              className="w-4 h-4 rounded-full flex items-center justify-center text-[9px]"
+              style={{ background: `${m.colorHex}25` }}
+            >
+              {m.emoji}
+            </span>
+            {m.name}
+            {value.includes(m.id) && <Check size={11} />}
+          </Chip>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 function Chip({
   selected,
   colorHex,
