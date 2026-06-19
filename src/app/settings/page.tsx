@@ -128,12 +128,16 @@ export default function SettingsPage() {
 
       if (removed === 0 && tagged === 0 && merged === 0) {
         setCleanResult('Already clean — nothing to do.')
+        setShowMemories(true)
       } else {
         const parts: string[] = []
         if (removed > 0) parts.push(`${removed} removed`)
         if (merged > 0) parts.push(`${merged} merged`)
         if (tagged > 0) parts.push(`${tagged} linked to family members`)
         setCleanResult(`Done: ${parts.join(', ')}.`)
+        // Collapse then reopen the list so the update is visually obvious
+        setShowMemories(false)
+        setTimeout(() => setShowMemories(true), 150)
       }
     } catch {
       setCleanResult('Cleanup failed — try again.')
