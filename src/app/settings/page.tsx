@@ -6,7 +6,7 @@ import { useState, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import {
   LogOut, Trash2, UserMinus, ArrowLeft, ShieldAlert, RefreshCw,
-  Loader2, RotateCcw, Sparkles, Brain,
+  Loader2, RotateCcw, Sparkles, Brain, ChevronDown,
 } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { useFamily } from '@/contexts/FamilyContext'
@@ -55,6 +55,7 @@ export default function SettingsPage() {
   const [resetDone, setResetDone] = useState(false)
   const [cleaning, setCleaning] = useState(false)
   const [cleanResult, setCleanResult] = useState<string | null>(null)
+  const [showMemories, setShowMemories] = useState(false)
 
   // --- Admin panel state ---
   const isAdmin = isAdminEmail(user?.email, process.env.NEXT_PUBLIC_ADMIN_EMAILS)
@@ -312,15 +313,17 @@ export default function SettingsPage() {
         <section className="bg-white rounded-2xl border border-slate-200 divide-y divide-slate-100 mb-4">
           <div className="px-5 py-4 flex items-center gap-2">
             <Brain size={15} className="text-slate-400" />
-            <p className="text-xs font-semibold text-slate-400 uppercase tracking-widest">Memories</p>
+            <p className="text-xs font-semibold text-slate-400 uppercase tracking-widest">
+              Memories {memories.length > 0 && <span className="normal-case font-normal text-slate-300">· {memories.length}</span>}
+            </p>
           </div>
+
+          {/* Clean up */}
           <div className="px-5 py-4">
             <p className="text-sm font-medium text-slate-700 mb-1">Clean up memories</p>
             <p className="text-xs text-slate-400 leading-relaxed mb-4">
-              Over time you may accumulate outdated or repetitive facts — like multiple entries about the same grounding
-              situation. This reviews all {memories.length > 0 ? `${memories.length} ` : ''}saved memories and
-              consolidates duplicates, removes stale entries, and links each memory to the right family member so the
-              AI uses only relevant context when building each person's briefing.
+              Reviews all saved memories and consolidates duplicates, removes stale entries, and links each memory
+              to the right family member so the AI uses only relevant context when building each person's briefing.
             </p>
             {memories.length < 2 ? (
               <p className="text-xs text-slate-400 italic">
@@ -340,6 +343,86 @@ export default function SettingsPage() {
               <p className="text-xs text-slate-500 mt-3">{cleanResult}</p>
             )}
           </div>
+
+          {/* Browse all memories */}
+          {memories.length > 0 && (
+            <div>
+              <button
+                onClick={() => setShowMemories((v) => !v)}
+                className="w-full flex items-center justify-between px-5 py-4 text-sm text-slate-600 hover:bg-slate-50 transition-colors"
+              >
+                <span className="font-medium">Browse all memories</span>
+                <ChevronDown
+                  size={16}
+                  className="text-slate-400 transition-transform duration-200"
+                  style={{ transform: showMemories ? 'rotate(180deg)' : 'rotate(0deg)' }}
+                />
+              </button>
+
+              {showMemories && (() => {
+                // Resolve member name from subjectEmail (could be email or member id)
+                function resolveLabel(subjectEmail: string | undefined): { name: string; color: string } {
+                  if (!subjectEmail) return { name: 'Family-wide', color: '#6B7280' }
+                  const byEmail = members.find((m) => m.email?.toLowerCase() === subjectEmail.toLowerCase())
+                  if (byEmail) return { name: byEmail.name, color: byEmail.colorHex }
+                  const byId = members.find((m) => m.id === subjectEmail)
+                  if (byId) return { name: byId.name, color: byId.colorHex }
+                  return { name: 'Unknown', color: '#6B7280' }
+                }
+
+                // Group memories by resolved label
+                const groups = new Map<string, { color: string; items: FamilyMemory[] }>()
+                const sorted = [...memories].sort((a, b) => {
+                  const labelA = resolveLabel(a.subjectEmail).name
+                  const labelB = resolveLabel(b.subjectEmail).name
+                  if (labelA === labelB) return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+                  // Family-wide last
+                  if (labelA === 'Family-wide') return 1
+                  if (labelB === 'Family-wide') return -1
+                  return labelA.localeCompare(labelB)
+                })
+                for (const m of sorted) {
+                  const { name, color } = resolveLabel(m.subjectEmail)
+                  if (!groups.has(name)) groups.set(name, { color, items: [] })
+                  groups.get(name)!.items.push(m)
+                }
+
+                return (
+                  <div className="px-5 pb-5 space-y-5">
+                    {Array.from(groups.entries()).map(([groupName, { color, items }]) => (
+                      <div key={groupName}>
+                        <div className="flex items-center gap-2 mb-2">
+                          <span
+                            className="inline-block w-2.5 h-2.5 rounded-full shrink-0"
+                            style={{ backgroundColor: color }}
+                          />
+                          <p className="text-xs font-semibold text-slate-500">{groupName}</p>
+                          <span className="text-xs text-slate-300">{items.length}</span>
+                        </div>
+                        <div className="space-y-1.5">
+                          {items.map((m) => (
+                            <div
+                              key={m.id}
+                              className="group flex items-start gap-2 pl-4 pr-2 py-2 rounded-xl bg-slate-50 border border-slate-100"
+                            >
+                              <p className="flex-1 text-sm text-slate-700 leading-relaxed min-w-0">{m.text}</p>
+                              <button
+                                onClick={() => remove(m.id)}
+                                className="shrink-0 p-1 rounded-lg text-slate-300 hover:text-red-500 hover:bg-white transition-colors opacity-0 group-hover:opacity-100"
+                                title="Delete"
+                              >
+                                <Trash2 size={13} />
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )
+              })()}
+            </div>
+          )}
         </section>
 
         {/* Family */}
