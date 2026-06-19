@@ -59,10 +59,34 @@ export interface FamilyMemory {
   id: string
   text: string
   category?: MemoryCategory
-  subjectEmail?: string               // which family member this is about (optional)
+  subjectEmail?: string               // legacy single subject (email or member id)
+  subjectEmails?: string[]            // who this is about — emails or member ids; empty/absent = family-wide
   source?: 'manual' | 'ai' | 'capture' | 'onboarding'
   pinned?: boolean                    // always include in context, never auto-trim
   createdAt: string
+}
+
+// The people a memory is about, combining the new multi-subject field with the
+// legacy single field. Empty array means family-wide (concerns everyone / no
+// single owner). Identifiers may be emails or member ids.
+export function memorySubjects(m: FamilyMemory): string[] {
+  const out = [...(m.subjectEmails ?? [])]
+  if (m.subjectEmail && !out.some((s) => s.toLowerCase() === m.subjectEmail!.toLowerCase())) {
+    out.unshift(m.subjectEmail)
+  }
+  return out
+}
+
+// True if a given member (by email and/or id) is among a memory's subjects.
+export function memoryConcernsMember(
+  m: FamilyMemory,
+  memberEmail?: string,
+  memberId?: string
+): boolean {
+  const subjects = memorySubjects(m).map((s) => s.toLowerCase())
+  if (memberEmail && subjects.includes(memberEmail.toLowerCase())) return true
+  if (memberId && subjects.includes(memberId.toLowerCase())) return true
+  return false
 }
 
 export interface TimelineMilestone {

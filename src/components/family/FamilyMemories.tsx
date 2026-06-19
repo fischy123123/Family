@@ -6,6 +6,7 @@ import { useFirestore } from '@/hooks/useFirestore'
 import { useToast } from '@/contexts/ToastContext'
 import { generateId } from '@/lib/utils'
 import type { FamilyMemory, FamilyMember } from '@/lib/types'
+import { memorySubjects } from '@/lib/types'
 
 export function FamilyMemories() {
   const { data: memories, create, update, remove } = useFirestore<FamilyMemory>('memories')
@@ -35,7 +36,7 @@ export function FamilyMemories() {
       })
       const result = res.ok ? await res.json() : null
 
-      const subjectIdentifier: string | null = result?.subjectIdentifier ?? null
+      const subjectIdentifiers: string[] = Array.isArray(result?.subjectIdentifiers) ? result.subjectIdentifiers : []
       const finalText: string = result?.finalText ?? text
       const supersededIds: string[] = result?.supersededIds ?? []
 
@@ -48,7 +49,7 @@ export function FamilyMemories() {
         text: finalText,
         source: 'manual',
         createdAt: new Date().toISOString(),
-        ...(subjectIdentifier ? { subjectEmail: subjectIdentifier } : {}),
+        ...(subjectIdentifiers.length ? { subjectEmails: subjectIdentifiers } : {}),
       } as FamilyMemory)
 
       setDraft('')
@@ -66,12 +67,11 @@ export function FamilyMemories() {
     await update({ ...m, pinned: !m.pinned })
   }
 
-  function memberNameForId(identifier: string): string | null {
-    const byEmail = members.find((m) => m.email?.toLowerCase() === identifier.toLowerCase())
-    if (byEmail) return byEmail.name
-    const byId = members.find((m) => m.id === identifier)
-    if (byId) return byId.name
-    return null
+  function memberForIdent(identifier: string): FamilyMember | undefined {
+    const v = identifier.toLowerCase()
+    return members.find(
+      (m) => m.email?.toLowerCase() === v || m.id.toLowerCase() === v || m.name.toLowerCase() === v
+    )
   }
 
   return (
@@ -108,7 +108,7 @@ export function FamilyMemories() {
       {ordered.length > 0 && (
         <div className="mt-5 space-y-2">
           {ordered.map((m) => {
-            const taggedName = m.subjectEmail ? memberNameForId(m.subjectEmail) : null
+            const subjects = memorySubjects(m)
             return (
               <div
                 key={m.id}
@@ -116,15 +116,25 @@ export function FamilyMemories() {
               >
                 <div className="flex-1 min-w-0">
                   <p className="text-sm text-slate-800 leading-relaxed">{m.text}</p>
-                  <div className="flex items-center gap-2 mt-1">
+                  <div className="flex items-center flex-wrap gap-1.5 mt-1">
                     {m.source && m.source !== 'manual' && (
                       <span className="text-[10px] uppercase tracking-wide text-slate-400">via {m.source}</span>
                     )}
-                    {taggedName && (
-                      <span className="text-[10px] font-medium text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded-full">
-                        {taggedName}
-                      </span>
-                    )}
+                    {subjects.map((s) => {
+                      const mem = memberForIdent(s)
+                      return (
+                        <span
+                          key={s}
+                          className="text-[10px] font-medium px-1.5 py-0.5 rounded-full"
+                          style={{
+                            backgroundColor: (mem?.colorHex ?? '#6B7280') + '20',
+                            color: mem?.colorHex ?? '#6B7280',
+                          }}
+                        >
+                          {mem?.name ?? s}
+                        </span>
+                      )
+                    })}
                     {m.pinned && (
                       <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-amber-600">
                         <Pin size={9} /> pinned

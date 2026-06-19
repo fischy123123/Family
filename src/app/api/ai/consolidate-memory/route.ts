@@ -18,7 +18,7 @@ interface ConsolidateRequest {
 }
 
 export interface ConsolidateResult {
-  subjectIdentifier: string | null  // email or member id; null = family-wide
+  subjectIdentifiers: string[]      // emails or member ids; empty = family-wide
   action: 'new' | 'replace'
   supersededIds: string[]           // existing memory ids to delete
   finalText: string                 // the memory text to actually save
@@ -50,14 +50,15 @@ export async function POST(request: NextRequest) {
       max_tokens: 300,
       system: `You maintain a clean, non-redundant memory store for a family AI assistant.
 When new information arrives, determine:
-1. Which family member it's about (return their email if they have one, their id if not, or null if it's family-wide)
+1. Which family member(s) it's about — "subjects" is an array of names (empty if family-wide). A memory can concern multiple people.
 2. Whether it updates, extends, or supersedes any existing memories — or is genuinely new
 3. The best single memory text to store (consolidating old + new context when relevant)
 
 Attribution rules:
 - Attribute based on who the memory is ABOUT, not who is narrating. "I ordered a gift for Jessy's pinning" → Jessy.
-- A memory mentioning one person's name, appointment, or milestone belongs to that person.
-- Only use null for genuinely household-level facts (e.g. "trash goes out Tuesday") with no single owner.
+- A memory can concern multiple people. "Drop Liam and Maddie at school" → Liam, Maddie.
+- A memory mentioning a person's name, appointment, or milestone belongs to that person.
+- Return an empty array for genuinely household-level facts (e.g. "trash goes out Tuesday", "the family has 3 cars").
 
 Consolidation rules:
 - Only supersede memories that are clearly about the same fact and are now outdated or contradicted
@@ -68,17 +69,35 @@ Consolidation rules:
       messages: [
         {
           role: 'user',
-          content: `Family members:\n${memberList}\n\nNew memory: "${newText}"\n\nExisting memories:\n${existingList}\n\nReturn this JSON (no markdown):\n{\n  "subjectIdentifier": "<email or id or null>",\n  "action": "new" | "replace",\n  "supersededIds": ["id1", ...],\n  "finalText": "..."\n}`,
+          content: `Family members:\n${memberList}\n\nNew memory: "${newText}"\n\nExisting memories:\n${existingList}\n\nReturn this JSON (no markdown):\n{\n  "subjects": ["Name1", "Name2"],\n  "action": "new" | "replace",\n  "supersededIds": ["id1", ...],\n  "finalText": "..."\n}`,
         },
       ],
     })
+
+    const resolveIds = (raw: unknown): string[] => {
+      if (!Array.isArray(raw)) return []
+      const ids = new Set<string>()
+      for (const r of raw) {
+        if (typeof r !== 'string' || !r.trim()) continue
+        const v = r.trim().toLowerCase()
+        if (['null', 'none'].includes(v)) continue
+        const m = members.find(
+          (mem) =>
+            mem.email?.toLowerCase() === v ||
+            mem.id.toLowerCase() === v ||
+            mem.name.toLowerCase() === v
+        )
+        if (m) ids.add(m.email || m.id)
+      }
+      return Array.from(ids)
+    }
 
     const text = response.content[0].type === 'text' ? response.content[0].text : ''
     const match = text.match(/\{[\s\S]*\}/)
     if (!match) {
       // Fallback: save as-is, no consolidation
       return NextResponse.json({
-        subjectIdentifier: null,
+        subjectIdentifiers: [],
         action: 'new',
         supersededIds: [],
         finalText: newText,
@@ -87,14 +106,14 @@ Consolidation rules:
 
     const result = JSON.parse(match[0])
     return NextResponse.json({
-      subjectIdentifier: result.subjectIdentifier ?? null,
+      subjectIdentifiers: resolveIds(result.subjects),
       action: result.action === 'replace' ? 'replace' : 'new',
       supersededIds: Array.isArray(result.supersededIds) ? result.supersededIds : [],
       finalText: result.finalText ?? newText,
     } satisfies ConsolidateResult)
   } catch {
     return NextResponse.json({
-      subjectIdentifier: null,
+      subjectIdentifiers: [],
       action: 'new',
       supersededIds: [],
       finalText: newText,

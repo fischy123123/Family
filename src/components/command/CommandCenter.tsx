@@ -777,22 +777,28 @@ export function CommandCenter() {
       if (r) await updateReminder({ ...r, ...af })
     }
 
-    // 3. Persist the nuance as a deduped family memory.
+    // 3. Persist the nuance as a deduped family memory, tagged to everyone it
+    //    concerns (the kids it's for + the responsible person) so it surfaces in
+    //    each of their individual profiles.
     const marker = `Assignment · "${item.title}":`
     const parts: string[] = []
     if (forNames) parts.push(`it concerns ${forNames}`)
     if (respName) parts.push(`${respName} is responsible for handling it`)
     const text = `${marker} ${parts.join('; ')}.`
+    const subjectEmails = Array.from(
+      new Set([...forMembers, ...(responsible ? [responsible] : [])].map((m) => m.email || m.id))
+    )
     try {
       const existing = memories.find((m) => m.text.startsWith(marker))
       if (existing) {
-        await updateMemory({ ...existing, text, createdAt: new Date().toISOString() })
+        await updateMemory({ ...existing, text, subjectEmails, createdAt: new Date().toISOString() })
       } else {
         await createMemory({
           id: generateId(),
           text,
           category: 'logistics',
           source: 'manual',
+          subjectEmails,
           createdAt: new Date().toISOString(),
         } as FamilyMemory)
       }

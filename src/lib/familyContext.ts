@@ -5,6 +5,7 @@ import type {
   FamilyMember, CalendarEvent, Task, Chore, Plan, SmartList,
   FamilyProfile, FamilyMemory,
 } from '@/lib/types'
+import { memorySubjects, memoryConcernsMember } from '@/lib/types'
 import { resolveAssignee } from '@/lib/members'
 
 // One actionable item the assistant noticed in the family's inbox. Folded into
@@ -200,21 +201,29 @@ export function buildFamilyContextParts(input: FamilyContextInput): {
   // everyone needs: a parent must see their kid's grounding, allergy, schedule,
   // etc. Previously any subjectEmail hid the memory from everyone but that
   // subject, so a correction tagged to a child was invisible to the parents.
-  const memberByEmail = (email?: string) =>
-    email ? members.find((m) => m.email?.toLowerCase() === email.toLowerCase()) : undefined
-  const viewer = (currentUserEmail ?? '').toLowerCase()
-  const isPrivateToOtherAdult = (m: FamilyMemory) => {
-    if (!m.subjectEmail) return false
-    const subj = memberByEmail(m.subjectEmail)
-    if (subj?.role !== 'parent') return false // children/other → household-wide
-    return m.subjectEmail.toLowerCase() !== viewer
+  const memberByIdent = (ident: string) => {
+    const v = ident.toLowerCase()
+    return members.find((m) => m.email?.toLowerCase() === v || m.id.toLowerCase() === v)
   }
+  const viewer = (currentUserEmail ?? '').toLowerCase()
+  const viewerMember = viewer ? members.find((m) => m.email?.toLowerCase() === viewer) : undefined
+  // A memory is private to another adult only if EVERY subject it concerns is an
+  // adult with their own login and none of them is the viewer. Memories about a
+  // child (or shared with the viewer) stay household-visible.
+  const isPrivateToOtherAdult = (m: FamilyMemory) => {
+    const subjects = memorySubjects(m)
+    if (!subjects.length) return false
+    const concernsViewer = memoryConcernsMember(m, currentUserEmail, viewerMember?.id)
+    if (concernsViewer) return false
+    // Private only if all subjects are parents (adults with logins)
+    return subjects.every((s) => memberByIdent(s)?.role === 'parent')
+  }
+  const concernsViewer = (m: FamilyMemory) =>
+    memoryConcernsMember(m, currentUserEmail, viewerMember?.id)
   const familyMemories = (memories ?? []).filter(
-    (m) => !isPrivateToOtherAdult(m) && m.subjectEmail?.toLowerCase() !== viewer
+    (m) => !isPrivateToOtherAdult(m) && !concernsViewer(m)
   )
-  const personalMemories = (memories ?? []).filter(
-    (m) => m.subjectEmail && m.subjectEmail.toLowerCase() === viewer
-  )
+  const personalMemories = (memories ?? []).filter((m) => concernsViewer(m))
 
   // The personal lens: what this individual has told us they care about (or
   // don't care about). Combine their member preferences + personal memories.
@@ -266,7 +275,9 @@ export function buildFamilyContextParts(input: FamilyContextInput): {
     dataSections.push(
       `WHAT YOU KNOW ABOUT THIS FAMILY (shared durable memory — facts, routines, preferences that apply to everyone):\n${ordered
         .map((m) => {
-          const who = m.subjectEmail ? ` (about ${m.subjectEmail})` : ''
+          const subs = memorySubjects(m)
+            .map((s) => memberByIdent(s)?.name ?? s)
+          const who = subs.length ? ` (about ${subs.join(', ')})` : ''
           const cat = m.category ? `[${m.category}] ` : ''
           return `- ${cat}${m.text}${who}`
         })

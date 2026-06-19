@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
 import type { FamilyMemory } from '@/lib/types'
+import { memorySubjects } from '@/lib/types'
 
 const MODEL = 'claude-sonnet-4-6'
 
@@ -19,7 +20,7 @@ interface CleanupRequest {
 interface MergeGroup {
   supersededIds: string[]
   consolidatedText: string
-  subjectIdentifier: string | null
+  subjectIdentifiers: string[]   // who the merged memory concerns (empty = family-wide)
 }
 
 export interface CleanupResult {
@@ -40,7 +41,11 @@ export async function POST(request: NextRequest) {
     .join('\n')
 
   const memoryList = memories
-    .map((m) => `[id:${m.id}]${m.subjectEmail ? ` (tagged:${m.subjectEmail})` : ' (untagged)'} ${m.text}`)
+    .map((m) => {
+      const subs = memorySubjects(m)
+      const tag = subs.length ? ` (tagged:${subs.join(',')})` : ' (untagged)'
+      return `[id:${m.id}]${tag} ${m.text}`
+    })
     .join('\n')
 
   const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
@@ -62,12 +67,12 @@ MERGE memories when:
 
 Leave memories alone when they are genuinely distinct facts, even if they mention the same person.
 
-For subjectIdentifier on merged memories: use the email if the member has one, their id if not, null if family-wide.
+For "subjects" on merged memories: an array of the names of everyone the merged memory concerns (empty array if family-wide). A memory can concern multiple people.
 Return ONLY valid JSON. Only include memories that need action — omit anything you're leaving unchanged.`,
     messages: [
       {
         role: 'user',
-        content: `Family members:\n${memberList}\n\nMemories:\n${memoryList}\n\nReturn this JSON:\n{\n  "toDelete": ["id_of_redundant_memory", ...],\n  "toMerge": [\n    {\n      "supersededIds": ["id1", "id2"],\n      "consolidatedText": "single clean sentence capturing current state",\n      "subjectIdentifier": "email or id or null"\n    }\n  ]\n}`,
+        content: `Family members:\n${memberList}\n\nMemories:\n${memoryList}\n\nReturn this JSON:\n{\n  "toDelete": ["id_of_redundant_memory", ...],\n  "toMerge": [\n    {\n      "supersededIds": ["id1", "id2"],\n      "consolidatedText": "single clean sentence capturing current state",\n      "subjects": ["Name1", "Name2"]\n    }\n  ]\n}`,
       },
     ],
   })
@@ -78,26 +83,31 @@ Return ONLY valid JSON. Only include memories that need action — omit anything
 
     const result = JSON.parse(match[0])
 
-    // Normalize each merge's subjectIdentifier (email/id/name) to the canonical
-    // email-or-id, or null if it matches no member.
-    const resolveId = (raw: unknown): string | null => {
-      if (typeof raw !== 'string' || !raw.trim()) return null
-      const v = raw.trim().toLowerCase()
-      if (['null', 'none'].includes(v)) return null
-      const m = members.find(
-        (mem) =>
-          mem.email?.toLowerCase() === v ||
-          mem.id.toLowerCase() === v ||
-          mem.name.toLowerCase() === v
-      )
-      return m ? (m.email || m.id) : null
+    // Resolve a list of names/emails/ids to canonical email-or-id identifiers,
+    // dropping anything that matches no member.
+    const resolveIds = (raw: unknown): string[] => {
+      if (!Array.isArray(raw)) return []
+      const ids = new Set<string>()
+      for (const r of raw) {
+        if (typeof r !== 'string' || !r.trim()) continue
+        const v = r.trim().toLowerCase()
+        if (['null', 'none'].includes(v)) continue
+        const m = members.find(
+          (mem) =>
+            mem.email?.toLowerCase() === v ||
+            mem.id.toLowerCase() === v ||
+            mem.name.toLowerCase() === v
+        )
+        if (m) ids.add(m.email || m.id)
+      }
+      return Array.from(ids)
     }
 
     const toMerge: MergeGroup[] = Array.isArray(result.toMerge)
-      ? result.toMerge.map((g: MergeGroup) => ({
+      ? result.toMerge.map((g: { supersededIds?: unknown; consolidatedText: string; subjects?: unknown }) => ({
           supersededIds: Array.isArray(g.supersededIds) ? g.supersededIds : [],
           consolidatedText: g.consolidatedText,
-          subjectIdentifier: resolveId(g.subjectIdentifier),
+          subjectIdentifiers: resolveIds(g.subjects),
         }))
       : []
 

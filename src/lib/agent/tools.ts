@@ -3,6 +3,7 @@ import { generateId } from '@/lib/utils'
 import { getEvents, getCalendars, createEvent as createGoogleEvent, updateEvent, deleteEvent } from '@/lib/google/calendar'
 import { resolveMemberRef } from '@/lib/members'
 import type { FamilyMember, FamilyMemory, FamilyProfile } from '@/lib/types'
+import { memorySubjects } from '@/lib/types'
 
 // ---------------------------------------------------------------------------
 // Tool definitions
@@ -445,7 +446,10 @@ DELETING EVENTS: Call get_google_events first to get the event_id and calendar_i
     ? `\nWHAT YOU ALREADY KNOW ABOUT THIS FAMILY (durable memory, newest first — use it; don't ask for things you already know. If the user corrects something here, forget the old [id:xxx] and remember the new fact):\n${[...memories]
         .sort((a, b) => (!!a.pinned !== !!b.pinned ? (a.pinned ? -1 : 1) : new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()))
         .slice(0, 50)
-        .map((m) => `- [id:${m.id}] ${m.category ? `[${m.category}] ` : ''}${m.text}${m.subjectEmail ? ` (about ${m.subjectEmail})` : ''}`)
+        .map((m) => {
+          const subs = memorySubjects(m)
+          return `- [id:${m.id}] ${m.category ? `[${m.category}] ` : ''}${m.text}${subs.length ? ` (about ${subs.join(', ')})` : ''}`
+        })
         .join('\n')}\n`
     : ''
 

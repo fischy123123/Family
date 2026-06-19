@@ -15,6 +15,7 @@ import { auth } from '@/lib/firebase'
 import { isAdminEmail } from '@/lib/admin'
 import { generateId } from '@/lib/utils'
 import type { FamilyMemory, FamilyMember } from '@/lib/types'
+import { memorySubjects } from '@/lib/types'
 
 // All localStorage key prefixes used by CommandCenter — must stay in sync with
 // the constants defined there.
@@ -101,7 +102,7 @@ export default function SettingsPage() {
       // ── Phase 1: tag each unlinked memory individually ──────────
       // One classify call per memory is more reliable than asking one big
       // prompt to tag all of them at once.
-      const untagged = snapshot.filter((m) => !m.subjectEmail)
+      const untagged = snapshot.filter((m) => memorySubjects(m).length === 0)
       for (const memory of untagged) {
         try {
           const res = await fetch('/api/ai/classify-memory', {
@@ -115,10 +116,11 @@ export default function SettingsPage() {
             lastError = data.error || `HTTP ${res.status}`
             continue
           }
-          if (data.subjectIdentifier) {
-            await update({ ...memory, subjectEmail: data.subjectIdentifier })
+          const subjectIdentifiers: string[] = Array.isArray(data.subjectIdentifiers) ? data.subjectIdentifiers : []
+          if (subjectIdentifiers.length) {
+            await update({ ...memory, subjectEmails: subjectIdentifiers })
             const idx = snapshot.findIndex((m) => m.id === memory.id)
-            if (idx >= 0) snapshot[idx] = { ...memory, subjectEmail: data.subjectIdentifier }
+            if (idx >= 0) snapshot[idx] = { ...memory, subjectEmails: subjectIdentifiers }
             tagged++
           }
         } catch (e) {
@@ -140,7 +142,7 @@ export default function SettingsPage() {
           lastError = result.error || `HTTP ${res.status}`
         } else {
           const toDelete: string[] = result.toDelete ?? []
-          const toMerge: Array<{ supersededIds: string[]; consolidatedText: string; subjectIdentifier: string | null }> = result.toMerge ?? []
+          const toMerge: Array<{ supersededIds: string[]; consolidatedText: string; subjectIdentifiers: string[] }> = result.toMerge ?? []
 
           for (const id of toDelete) {
             await remove(id)
@@ -154,7 +156,7 @@ export default function SettingsPage() {
               text: group.consolidatedText,
               source: 'manual',
               createdAt: new Date().toISOString(),
-              ...(group.subjectIdentifier ? { subjectEmail: group.subjectIdentifier } : {}),
+              ...(group.subjectIdentifiers?.length ? { subjectEmails: group.subjectIdentifiers } : {}),
             } as FamilyMemory)
           }
           removed = toDelete.length + toMerge.reduce((n, g) => n + g.supersededIds.length, 0)
@@ -404,57 +406,93 @@ export default function SettingsPage() {
               </button>
 
               {showMemories && (() => {
-                // Resolve member from subjectEmail, which may be an email, a
-                // member id, or (from older mistagged data) a name.
-                function resolveLabel(subjectEmail: string | undefined): { name: string; color: string } {
-                  if (!subjectEmail) return { name: 'Family-wide', color: '#6B7280' }
-                  const v = subjectEmail.toLowerCase()
-                  const m = members.find(
+                // Resolve an identifier (email, id, or legacy name) to a member.
+                function memberFor(ident: string): FamilyMember | undefined {
+                  const v = ident.toLowerCase()
+                  return members.find(
                     (mem) =>
                       mem.email?.toLowerCase() === v ||
                       mem.id.toLowerCase() === v ||
                       mem.name.toLowerCase() === v
                   )
-                  if (m) return { name: m.name, color: m.colorHex }
-                  return { name: 'Unknown', color: '#6B7280' }
                 }
 
-                // Group memories by resolved label
-                const groups = new Map<string, { color: string; items: FamilyMemory[] }>()
-                const sorted = [...memories].sort((a, b) => {
-                  const labelA = resolveLabel(a.subjectEmail).name
-                  const labelB = resolveLabel(b.subjectEmail).name
-                  if (labelA === labelB) return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-                  // Family-wide last
-                  if (labelA === 'Family-wide') return 1
-                  if (labelB === 'Family-wide') return -1
-                  return labelA.localeCompare(labelB)
-                })
-                for (const m of sorted) {
-                  const { name, color } = resolveLabel(m.subjectEmail)
-                  if (!groups.has(name)) groups.set(name, { color, items: [] })
-                  groups.get(name)!.items.push(m)
+                // Build a group per person. A memory with multiple subjects
+                // appears under each person it concerns. No subjects → Family-wide.
+                type Group = { name: string; color: string; sortKey: string; items: FamilyMemory[] }
+                const groups = new Map<string, Group>()
+                const ensure = (key: string, name: string, color: string, sortKey: string) => {
+                  if (!groups.has(key)) groups.set(key, { name, color, sortKey, items: [] })
+                  return groups.get(key)!
+                }
+
+                const byDate = [...memories].sort(
+                  (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+                )
+                for (const m of byDate) {
+                  const subjects = memorySubjects(m)
+                  if (subjects.length === 0) {
+                    ensure('__family__', 'Family-wide', '#6B7280', '￿').items.push(m)
+                    continue
+                  }
+                  for (const s of subjects) {
+                    const mem = memberFor(s)
+                    if (mem) ensure(mem.id, mem.name, mem.colorHex, mem.name.toLowerCase()).items.push(m)
+                    else ensure(`unknown:${s}`, 'Unknown', '#6B7280', '￾').items.push(m)
+                  }
+                }
+
+                const orderedGroups = Array.from(groups.values()).sort((a, b) =>
+                  a.sortKey.localeCompare(b.sortKey)
+                )
+
+                // Chips showing every member a memory concerns
+                function chips(m: FamilyMemory) {
+                  const subjects = memorySubjects(m)
+                  if (subjects.length <= 1) return null
+                  return (
+                    <div className="flex flex-wrap gap-1 mt-1">
+                      {subjects.map((s) => {
+                        const mem = memberFor(s)
+                        return (
+                          <span
+                            key={s}
+                            className="text-[10px] font-medium px-1.5 py-0.5 rounded-full"
+                            style={{
+                              backgroundColor: (mem?.colorHex ?? '#6B7280') + '20',
+                              color: mem?.colorHex ?? '#6B7280',
+                            }}
+                          >
+                            {mem?.name ?? s}
+                          </span>
+                        )
+                      })}
+                    </div>
+                  )
                 }
 
                 return (
                   <div className="px-5 pb-5 space-y-5">
-                    {Array.from(groups.entries()).map(([groupName, { color, items }]) => (
-                      <div key={groupName}>
+                    {orderedGroups.map((g) => (
+                      <div key={g.name + g.sortKey}>
                         <div className="flex items-center gap-2 mb-2">
                           <span
                             className="inline-block w-2.5 h-2.5 rounded-full shrink-0"
-                            style={{ backgroundColor: color }}
+                            style={{ backgroundColor: g.color }}
                           />
-                          <p className="text-xs font-semibold text-slate-500">{groupName}</p>
-                          <span className="text-xs text-slate-300">{items.length}</span>
+                          <p className="text-xs font-semibold text-slate-500">{g.name}</p>
+                          <span className="text-xs text-slate-300">{g.items.length}</span>
                         </div>
                         <div className="space-y-1.5">
-                          {items.map((m) => (
+                          {g.items.map((m) => (
                             <div
                               key={m.id}
                               className="group flex items-start gap-2 pl-4 pr-2 py-2 rounded-xl bg-slate-50 border border-slate-100"
                             >
-                              <p className="flex-1 text-sm text-slate-700 leading-relaxed min-w-0">{m.text}</p>
+                              <div className="flex-1 min-w-0">
+                                <p className="text-sm text-slate-700 leading-relaxed">{m.text}</p>
+                                {chips(m)}
+                              </div>
                               <button
                                 onClick={() => remove(m.id)}
                                 className="shrink-0 p-1 rounded-lg text-slate-300 hover:text-red-500 hover:bg-white transition-colors opacity-0 group-hover:opacity-100"

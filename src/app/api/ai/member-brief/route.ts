@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
 import type { FamilyMember, Task, Chore, FamilyMemory, FamilyProfile } from '@/lib/types'
+import { memoryConcernsMember } from '@/lib/types'
 
 const MODEL = 'claude-sonnet-4-6'
 
@@ -60,14 +61,9 @@ function buildMemberContext(req: MemberBriefRequest): string {
     member.memories.slice(0, 6).forEach((me) => lines.push(`  - ${me.text}`))
   }
 
-  // Family memories explicitly tagged to this member — by email or by member id
-  // (emailless members like pets/young kids use id as the subjectEmail identifier)
-  const memberMemories = memories.filter((m) => {
-    if (!m.subjectEmail) return false
-    if (member.email && m.subjectEmail.toLowerCase() === member.email.toLowerCase()) return true
-    if (m.subjectEmail === member.id) return true
-    return false
-  })
+  // Family memories that concern this member — matches any of the memory's
+  // subjects (supports multi-person memories) by email or member id.
+  const memberMemories = memories.filter((m) => memoryConcernsMember(m, member.email, member.id))
   if (memberMemories.length) {
     lines.push('Notes about this person:')
     memberMemories.slice(0, 8).forEach((m) => lines.push(`  - ${m.text}`))

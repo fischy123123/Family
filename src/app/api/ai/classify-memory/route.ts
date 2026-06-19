@@ -22,7 +22,7 @@ export async function POST(request: NextRequest) {
 
   const { text, members }: ClassifyRequest = await request.json()
   if (!text || !members?.length) {
-    return NextResponse.json({ subjectIdentifier: null })
+    return NextResponse.json({ subjectIdentifiers: [] })
   }
 
   const memberList = members
@@ -34,52 +34,50 @@ export async function POST(request: NextRequest) {
   try {
     const response = await anthropic.messages.create({
       model: MODEL,
-      max_tokens: 100,
-      system: `You classify family memories to identify which specific family member they are about.
-Return ONLY a JSON object with one field: "subjectIdentifier".
+      max_tokens: 150,
+      system: `You classify family memories to identify which family member(s) they are about.
+Return ONLY a JSON object with one field: "subjects" — an array of the names of every family member the memory concerns.
 
 Rules:
 - Classify based on who the memory is ABOUT, not who is narrating it. "I ordered a gift for Jessy's pinning" is about Jessy.
-- A memory mentioning one person's name, appointment, milestone, or situation belongs to that person.
-- "Assignment · X: it concerns Y" → classify as Y.
-- "Re coaching insight about [Person]'s [thing]" → classify as that person.
-- Only return null for genuinely household-level facts (e.g. "trash goes out Tuesday") with no single owner.
-- If clearly about ONE person: return their email if they have one, or their id if they don't.`,
+- A memory can concern MULTIPLE people. "Drop the kids Liam and Maddie at school" concerns both Liam and Maddie. "Maddie is at camp, Liam is home with Jessy" concerns Maddie, Liam, and Jessy.
+- A memory mentioning a person's name, appointment, milestone, or situation belongs to that person.
+- "Assignment · X: it concerns Liam, Maddie; Eric is responsible" → concerns Liam, Maddie, AND Eric.
+- "Re coaching insight about [Person]'s [thing]" → that person.
+- Return an EMPTY array [] for genuinely household-level facts (e.g. "trash goes out Tuesday", "the family has 3 cars") with no specific person.
+- Use exact member names from the list.`,
       messages: [
         {
           role: 'user',
-          content: `Family members:\n${memberList}\n\nMemory to classify:\n"${text}"\n\nReturn JSON: {"subjectIdentifier": "<email or id or null>"}`,
+          content: `Family members:\n${memberList}\n\nMemory to classify:\n"${text}"\n\nReturn JSON: {"subjects": ["Name1", "Name2", ...]}  (empty array if family-wide)`,
         },
       ],
     })
 
     const responseText = response.content[0].type === 'text' ? response.content[0].text : ''
     const match = responseText.match(/\{[\s\S]*\}/)
-    if (!match) return NextResponse.json({ subjectIdentifier: null })
+    if (!match) return NextResponse.json({ subjectIdentifiers: [] })
 
     const result = JSON.parse(match[0])
-    let raw = result.subjectIdentifier ?? null
-    // The model sometimes emits the literal string "null"/"none" — normalize.
-    if (typeof raw === 'string' && ['null', 'none', ''].includes(raw.trim().toLowerCase())) {
-      raw = null
-    }
+    const rawList: unknown[] = Array.isArray(result.subjects) ? result.subjects : []
 
-    // Resolve whatever the model returned (email, id, OR name) to the canonical
-    // identifier we store: the member's email if they have one, else their id.
-    // If it matches no member, treat as family-wide (null).
-    let subjectIdentifier: string | null = null
-    if (typeof raw === 'string' && raw.trim()) {
+    // Resolve each name/email/id the model returned to the canonical identifier
+    // we store (email if the member has one, else id). Drop anything unmatched.
+    const ids = new Set<string>()
+    for (const raw of rawList) {
+      if (typeof raw !== 'string') continue
       const v = raw.trim().toLowerCase()
+      if (!v || ['null', 'none'].includes(v)) continue
       const member = members.find(
         (m) =>
           m.email?.toLowerCase() === v ||
           m.id.toLowerCase() === v ||
           m.name.toLowerCase() === v
       )
-      if (member) subjectIdentifier = member.email || member.id
+      if (member) ids.add(member.email || member.id)
     }
 
-    return NextResponse.json({ subjectIdentifier })
+    return NextResponse.json({ subjectIdentifiers: Array.from(ids) })
   } catch (e) {
     // Surface real API errors as 500 so the caller can distinguish a failure
     // from a legitimate "no specific person" result.
