@@ -74,7 +74,8 @@ Given the family context, produce a JSON report with this exact shape:
       "sourceType": "event" | "task" | "chore" | "plan" | "reminder" | "inferred",
       "sourceId": "for task/reminder sourceType: the raw id from [id:xxx] in the tasks list (omit the 'id:' prefix). Omit for other types.",
       "sourceEmailId": "if this item derives from an inbox signal with a [msgid:ID] label, copy that ID here verbatim (omit otherwise)",
-      "priority": 0-100
+      "priority": 0-100,
+      "groupKey": "optional — set the SAME short phrase on 2+ items that are about the same underlying event, appointment, or topic (e.g. 'Well-child checkups today', 'Soccer Tuesday pickup'). Items sharing a groupKey are collapsed into one card in the UI. Only group items that truly belong to the same topic. Omit for unrelated items."
     }
   ],
   "problems": [

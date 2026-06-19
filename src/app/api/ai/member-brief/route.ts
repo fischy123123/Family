@@ -23,8 +23,16 @@ function fmtDate(iso: string): string {
   }
 }
 
+// Strict match: both id AND email must be explicitly set and match — never
+// match when either side is undefined (avoids undefined === undefined).
+function matchesMember(member: FamilyMember, assigneeId?: string, assigneeEmail?: string): boolean {
+  if (member.id && assigneeId && assigneeId === member.id) return true
+  if (member.email && assigneeEmail && assigneeEmail.toLowerCase() === member.email.toLowerCase()) return true
+  return false
+}
+
 function buildMemberContext(req: MemberBriefRequest): string {
-  const { member, tasks, chores, memories } = req
+  const { member, tasks, chores, memories, now } = req
   const lines: string[] = []
 
   if (member.summary) lines.push(`Summary: ${member.summary}`)
@@ -46,29 +54,34 @@ function buildMemberContext(req: MemberBriefRequest): string {
     member.importantInfo.forEach((i) => lines.push(`  - [${i.category}] ${i.label}: ${i.value}`))
   }
 
-  const memberMemories = memories.filter(
-    (m) => !m.subjectEmail || m.subjectEmail.toLowerCase() === member.email?.toLowerCase()
-  )
+  // Strict: only memories explicitly tagged to this member's email
+  const memberMemories = member.email
+    ? memories.filter((m) => m.subjectEmail?.toLowerCase() === member.email!.toLowerCase())
+    : []
   if (memberMemories.length) {
-    lines.push('Memories:')
-    memberMemories.slice(0, 10).forEach((m) => lines.push(`  - ${m.text}`))
+    lines.push('Notes about this person:')
+    memberMemories.slice(0, 8).forEach((m) => lines.push(`  - ${m.text}`))
   }
 
+  // Strict: only tasks explicitly assigned to this member by id or email
+  const nowMs = new Date(now).getTime()
   const memberTasks = tasks.filter(
-    (t) => !t.isCompleted &&
-      (t.assigneeId === member.id || t.assigneeEmail?.toLowerCase() === member.email?.toLowerCase())
+    (t) => !t.isCompleted && matchesMember(member, t.assigneeId, t.assigneeEmail)
   )
   if (memberTasks.length) {
     lines.push('Open tasks:')
     memberTasks.forEach((t) => {
-      const due = t.dueDate ? ` (due ${fmtDate(t.dueDate)})` : ''
-      lines.push(`  - [${t.priority}] ${t.title}${due}`)
+      // Flag tasks that were due in the past so the AI doesn't surface them as current
+      const pastDue = t.dueDate && new Date(t.dueDate).getTime() < nowMs
+        ? ' [PAST DUE — may already be resolved]'
+        : ''
+      const due = t.dueDate ? ` (due ${fmtDate(t.dueDate)}${pastDue ? '' : ''})` : ''
+      lines.push(`  - [${t.priority}] ${t.title}${due}${pastDue}`)
     })
   }
 
-  const memberChores = chores.filter(
-    (c) => c.assigneeId === member.id || c.assigneeEmail?.toLowerCase() === member.email?.toLowerCase()
-  )
+  // Strict: only chores explicitly assigned to this member
+  const memberChores = chores.filter((c) => matchesMember(member, c.assigneeId, c.assigneeEmail))
   if (memberChores.length) {
     lines.push('Recurring chores:')
     memberChores.forEach((c) => {
@@ -77,7 +90,7 @@ function buildMemberContext(req: MemberBriefRequest): string {
     })
   }
 
-  return lines.join('\n') || 'No details on file yet.'
+  return lines.join('\n') || 'No details on file yet for this person.'
 }
 
 export async function POST(request: NextRequest) {
@@ -88,7 +101,7 @@ export async function POST(request: NextRequest) {
   const req: MemberBriefRequest = await request.json()
   const { member, viewerEmail, profile, now, timezone } = req
 
-  const isSelf = member.email?.toLowerCase() === viewerEmail?.toLowerCase()
+  const isSelf = !!(member.email && viewerEmail && member.email.toLowerCase() === viewerEmail.toLowerCase())
   const memberContext = buildMemberContext(req)
 
   const nowFmt = new Date(now).toLocaleString('en-US', {
@@ -114,45 +127,59 @@ export async function POST(request: NextRequest) {
 
   if (isSelf) {
     systemPrompt = `You are a personal assistant writing a brief, warm check-in for a family member looking at their own profile.
-Tone: honest, warm, like a trusted friend summing up your week.
-Be specific — reference actual tasks and chores by name. Don't be generic.
+Tone: honest, warm, like a trusted friend summing up their situation.
+CRITICAL RULES:
+- Write ONLY about what is explicitly listed in the context below. Do not invent, infer, or extrapolate.
+- If the task/chore list is empty or sparse, say so honestly — "not much on your plate" is fine.
+- Do NOT reference anything that happened in the past (past-due items, old events). Today is ${nowFmt}.
+- If you see "[PAST DUE]" tags, do not surface those as current obligations.
+- Be specific — reference tasks and chores by name if they exist.
 Return ONLY valid JSON.`
 
     userPrompt = `Right now: ${nowFmt}
-${householdContext ? `Context:\n${householdContext}\n` : ''}
-About ${member.name} (this is their own view):
+${householdContext ? `Household context:\n${householdContext}\n` : ''}
+Data for ${member.name} (their own view — address them as "you"):
 ${memberContext}
 
-Write a personal check-in for ${member.name} about what's on their plate. 2-4 sentences. Address them as "you". Be warm and specific.
+Write a 2-4 sentence check-in about what's on their plate RIGHT NOW. Be warm and specific about what's actually listed above.
+If nothing is listed, say they seem to have a light plate and note 1 routine if any exist.
 
-Return this exact JSON shape (no markdown, no commentary):
+Return this exact JSON (no markdown):
 {
   "narrative": "..."
 }`
   } else {
-    systemPrompt = `You are a family relationship assistant helping someone understand a family member they care about.
-Your job: help the viewer see what this person is carrying and how they can show up for them.
-Tone: warm, perceptive, grounded — like a therapist or wise friend who knows the family well.
-Be specific. Reference actual tasks, chores, and context. Don't be generic or vague.
+    systemPrompt = `You are a family relationship assistant helping someone understand a family member.
+Your job: help the viewer see what this person is carrying and how to support them.
+Tone: warm, grounded — like a thoughtful friend who knows this family.
+CRITICAL RULES:
+- Write ONLY about what is explicitly listed in the context below for this specific person.
+- Do NOT invent tasks, responsibilities, or situations that aren't listed. Do not attribute other family members' work to this person.
+- If the context is sparse, be honest about that — "not much on their plate" is accurate and fine.
+- Do NOT reference past events as current. Today is ${nowFmt}. Anything marked [PAST DUE] may already be resolved.
+- For children/pets: keep suggestions age-appropriate. Don't attribute work tasks or adult responsibilities to kids.
 Return ONLY valid JSON.`
 
     userPrompt = `Right now: ${nowFmt}
-${householdContext ? `Context:\n${householdContext}\n` : ''}
-About ${member.name}:
+${householdContext ? `Household context:\n${householdContext}\n` : ''}
+Data specifically for ${member.name} (${member.role}):
 ${memberContext}
 
-1. Write a 2-4 sentence narrative about where ${member.name} is right now — what they're dealing with, what's ahead, and anything they might need.
+Based ONLY on what's listed above:
 
-2. Suggest 2-3 specific ways the viewer can support ${member.name} this week. Each should be immediately actionable.
-   - Use actionType "task" for things the viewer should add to their own to-do list
-   - Use actionType "reminder" for things they should be reminded about later
-   - Use actionType "copilot" for things best explored in a conversation (planning, complex coordination)
+1. Write a 2-4 sentence narrative about where ${member.name} is right now. Be honest — if the list is sparse, reflect that.
 
-3. List 2-3 key facts about ${member.name} the viewer should keep in mind (from their profile, memories, routines).
+2. Suggest 2-3 specific ways the viewer can support ${member.name}. Must be grounded in the actual data above.
+   - "task": something the viewer should add to their own to-do list
+   - "reminder": something to be reminded about later
+   - "copilot": best explored in a conversation
 
-4. One optional reflective sentence the viewer might want to sit with about their relationship with ${member.name}.
+3. List 2-3 key facts about ${member.name} from their profile data above (routines, preferences, importantInfo).
+   Only include facts that are explicitly listed — do not make things up.
 
-Return this exact JSON shape (no markdown, no commentary):
+4. One optional reflective sentence for the viewer about their relationship with ${member.name}.
+
+Return this exact JSON (no markdown):
 {
   "narrative": "...",
   "supports": [{"title": "...", "description": "...", "actionType": "task"|"reminder"|"copilot"}],

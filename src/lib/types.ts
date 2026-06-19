@@ -190,6 +190,7 @@ export interface AttentionItem {
   sourceId?: string
   sourceEmailId?: string        // Gmail message ID — present when item derives from an inbox email
   priority: number              // 0-100, higher = more urgent
+  groupKey?: string             // set the same groupKey on items about the same topic; they'll be shown as one grouped card
 }
 
 export interface PotentialProblem {

@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, useCallback, useRef } from 'react'
+import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import {
   collection, doc, setDoc, writeBatch, getDocs, query, where,
@@ -8,7 +8,7 @@ import {
 import { db } from '@/lib/firebase'
 import {
   RefreshCw, AlertTriangle, Lightbulb, Clock,
-  Calendar as CalIcon, Sparkles, Check, HelpCircle, X, MessageCircle, Users, Bookmark, Plus,
+  Calendar as CalIcon, Sparkles, Check, HelpCircle, X, MessageCircle, Users, Bookmark, Plus, ChevronDown,
 } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { useFirestore } from '@/hooks/useFirestore'
@@ -53,6 +53,29 @@ type EmailSuggestion = {
 }
 
 const BUCKET_ORDER: AttentionBucket[] = ['now', 'next', 'later', 'upcoming']
+const BUCKET_PRIORITY: Record<AttentionBucket, number> = { now: 0, next: 1, later: 2, upcoming: 3 }
+
+type ItemGroup = {
+  key: string
+  groupTitle: string | null  // non-null when 2+ items share a groupKey
+  items: AttentionItem[]
+  bucket: AttentionBucket    // most-urgent bucket across items
+}
+
+function groupItems(items: AttentionItem[]): ItemGroup[] {
+  const byKey = new Map<string, AttentionItem[]>()
+  for (const item of items) {
+    const k = item.groupKey ?? `__solo__${item.id}`
+    byKey.set(k, [...(byKey.get(k) ?? []), item])
+  }
+  return Array.from(byKey.entries()).map(([key, groupedItems]) => {
+    const bucket = groupedItems.reduce<AttentionBucket>((best, i) => (
+      BUCKET_PRIORITY[i.bucket] < BUCKET_PRIORITY[best] ? i.bucket : best
+    ), groupedItems[0].bucket)
+    const isRealGroup = !!groupedItems[0].groupKey && groupedItems.length > 1
+    return { key, groupTitle: isRealGroup ? groupedItems[0].groupKey! : null, items: groupedItems, bucket }
+  })
+}
 
 // ── Local cache (stale-while-revalidate) ────────────────────
 // Everything that gates the page is cached per-family so returning visits
@@ -978,6 +1001,41 @@ export function CommandCenter() {
 
   const itemsByBucket = (b: AttentionBucket) => (report?.items ?? []).filter((i) => i.bucket === b)
 
+  // Resolve per-item display props (members, task backing) once, then reuse for
+  // both grouped and solo AttentionCard rendering.
+  type ResolvedItem = {
+    item: AttentionItem
+    responsible?: FamilyMember
+    forMembers: FamilyMember[]
+    backedByRealItem: boolean
+    emailSubjectStr?: string
+  }
+  function resolveItem(item: AttentionItem): ResolvedItem {
+    const ov = assignmentOverrides[item.title]
+    const byId = (id?: string) => members.find((m) => m.id === id)
+    const responsible = (ov ? byId(ov.responsibleId) : resolveMemberRef(members, item.assigneeEmail)) ?? undefined
+    const forMembers = ov
+      ? (ov.forIds ?? []).map(byId).filter(Boolean) as FamilyMember[]
+      : (item.forEmails ?? []).map((ref) => resolveMemberRef(members, ref)).filter(Boolean) as FamilyMember[]
+    return {
+      item,
+      responsible,
+      forMembers,
+      backedByRealItem: !!item.sourceId && (
+        tasks.some((t) => t.id === item.sourceId) ||
+        reminders.some((r) => r.id === item.sourceId)
+      ),
+      emailSubjectStr: item.sourceEmailId ? emailSubject(item.sourceEmailId) : undefined,
+    }
+  }
+
+  // All visible items grouped by groupKey, then sorted into bucket sections.
+  const allGroups = useMemo(() => {
+    const visible = (report?.items ?? []).filter((i) => showInList(i.title))
+    return groupItems(visible)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [report?.items, dismissedTitles, completedTitles])
+
   const busy = loading || refreshing
 
   return (
@@ -1212,14 +1270,31 @@ export function CommandCenter() {
       )}
 
       {/* NEXT UP */}
-      {report && (report.items ?? []).some((i) => showInList(i.title)) && (
+      {report && allGroups.length > 0 && (
         <section>
           <SectionLabel icon={Clock} color="#0f172a">Next Up</SectionLabel>
           <div className="space-y-4">
             {BUCKET_ORDER.map((bucket) => {
-              const items = itemsByBucket(bucket).filter((i) => showInList(i.title))
-              if (items.length === 0) return null
+              const groups = allGroups.filter((g) => g.bucket === bucket)
+              if (groups.length === 0) return null
               const meta = BUCKET_META[bucket]
+
+              function addContextForItem(itemTitle: string, context: string) {
+                const merged = [
+                  ...eventContexts.map((e) => ({ eventTitle: e.eventTitle, context: e.context })),
+                  { eventTitle: itemTitle, context },
+                ]
+                createEventContext({
+                  id: generateId(),
+                  eventTitle: itemTitle,
+                  context,
+                  savedAt: new Date().toISOString(),
+                } as EventContext)
+                setContextSaved({ eventTitle: itemTitle, context })
+                toast(`Got it — I'll use that to help with "${itemTitle}"`, 'success')
+                runEngine(merged, true)
+              }
+
               return (
                 <div key={bucket}>
                   <div className="flex items-center gap-2 mb-2">
@@ -1229,9 +1304,28 @@ export function CommandCenter() {
                     </span>
                   </div>
                   <div className="space-y-2 stagger-children">
-                    {items.map((item) => {
-                      // While this item's teach prompt is open, show the feedback
-                      // box right here in the card's slot instead of the card.
+                    {groups.map((group) => {
+                      if (group.groupTitle) {
+                        // Multi-item group — render as collapsible grouped card
+                        const resolvedItems = group.items.map(resolveItem)
+                        return (
+                          <GroupedAttentionCard
+                            key={group.key}
+                            groupTitle={group.groupTitle}
+                            resolvedItems={resolvedItems}
+                            accent={meta.color}
+                            allMembers={members}
+                            onCompleteItem={(item) => completeTaskFromItem(item)}
+                            onDismissItem={(title) => dismissItem(title)}
+                            onSaveTaskItem={(title, reason) => saveItemAsTask(title, reason)}
+                            onAddContextItem={addContextForItem}
+                            onAssignItem={(item, f, r) => assignItem(item, f, r)}
+                          />
+                        )
+                      }
+
+                      // Solo item — existing card rendering
+                      const item = group.items[0]
                       if (teachPrompt?.title === item.title) {
                         return (
                           <TeachPrompt
@@ -1243,18 +1337,7 @@ export function CommandCenter() {
                           />
                         )
                       }
-                      // Resolve who it's for / who's responsible. A user override
-                      // (keyed by member id) wins; otherwise fall back to the AI's
-                      // assignment, which may reference a member by email OR name
-                      // (names work for emailless children/pets).
-                      const ov = assignmentOverrides[item.title]
-                      const byId = (id?: string) => members.find((m) => m.id === id)
-                      const responsible = ov
-                        ? byId(ov.responsibleId)
-                        : resolveMemberRef(members, item.assigneeEmail)
-                      const forMembers = ov
-                        ? (ov.forIds ?? []).map(byId).filter(Boolean) as FamilyMember[]
-                        : (item.forEmails ?? []).map((ref) => resolveMemberRef(members, ref)).filter(Boolean) as FamilyMember[]
+                      const { responsible, forMembers, backedByRealItem, emailSubjectStr } = resolveItem(item)
                       return (
                         <AttentionCard
                           key={item.id}
@@ -1263,31 +1346,13 @@ export function CommandCenter() {
                           allMembers={members}
                           responsible={responsible}
                           forMembers={forMembers}
-                          emailSubject={item.sourceEmailId ? emailSubject(item.sourceEmailId) : undefined}
-                          backedByRealItem={!!item.sourceId && (
-                            tasks.some((t) => t.id === item.sourceId) ||
-                            reminders.some((r) => r.id === item.sourceId)
-                          )}
+                          emailSubject={emailSubjectStr}
+                          backedByRealItem={backedByRealItem}
                           onComplete={() => completeTaskFromItem(item)}
                           onDismiss={() => dismissItem(item.title)}
                           onSaveTask={() => saveItemAsTask(item.title, item.reason)}
                           onAssign={(f, r) => assignItem(item, f, r)}
-                          onAddContext={(context) => {
-                            // Re-run the engine with the added context so it appears immediately
-                            const merged = [
-                              ...eventContexts.map((e) => ({ eventTitle: e.eventTitle, context: e.context })),
-                              { eventTitle: item.title, context },
-                            ]
-                            createEventContext({
-                              id: generateId(),
-                              eventTitle: item.title,
-                              context,
-                              savedAt: new Date().toISOString(),
-                            } as EventContext)
-                            setContextSaved({ eventTitle: item.title, context })
-                            toast(`Got it — I'll use that to help with "${item.title}"`, 'success')
-                            runEngine(merged, true)
-                          }}
+                          onAddContext={(context) => addContextForItem(item.title, context)}
                         />
                       )
                     })}
@@ -1570,6 +1635,162 @@ function SectionLabel({ icon: Icon, color, children }: { icon: typeof Clock; col
     </div>
   )
 }
+
+// ── Grouped attention card ───────────────────────────────────
+// Collapses 2+ related items into a single card. Compact rows when closed;
+// full individual AttentionCards when expanded.
+
+type ResolvedItemForGroup = {
+  item: AttentionItem
+  responsible?: FamilyMember
+  forMembers: FamilyMember[]
+  backedByRealItem: boolean
+  emailSubjectStr?: string
+}
+
+function GroupedAttentionCard({
+  groupTitle, resolvedItems, accent, allMembers,
+  onCompleteItem, onDismissItem, onSaveTaskItem, onAddContextItem, onAssignItem,
+}: {
+  groupTitle: string
+  resolvedItems: ResolvedItemForGroup[]
+  accent: string
+  allMembers: FamilyMember[]
+  onCompleteItem: (item: AttentionItem) => void
+  onDismissItem: (title: string) => void
+  onSaveTaskItem: (title: string, reason: string) => void
+  onAddContextItem: (title: string, context: string) => void
+  onAssignItem: (item: AttentionItem, forIds: string[], responsibleId?: string) => void
+}) {
+  const [expanded, setExpanded] = useState(false)
+
+  // Unique members across all items for the header avatars
+  const headerMembers = (() => {
+    const seen = new Set<string>()
+    const result: FamilyMember[] = []
+    for (const { forMembers, responsible } of resolvedItems) {
+      for (const m of [...forMembers, ...(responsible ? [responsible] : [])]) {
+        if (!seen.has(m.id)) { seen.add(m.id); result.push(m) }
+      }
+    }
+    return result
+  })()
+
+  return (
+    <div className="rounded-2xl bg-white shadow-card animate-slide-up" style={{ borderLeft: `3px solid ${accent}` }}>
+      {/* Header row — tap to expand/collapse */}
+      <button
+        onClick={() => setExpanded((v) => !v)}
+        className="w-full flex items-center gap-3 px-4 pt-4 pb-3 text-left"
+      >
+        {headerMembers.length > 0 && (
+          <div className="flex -space-x-1 shrink-0">
+            {headerMembers.slice(0, 4).map((m) => (
+              <div
+                key={m.id}
+                className="w-5 h-5 rounded-full flex items-center justify-center text-[10px] ring-1 ring-white"
+                style={{ background: `${m.colorHex}35` }}
+              >
+                {m.emoji}
+              </div>
+            ))}
+          </div>
+        )}
+        <div className="flex-1 min-w-0">
+          <p className="text-sm font-semibold text-slate-900 leading-snug">{groupTitle}</p>
+          <p className="text-[11px] text-slate-400 mt-0.5">{resolvedItems.length} items · tap to {expanded ? 'collapse' : 'expand'}</p>
+        </div>
+        <ChevronDown
+          size={15}
+          className="text-slate-300 shrink-0 transition-transform duration-200"
+          style={{ transform: expanded ? 'rotate(180deg)' : 'rotate(0deg)' }}
+        />
+      </button>
+
+      {/* Collapsed: compact rows */}
+      {!expanded && (
+        <div className="px-4 pb-3 space-y-2 border-t border-slate-50 pt-2">
+          {resolvedItems.map(({ item, backedByRealItem }) => (
+            <CompactItemRow
+              key={item.id}
+              item={item}
+              accent={accent}
+              backedByRealItem={backedByRealItem}
+              onComplete={() => onCompleteItem(item)}
+            />
+          ))}
+        </div>
+      )}
+
+      {/* Expanded: full individual AttentionCards */}
+      {expanded && (
+        <div className="border-t border-slate-100 divide-y divide-slate-50">
+          {resolvedItems.map(({ item, responsible, forMembers, backedByRealItem, emailSubjectStr }) => (
+            <AttentionCard
+              key={item.id}
+              item={item}
+              accent={accent}
+              allMembers={allMembers}
+              responsible={responsible}
+              forMembers={forMembers}
+              emailSubject={emailSubjectStr}
+              backedByRealItem={backedByRealItem}
+              onComplete={() => onCompleteItem(item)}
+              onDismiss={() => onDismissItem(item.title)}
+              onSaveTask={() => onSaveTaskItem(item.title, item.reason)}
+              onAddContext={(ctx) => onAddContextItem(item.title, ctx)}
+              onAssign={(f, r) => onAssignItem(item, f, r)}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function CompactItemRow({
+  item, accent, backedByRealItem, onComplete,
+}: {
+  item: AttentionItem
+  accent: string
+  backedByRealItem: boolean
+  onComplete: () => void
+}) {
+  const [done, setDone] = useState(false)
+  const isTask = backedByRealItem && (item.sourceType === 'task' || item.sourceType === 'reminder')
+  const startStr = item.startBy
+    ? new Date(item.startBy).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+    : null
+
+  return (
+    <div className="flex items-center gap-2 min-w-0">
+      {isTask ? (
+        <button
+          onClick={(e) => { e.stopPropagation(); setDone(true); onComplete() }}
+          className="w-4 h-4 rounded border-2 flex items-center justify-center shrink-0 transition-colors"
+          style={{ borderColor: done ? '#22c55e' : '#cbd5e1', background: done ? '#22c55e' : 'transparent' }}
+        >
+          {done && <Check size={9} className="text-white" />}
+        </button>
+      ) : (
+        <span className="w-1.5 h-1.5 rounded-full shrink-0 mt-px" style={{ background: accent }} />
+      )}
+      <p className={`text-xs flex-1 min-w-0 leading-snug ${done ? 'line-through text-slate-400' : 'text-slate-700'}`}>
+        {item.title}
+      </p>
+      {startStr && (
+        <span
+          className="text-[10px] font-medium shrink-0 px-1.5 py-0.5 rounded-full"
+          style={{ background: `${accent}15`, color: accent }}
+        >
+          {startStr}
+        </span>
+      )}
+    </div>
+  )
+}
+
+// ── Individual attention card ────────────────────────────────
 
 function AttentionCard({
   item, accent, allMembers, responsible, forMembers, emailSubject, backedByRealItem, onComplete, onDismiss, onSaveTask, onAddContext, onAssign,
