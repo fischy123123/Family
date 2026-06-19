@@ -4,11 +4,16 @@ import { useState, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import {
   Compass, Sparkles, RefreshCw, Plus, Trash2, Target, X, Check, PenLine, Send,
+  ChevronDown, ChevronUp, Wand2, Bot, Loader2,
 } from 'lucide-react'
 import { InsightCardWithThread } from './InsightCardWithThread'
+import { Markdown } from '@/components/ui/Markdown'
 import { useCoaching } from '@/hooks/useCoaching'
 import { useFirestore } from '@/hooks/useFirestore'
 import { useCapture } from '@/contexts/CaptureContext'
+import { useAuth } from '@/contexts/AuthContext'
+import { useFamily } from '@/contexts/FamilyContext'
+import { useGoogleTokens } from '@/hooks/useGoogleTokens'
 import { generateId } from '@/lib/utils'
 import { LIFE_AREAS } from '@/lib/types'
 import type { LifeArea, CoachingInsight, FamilyMemory } from '@/lib/types'
@@ -23,6 +28,9 @@ function startOfWeekISO(): string {
 export function CoachView() {
   const router = useRouter()
   const { open: openCapture } = useCapture()
+  const { user } = useAuth()
+  const { familyId } = useFamily()
+  const { getFreshTokens } = useGoogleTokens()
   const { create: createMemory } = useFirestore<FamilyMemory>('memories')
   const {
     goals, reflections, insights, summary, generating, error,
@@ -32,9 +40,16 @@ export function CoachView() {
 
   const [showGoalForm, setShowGoalForm] = useState(false)
   const [showReflection, setShowReflection] = useState(false)
+  const [goalsExpanded, setGoalsExpanded] = useState(false)
+  const [showRefine, setShowRefine] = useState(false)
+  const [refineThread, setRefineThread] = useState<{ role: 'user' | 'assistant'; content: string }[]>([])
+  const [refineInput, setRefineInput] = useState('')
+  const [refineLoading, setRefineLoading] = useState(false)
   const [quickNote, setQuickNote] = useState('')
   const [noteSaved, setNoteSaved] = useState(false)
   const noteRef = useRef<HTMLInputElement>(null)
+  const refineInputRef = useRef<HTMLTextAreaElement>(null)
+  const refineScrollRef = useRef<HTMLDivElement>(null)
 
   const week = startOfWeekISO()
   const activeInsights = insights
@@ -62,6 +77,134 @@ export function CoachView() {
       openCapture({ text: `${insight.title}. ${insight.suggestedAction}`, autoAnalyze: true })
     } else if (insight.actionType === 'goal') {
       setShowGoalForm(true)
+    }
+  }
+
+  async function openRefine() {
+    if (showRefine) { setShowRefine(false); return }
+    const goalList = goals.map((g) => {
+      const area = LIFE_AREAS.find((a) => a.area === g.area)
+      return `• ${area?.emoji ?? '🎯'} ${g.text}${g.cadence ? ` (${g.cadence})` : ''}${g.why ? ` — ${g.why}` : ''}`
+    }).join('\n')
+    const opener = goals.length === 0
+      ? `You haven't set any standing commitments yet. Tell me what you'd most like to protect or improve as a family, and I'll help you shape it into a clear commitment.`
+      : `Here are your current standing commitments:\n\n${goalList}\n\nI can help you refine these — making them more specific, removing ones that no longer resonate, adjusting the cadence, or filling in important gaps. What would you like to work on?`
+    setRefineThread([{ role: 'assistant', content: opener }])
+    setShowRefine(true)
+    setGoalsExpanded(true)
+    setTimeout(() => refineInputRef.current?.focus(), 80)
+  }
+
+  async function sendRefineMessage() {
+    const content = refineInput.trim()
+    if (!content || refineLoading || !familyId || !user?.email) return
+
+    const userMsg = { role: 'user' as const, content }
+    setRefineThread((prev) => [...prev, userMsg])
+    setRefineInput('')
+    setRefineLoading(true)
+
+    try {
+      const freshTokens = await getFreshTokens()
+      const googleTokens = freshTokens
+        ? { accessToken: freshTokens.accessToken, refreshToken: freshTokens.refreshToken }
+        : null
+
+      const goalList = goals.map((g) => {
+        const area = LIFE_AREAS.find((a) => a.area === g.area)
+        return `• ${area?.emoji ?? '🎯'} [${g.area}] ${g.text}${g.cadence ? ` (${g.cadence})` : ''}${g.why ? ` — why: ${g.why}` : ''}`
+      }).join('\n') || '(no commitments set yet)'
+
+      const seed = [
+        `You are helping a family refine their standing commitments — the intentions they want their life coach to hold them accountable to.`,
+        ``,
+        `Current commitments:\n${goalList}`,
+        ``,
+        `Guidelines:`,
+        `- Be a thoughtful coach, not a task manager. Ask what matters most, not just what's measurable.`,
+        `- If a commitment is vague, suggest a specific, concrete version. Show your work: write the revised text.`,
+        `- If there seem to be gaps, name them and ask. Don't suggest everything at once.`,
+        `- Keep each response to 3-5 sentences max. One key point per turn.`,
+        `- When suggesting a new or revised commitment, format it clearly so the user can just copy it in.`,
+      ].join('\n')
+
+      const history = [
+        { role: 'user' as const, content: seed },
+        ...refineThread.map((m) => ({ role: m.role, content: m.content })),
+        { role: 'user' as const, content },
+      ]
+
+      const res = await fetch('/api/agent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          messages: history,
+          familyId,
+          userEmail: user.email,
+          googleTokens,
+          context: { today: new Date().toISOString() },
+        }),
+      })
+
+      if (!res.ok || !res.body) throw new Error('Request failed')
+
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      let streamingStarted = false
+      let reply = ''
+
+      type SSEEvent = { type: 'token'; token: string } | { type: 'done'; reply: string } | { type: 'error'; error: string }
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() ?? ''
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue
+          let event: SSEEvent
+          try { event = JSON.parse(line.slice(6)) } catch { continue }
+          if (event.type === 'token') {
+            if (!streamingStarted) {
+              streamingStarted = true
+              setRefineThread((prev) => [...prev, { role: 'assistant', content: event.token }])
+            } else {
+              setRefineThread((prev) => {
+                const msgs = [...prev]
+                const last = msgs[msgs.length - 1]
+                if (last?.role === 'assistant') msgs[msgs.length - 1] = { ...last, content: last.content + event.token }
+                return msgs
+              })
+            }
+          } else if (event.type === 'done') {
+            reply = event.reply || ''
+          } else if (event.type === 'error') {
+            throw new Error(event.error)
+          }
+        }
+      }
+
+      setRefineThread((prev) => {
+        const msgs = [...prev]
+        const last = msgs[msgs.length - 1]
+        if (last?.role === 'assistant') {
+          msgs[msgs.length - 1] = { ...last, content: reply || last.content || 'Got it.' }
+        } else {
+          msgs.push({ role: 'assistant', content: reply || 'Got it.' })
+        }
+        return msgs
+      })
+
+      setTimeout(() => {
+        if (refineScrollRef.current) refineScrollRef.current.scrollTop = refineScrollRef.current.scrollHeight
+        refineInputRef.current?.focus()
+      }, 50)
+    } catch {
+      setRefineThread((prev) => [...prev, { role: 'assistant', content: 'Sorry, something went wrong. Try again.' }])
+    } finally {
+      setRefineLoading(false)
     }
   }
 
@@ -162,56 +305,185 @@ export function CoachView() {
 
       {/* Standing commitments */}
       <section>
-        <div className="flex items-center justify-between mb-3">
-          <div className="flex items-center gap-2">
-            <Target size={16} className="text-slate-700" />
-            <h2 className="text-base font-bold text-slate-900">Standing Commitments</h2>
-          </div>
+        {/* Header row */}
+        <div className="flex items-center justify-between mb-1">
           <button
-            onClick={() => setShowGoalForm((v) => !v)}
-            className="inline-flex items-center gap-1 text-xs font-semibold text-rose-600 hover:text-rose-700"
+            onClick={() => setGoalsExpanded((v) => !v)}
+            className="flex items-center gap-2 text-left group"
           >
-            <Plus size={14} /> Add
+            <Target size={16} className="text-slate-700 shrink-0" />
+            <h2 className="text-base font-bold text-slate-900 group-hover:text-rose-600 transition-colors">
+              Standing Commitments
+            </h2>
+            {goals.length > 0 && (
+              <span className="text-xs font-medium text-slate-400 bg-slate-100 px-2 py-0.5 rounded-full">
+                {goals.length}
+              </span>
+            )}
+            {goalsExpanded
+              ? <ChevronUp size={14} className="text-slate-400" />
+              : <ChevronDown size={14} className="text-slate-400" />}
           </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={openRefine}
+              className={`inline-flex items-center gap-1 text-xs font-semibold transition-colors ${
+                showRefine ? 'text-rose-600' : 'text-slate-500 hover:text-rose-500'
+              }`}
+            >
+              <Wand2 size={13} /> Refine
+            </button>
+            <button
+              onClick={() => { setGoalsExpanded(true); setShowGoalForm((v) => !v) }}
+              className="inline-flex items-center gap-1 text-xs font-semibold text-rose-600 hover:text-rose-700"
+            >
+              <Plus size={14} /> Add
+            </button>
+          </div>
         </div>
-        <p className="text-xs text-slate-500 mb-3 -mt-1">
-          What you want to protect or improve as a family. The coach holds you gently accountable to these.
-        </p>
 
-        {showGoalForm && (
-          <GoalForm
-            onCancel={() => setShowGoalForm(false)}
-            onSave={async (g) => { await addGoal(g); setShowGoalForm(false) }}
-          />
+        {/* Collapsed summary */}
+        {!goalsExpanded && (
+          <div className="mt-2">
+            {goals.length === 0 ? (
+              <p className="text-xs text-slate-400 py-1">
+                No commitments yet.{' '}
+                <button onClick={() => { setGoalsExpanded(true); setShowGoalForm(true) }} className="underline hover:text-rose-500 transition-colors">Add one</button>
+                {' '}or{' '}
+                <button onClick={openRefine} className="underline hover:text-rose-500 transition-colors">let AI help</button>.
+              </p>
+            ) : (
+              <div className="flex flex-wrap gap-1.5">
+                {goals.map((g) => {
+                  const area = LIFE_AREAS.find((a) => a.area === g.area)
+                  return (
+                    <span
+                      key={g.id}
+                      className="inline-flex items-center gap-1 text-xs px-2.5 py-1 rounded-full border"
+                      style={{ background: `${area?.color ?? '#94a3b8'}12`, borderColor: `${area?.color ?? '#94a3b8'}30`, color: '#475569' }}
+                    >
+                      {area?.emoji ?? '🎯'} {g.text.length > 32 ? g.text.slice(0, 32) + '…' : g.text}
+                    </span>
+                  )
+                })}
+              </div>
+            )}
+          </div>
         )}
 
-        {goals.length > 0 ? (
-          <div className="space-y-2">
-            {goals.map((g) => {
-              const area = LIFE_AREAS.find((a) => a.area === g.area)
-              return (
-                <div key={g.id} className="rounded-xl p-3 bg-white shadow-card flex items-start gap-3" style={{ borderLeft: `3px solid ${area?.color ?? '#94a3b8'}` }}>
-                  <span className="text-base mt-0.5">{area?.emoji ?? '🎯'}</span>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-slate-900">{g.text}</p>
-                    <p className="text-xs text-slate-400 mt-0.5">
-                      {area?.label}{g.cadence ? ` · ${g.cadence}` : ''}{g.why ? ` · ${g.why}` : ''}
-                    </p>
+        {/* Expanded content */}
+        {goalsExpanded && (
+          <div className="mt-3 space-y-3 animate-slide-up">
+            <p className="text-xs text-slate-500 -mt-1">
+              What you want to protect or improve as a family. The coach holds you gently accountable to these.
+            </p>
+
+            {showGoalForm && (
+              <GoalForm
+                onCancel={() => setShowGoalForm(false)}
+                onSave={async (g) => { await addGoal(g); setShowGoalForm(false) }}
+              />
+            )}
+
+            {goals.length > 0 ? (
+              <div className="space-y-2">
+                {goals.map((g) => {
+                  const area = LIFE_AREAS.find((a) => a.area === g.area)
+                  return (
+                    <div key={g.id} className="rounded-xl p-3 bg-white shadow-card flex items-start gap-3" style={{ borderLeft: `3px solid ${area?.color ?? '#94a3b8'}` }}>
+                      <span className="text-base mt-0.5">{area?.emoji ?? '🎯'}</span>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium text-slate-900">{g.text}</p>
+                        <p className="text-xs text-slate-400 mt-0.5">
+                          {area?.label}{g.cadence ? ` · ${g.cadence}` : ''}{g.why ? ` · ${g.why}` : ''}
+                        </p>
+                      </div>
+                      <button
+                        onClick={() => removeGoal(g.id)}
+                        className="p-1.5 rounded-lg text-slate-300 hover:text-red-500 hover:bg-red-50 transition-colors shrink-0"
+                        title="Remove"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
+                  )
+                })}
+              </div>
+            ) : !showGoalForm && (
+              <div className="rounded-xl p-4 bg-slate-50 border border-slate-200 text-center">
+                <p className="text-xs text-slate-500">No commitments yet. Add one or use AI to help you define them.</p>
+              </div>
+            )}
+
+            {/* AI refine panel */}
+            {showRefine && (
+              <div className="rounded-2xl bg-white shadow-card border border-slate-100 overflow-hidden animate-slide-up">
+                <div className="flex items-center justify-between px-4 pt-3 pb-1">
+                  <div className="flex items-center gap-2">
+                    <Wand2 size={13} className="text-rose-500" />
+                    <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Refine with AI</p>
                   </div>
                   <button
-                    onClick={() => removeGoal(g.id)}
-                    className="p-1.5 rounded-lg text-slate-300 hover:text-red-500 hover:bg-red-50 transition-colors shrink-0"
-                    title="Remove"
+                    onClick={() => setShowRefine(false)}
+                    className="p-1 rounded-lg text-slate-300 hover:text-slate-500 transition-colors"
                   >
-                    <Trash2 size={14} />
+                    <X size={13} />
                   </button>
                 </div>
-              )
-            })}
-          </div>
-        ) : !showGoalForm && (
-          <div className="rounded-xl p-4 bg-slate-50 border border-slate-200 text-center">
-            <p className="text-xs text-slate-500">No commitments yet. Add one to get started.</p>
+
+                <div ref={refineScrollRef} className="px-4 pb-2 space-y-3 max-h-80 overflow-y-auto">
+                  {refineThread.map((msg, i) =>
+                    msg.role === 'user' ? (
+                      <div key={i} className="flex justify-end">
+                        <div className="bg-blue-600 text-white text-sm rounded-xl rounded-tr-sm px-3 py-2 max-w-[88%] leading-relaxed">
+                          {msg.content}
+                        </div>
+                      </div>
+                    ) : (
+                      <div key={i} className="flex items-start gap-2">
+                        <div className="w-6 h-6 rounded-full bg-gradient-to-br from-rose-500 to-amber-500 flex items-center justify-center shrink-0 mt-1">
+                          <Bot size={11} className="text-white" />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="bg-slate-50 rounded-xl rounded-tl-sm px-3 py-2.5">
+                            <Markdown content={msg.content} />
+                          </div>
+                        </div>
+                      </div>
+                    )
+                  )}
+                  {refineLoading && (
+                    <div className="flex items-center gap-2">
+                      <div className="w-6 h-6 rounded-full bg-gradient-to-br from-rose-500 to-amber-500 flex items-center justify-center shrink-0">
+                        <Loader2 size={11} className="text-white animate-spin" />
+                      </div>
+                      <div className="text-xs text-slate-400 italic">thinking…</div>
+                    </div>
+                  )}
+                </div>
+
+                <div className="flex items-end gap-2 px-3 py-3 border-t border-slate-100">
+                  <textarea
+                    ref={refineInputRef}
+                    value={refineInput}
+                    onChange={(e) => setRefineInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendRefineMessage() }
+                    }}
+                    placeholder="Tell me what to refine…"
+                    rows={2}
+                    className="flex-1 text-sm resize-none rounded-xl px-3 py-2 border border-slate-200 focus:outline-none focus:border-rose-300 bg-slate-50 leading-relaxed"
+                  />
+                  <button
+                    onClick={sendRefineMessage}
+                    disabled={!refineInput.trim() || refineLoading}
+                    className="w-8 h-8 rounded-xl bg-gradient-to-br from-rose-500 to-amber-500 flex items-center justify-center shrink-0 disabled:opacity-40 transition-opacity"
+                  >
+                    <Send size={13} className="text-white" />
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         )}
       </section>
