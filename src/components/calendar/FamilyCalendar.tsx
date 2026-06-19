@@ -220,9 +220,15 @@ export function FamilyCalendar() {
       const res = await fetch('/api/ai/enhance-events', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ events: events.slice(0, 50) }),
+        body: JSON.stringify({ events: events.slice(0, 60), members }),
       })
       const data = await res.json()
+      if (data.error) {
+        console.error('[enhance-events]', data.error)
+      }
+      if (data.debug) {
+        console.warn('[enhance-events] debug:', data.debug)
+      }
       if (Array.isArray(data.suggestions)) {
         setSuggestions(data.suggestions)
         const defaultScopes: Record<string, 'single' | 'series'> = {}
@@ -231,8 +237,8 @@ export function FamilyCalendar() {
         }
         setScopes(defaultScopes)
       }
-    } catch {
-      // Show empty state
+    } catch (e) {
+      console.error('[enhance-events] fetch error:', e)
     } finally {
       setLoadingSuggestions(false)
     }

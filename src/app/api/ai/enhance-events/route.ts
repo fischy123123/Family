@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
-import type { CalendarEvent } from '@/lib/types'
+import type { CalendarEvent, FamilyMember } from '@/lib/types'
 
 interface EventSuggestion {
   eventId: string
@@ -22,96 +22,113 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'ANTHROPIC_API_KEY not configured' }, { status: 500 })
   }
 
-  let body: { events: CalendarEvent[]; accessToken?: string; refreshToken?: string }
+  let body: { events: CalendarEvent[]; members?: FamilyMember[] }
   try {
     body = await request.json()
   } catch {
     return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 })
   }
 
-  const { events } = body
+  const { events, members = [] } = body
   if (!Array.isArray(events) || events.length === 0) {
     return NextResponse.json({ suggestions: [] })
   }
 
-  // Build a compact representation of events for the prompt
+  // Use a simple numeric index as the prompt ID to avoid Claude mangling
+  // long Google Calendar event ID strings. We map back to real IDs server-side.
+  const indexToEvent = new Map<number, CalendarEvent>()
   const eventList = events
+    .slice(0, 60)
     .map((e, i) => {
+      indexToEvent.set(i, e)
       const lines = [
-        `Event ${i + 1}:`,
-        `  id: ${e.id}`,
-        `  calendarId: ${e.calendarId}`,
-        `  title: ${e.title || '(no title)'}`,
-        `  start: ${e.start}`,
-        `  isRecurring: ${!!e.recurringEventId}`,
-        e.recurringEventId ? `  recurringEventId: ${e.recurringEventId}` : null,
-        e.location ? `  location: ${e.location}` : null,
-        e.notes ? `  notes: ${e.notes}` : null,
+        `[${i}] ${e.title || '(no title)'}`,
+        `  date: ${e.start}`,
+        `  recurring: ${!!e.recurringEventId}`,
+        e.location ? `  location: ${e.location}` : '  location: (none)',
+        e.notes ? `  notes: ${e.notes}` : '  notes: (none)',
+        e.ownerEmail ? `  owner: ${e.ownerEmail}` : null,
       ]
       return lines.filter(Boolean).join('\n')
     })
     .join('\n\n')
 
+  // Build family context block so Claude knows who these people are
+  const memberContext = members.length > 0
+    ? members.map((m) =>
+        `- ${m.name}${m.role ? ` (${m.role})` : ''}${m.email ? ` <${m.email}>` : ''}`
+      ).join('\n')
+    : '(no family members provided)'
+
   const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
-  const systemPrompt = `You are a family calendar assistant. Your job is to ENRICH calendar events with useful context that helps the family prepare. You should suggest improvements for MOST events — not just obviously broken ones.
+  const systemPrompt = `You are a sharp family calendar assistant reviewing a real family's upcoming events. Your job is to find EVERY event that could be improved, then suggest specific, actionable improvements.
 
-For EVERY event, ask yourself:
-1. Is the title specific enough? ("Appointment" is bad. "Dentist – annual cleaning" is good.)
-2. Are notes missing that would help? Most events benefit from notes: what to bring, who to call, parking, prep needed, what the appointment is for.
-3. Is the location missing but inferable from the title or existing notes?
+FAMILY MEMBERS:
+${memberContext}
 
-Be PROACTIVE. Your default should be to enrich, not to skip. Only skip an event if it already has a specific title, useful notes, and a location (or location is genuinely not applicable). A well-titled event with no notes is still worth enriching.
+Use this family context to make suggestions specific to their lives. If you see "Soccer" and there's a child in the family, reference that child. If you see "Dr. appointment", suggest they add the doctor's name, address, what to bring.
 
-Examples of good enrichments:
-- "Soccer" → notes: "Bring cleats, shin guards, and water bottle. Check weather for field conditions."
-- "Dr. Johnson" → notes: "Annual checkup. Bring insurance card and list of current medications."
-- "Piano" → notes: "Practice this week's pieces beforehand. Bring sheet music folder."
-- "Dentist" → add location if you can infer the dental practice, or notes: "Bring insurance card. Arrive 10 min early for forms."
-- "School pickup" → notes: "Maddie gets out at 3:15 from the main entrance."
+For EACH event, evaluate:
+1. **Title clarity** — is it specific enough? "Appointment" is useless. "Dentist – cleaning, Dr. Smith" is useful.
+2. **Notes** — most events should have notes. What to bring? Who to call? Parking? Prep needed? What's the appointment for?
+3. **Location** — if missing and inferable from the title or notes, suggest it.
 
-Return a JSON array (and nothing else — no markdown, no commentary) where each element has this shape:
+IMPORTANT RULES:
+- Suggest improvements for MOST events. An event with a good title but no notes is still worth enriching.
+- Be specific to this family. Don't give generic advice — tailor notes to what they likely need.
+- For recurring events (recurring: true), write notes that are always useful, not date-specific.
+- Do NOT skip an event just because the title seems clear. No notes = always suggest notes.
+- Only skip an event if it already has: (a) a specific descriptive title, (b) useful notes, AND (c) a location or location is clearly irrelevant.
+
+Return ONLY a raw JSON array. No markdown fences, no commentary. Each element:
 {
-  "eventId": "<copy the exact event id — do not modify it>",
-  "calendarId": "<copy the exact calendarId>",
-  "suggestedTitle": "<improved title — omit this key if the current title is already specific>",
-  "suggestedNotes": "<useful notes to add or improve — include this for MOST events unless notes are already thorough>",
-  "suggestedLocation": "<location if missing and inferable — omit if already set or truly unknown>",
-  "reason": "<1 sentence: what you're adding and why it helps>",
+  "idx": <the number from [N] in the event list>,
+  "suggestedTitle": "<improved title — omit key if title is already descriptive>",
+  "suggestedNotes": "<useful notes — include for almost every event>",
+  "suggestedLocation": "<location — omit if already set or truly unknowable>",
+  "reason": "<one sentence explaining what you added and why>",
   "confidence": "high" | "medium" | "low"
 }
 
-Return a non-empty array unless every single event already has a specific title, thorough notes, AND a location. Err on the side of suggesting more, not less.`
+Aim for at least 50% of events having suggestions. If all events already have thorough titles, notes AND locations, return [].`
 
   let rawText = ''
   try {
     const message = await anthropic.messages.create({
       model: 'claude-opus-4-8',
-      max_tokens: 2048,
+      max_tokens: 4096,
       system: systemPrompt,
       messages: [
         {
           role: 'user',
-          content: `Here are the upcoming calendar events to review:\n\n${eventList}`,
+          content: `Review these ${indexToEvent.size} upcoming calendar events and suggest improvements:\n\n${eventList}`,
         },
       ],
     })
 
-    rawText = message.content[0]?.type === 'text' ? message.content[0].text : '[]'
+    rawText = message.content[0]?.type === 'text' ? message.content[0].text : ''
+    console.log(`[enhance-events] stop_reason=${message.stop_reason} raw_length=${rawText.length} preview=${rawText.slice(0, 200)}`)
   } catch (e: unknown) {
-    const message = e instanceof Error ? e.message : 'AI call failed'
-    return NextResponse.json({ error: message }, { status: 500 })
+    const msg = e instanceof Error ? e.message : 'AI call failed'
+    console.error('[enhance-events] AI error:', msg)
+    return NextResponse.json({ error: msg }, { status: 500 })
   }
 
-  // Extract JSON array from response (Claude may wrap it in markdown)
-  const match = rawText.match(/\[[\s\S]*\]/)
+  if (!rawText) {
+    return NextResponse.json({ suggestions: [], debug: 'empty AI response' })
+  }
+
+  // Strip markdown fences if Claude wrapped the array anyway
+  const stripped = rawText.replace(/^```(?:json)?\n?/m, '').replace(/\n?```$/m, '').trim()
+  const match = stripped.match(/\[[\s\S]*\]/)
   if (!match) {
-    return NextResponse.json({ suggestions: [] })
+    console.warn('[enhance-events] no JSON array found in response:', rawText.slice(0, 400))
+    return NextResponse.json({ suggestions: [], debug: 'no JSON array in response' })
   }
 
   let rawSuggestions: Array<{
-    eventId: string
-    calendarId: string
+    idx: number
     suggestedTitle?: string
     suggestedNotes?: string
     suggestedLocation?: string
@@ -121,42 +138,45 @@ Return a non-empty array unless every single event already has a specific title,
 
   try {
     rawSuggestions = JSON.parse(match[0])
-  } catch {
-    return NextResponse.json({ suggestions: [] })
+  } catch (e) {
+    console.warn('[enhance-events] JSON parse failed:', e)
+    return NextResponse.json({ suggestions: [], debug: 'JSON parse failed' })
   }
 
-  // Enrich suggestions with current values and filter to only those with real changes
-  const eventMap = new Map(events.map((e) => [e.id, e]))
+  console.log(`[enhance-events] raw suggestions count: ${rawSuggestions.length}`)
+
   const suggestions: EventSuggestion[] = []
 
   for (const raw of rawSuggestions) {
-    if (!raw.eventId) continue
-    const event = eventMap.get(raw.eventId)
-    if (!event) continue
+    const event = indexToEvent.get(raw.idx)
+    if (!event) {
+      console.warn(`[enhance-events] no event for idx=${raw.idx}`)
+      continue
+    }
 
     const hasChange =
       (raw.suggestedTitle !== undefined && raw.suggestedTitle !== event.title) ||
-      (raw.suggestedNotes !== undefined && raw.suggestedNotes !== event.notes) ||
-      (raw.suggestedLocation !== undefined && raw.suggestedLocation !== event.location)
+      (raw.suggestedNotes !== undefined && raw.suggestedNotes !== (event.notes ?? '')) ||
+      (raw.suggestedLocation !== undefined && raw.suggestedLocation !== (event.location ?? ''))
 
     if (!hasChange) continue
 
     const suggestion: EventSuggestion = {
-      eventId: raw.eventId,
-      calendarId: raw.calendarId ?? event.calendarId,
+      eventId: event.id,
+      calendarId: event.calendarId,
       currentTitle: event.title,
       reason: raw.reason ?? '',
       isRecurring: !!event.recurringEventId,
       confidence: raw.confidence ?? 'medium',
     }
-    if (raw.suggestedTitle !== undefined && raw.suggestedTitle !== event.title) {
+    if (raw.suggestedTitle && raw.suggestedTitle !== event.title) {
       suggestion.suggestedTitle = raw.suggestedTitle
     }
-    if (raw.suggestedNotes !== undefined && raw.suggestedNotes !== event.notes) {
+    if (raw.suggestedNotes && raw.suggestedNotes !== (event.notes ?? '')) {
       suggestion.currentNotes = event.notes
       suggestion.suggestedNotes = raw.suggestedNotes
     }
-    if (raw.suggestedLocation !== undefined && raw.suggestedLocation !== event.location) {
+    if (raw.suggestedLocation && raw.suggestedLocation !== (event.location ?? '')) {
       suggestion.currentLocation = event.location
       suggestion.suggestedLocation = raw.suggestedLocation
     }
@@ -167,5 +187,6 @@ Return a non-empty array unless every single event already has a specific title,
     suggestions.push(suggestion)
   }
 
+  console.log(`[enhance-events] final suggestions: ${suggestions.length}`)
   return NextResponse.json({ suggestions })
 }
