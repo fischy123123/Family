@@ -1233,8 +1233,14 @@ export function CommandCenter() {
       {/* Header */}
       <div className="flex items-start justify-between">
         <div>
-          <p className="text-sm text-slate-400">
+          <p className="text-sm text-slate-400 flex items-center gap-2 flex-wrap">
             {new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })}
+            {refreshing && (
+              <span className="inline-flex items-center gap-1.5 text-xs text-blue-500 font-medium">
+                <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />
+                Updating…
+              </span>
+            )}
           </p>
           <h1 className="text-2xl sm:text-3xl font-bold text-slate-900 tracking-tight">
             Good {greeting()}, {firstName}
@@ -1243,7 +1249,12 @@ export function CommandCenter() {
         <button
           onClick={() => { setPendingReport(null); runEngine(undefined, false) }}
           disabled={loading}
-          className="mt-1 p-2.5 rounded-xl bg-white border border-slate-200 text-slate-500 hover:text-blue-600 hover:border-blue-200 transition-colors shadow-card disabled:opacity-60"
+          title={loading ? 'Refreshing briefing…' : refreshing ? 'Updating — tap to refresh now' : 'Refresh briefing'}
+          className={`mt-1 p-2.5 rounded-xl border shadow-card transition-all disabled:opacity-60 ${
+            refreshing
+              ? 'bg-blue-50 border-blue-200 text-blue-500 hover:bg-blue-100'
+              : 'bg-white border-slate-200 text-slate-500 hover:text-blue-600 hover:border-blue-200'
+          }`}
           aria-label="Refresh"
         >
           <RefreshCw size={16} className={busy ? 'animate-spin' : ''} />
@@ -1849,8 +1860,13 @@ function ProblemCard({
 function TopProgressBar({ active }: { active: boolean }) {
   if (!active) return null
   return (
-    <div className="fixed top-0 inset-x-0 z-50 h-0.5 overflow-hidden pointer-events-none">
-      <div className="h-full w-1/3 bg-gradient-to-r from-transparent via-blue-500 to-transparent animate-progress-slide" />
+    // Positioned below the iPhone safe-area inset so it's visible in standalone PWA mode.
+    // solid 3px bar is much more visible than the original 0.5px gradient.
+    <div
+      className="fixed inset-x-0 z-50 h-[3px] bg-blue-100 overflow-hidden pointer-events-none"
+      style={{ top: 'env(safe-area-inset-top, 0px)' }}
+    >
+      <div className="h-full w-2/5 bg-blue-500 animate-progress-slide" />
     </div>
   )
 }
