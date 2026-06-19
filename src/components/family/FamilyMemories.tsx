@@ -24,38 +24,41 @@ export function FamilyMemories() {
 
   const untaggedCount = memories.filter((m) => !m.subjectEmail).length
 
-  async function classifyMemory(text: string): Promise<string | null> {
-    try {
-      const res = await fetch('/api/ai/classify-memory', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          text,
-          members: members.map((m) => ({ id: m.id, name: m.name, email: m.email || undefined, role: m.role })),
-        }),
-      })
-      if (!res.ok) return null
-      const data = await res.json()
-      return data.subjectIdentifier ?? null
-    } catch {
-      return null
-    }
-  }
-
   async function add() {
     const text = draft.trim()
     if (!text) return
     setSaving(true)
     try {
-      const subjectIdentifier = members.length ? await classifyMemory(text) : null
+      const memberRefs = members.map((m) => ({ id: m.id, name: m.name, email: m.email || undefined, role: m.role }))
+
+      const res = await fetch('/api/ai/consolidate-memory', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ newText: text, existingMemories: memories, members: memberRefs }),
+      })
+      const result = res.ok ? await res.json() : null
+
+      const subjectIdentifier: string | null = result?.subjectIdentifier ?? null
+      const finalText: string = result?.finalText ?? text
+      const supersededIds: string[] = result?.supersededIds ?? []
+
+      // Delete any memories this one supersedes
+      for (const oldId of supersededIds) {
+        await remove(oldId)
+      }
+
       await create({
         id: generateId(),
-        text,
+        text: finalText,
         source: 'manual',
         createdAt: new Date().toISOString(),
         ...(subjectIdentifier ? { subjectEmail: subjectIdentifier } : {}),
       } as FamilyMemory)
+
       setDraft('')
+      if (supersededIds.length > 0) {
+        toast(`Memory updated — ${supersededIds.length} outdated ${supersededIds.length === 1 ? 'entry' : 'entries'} removed`, 'success')
+      }
     } catch {
       toast('Could not save', 'error')
     } finally {
@@ -68,17 +71,27 @@ export function FamilyMemories() {
     if (!untagged.length) return
     setBackfilling(true)
     let tagged = 0
+    const memberRefs = members.map((m) => ({ id: m.id, name: m.name, email: m.email || undefined, role: m.role }))
     try {
       for (const memory of untagged) {
-        const subjectIdentifier = await classifyMemory(memory.text)
-        if (subjectIdentifier) {
-          await update({ ...memory, subjectEmail: subjectIdentifier })
-          tagged++
+        try {
+          const res = await fetch('/api/ai/classify-memory', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text: memory.text, members: memberRefs }),
+          })
+          if (res.ok) {
+            const data = await res.json()
+            if (data.subjectIdentifier) {
+              await update({ ...memory, subjectEmail: data.subjectIdentifier })
+              tagged++
+            }
+          }
+        } catch {
+          // skip this one, continue
         }
       }
       toast(`Tagged ${tagged} of ${untagged.length} memories`, 'success')
-    } catch {
-      toast('Tagging stopped early', 'error')
     } finally {
       setBackfilling(false)
     }
