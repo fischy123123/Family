@@ -137,6 +137,10 @@ function fmtMember(m: FamilyMember, currentUserEmail?: string): string {
   if (prefs) parts.push(`  prefs: ${prefs}`)
   const info = flattenInfo(m.importantInfo)
   if (info) parts.push(`  info: ${info}`)
+  // Profile notes (MemoryEntry[]) written directly on this member's profile
+  if (m.memories?.length) {
+    parts.push(`  notes: ${m.memories.slice(0, 5).map((n) => n.text).join('; ')}`)
+  }
   return parts.join('\n')
 }
 
@@ -246,32 +250,46 @@ export function buildFamilyContextParts(input: FamilyContextInput): {
   )
   const personalMemories = (memories ?? []).filter((m) => concernsViewer(m))
 
-  // The personal lens: what this individual has told us they care about (or
-  // don't care about). Combine their member preferences + personal memories.
+  // The personal lens: everything this individual has told us about themselves.
+  // Preferences, routines, important info, and personal memories all go here.
   // This is the HIGHEST priority filter — the AI personalises the briefing
   // through it, without any hardcoded rules.
   const personalPrefs = matchedSelf ? flattenPrefs(matchedSelf?.preferences) : ''
-  const hasPersonalLens = personalPrefs || personalMemories.length > 0
+  const personalRoutines = matchedSelf ? flattenRoutines(matchedSelf?.routines) : ''
+  const personalInfo = matchedSelf ? flattenInfo(matchedSelf?.importantInfo) : ''
+  const profileNotes = matchedSelf?.memories ?? []
+  const hasPersonalLens = personalPrefs || personalRoutines || personalInfo
+    || profileNotes.length > 0 || personalMemories.length > 0
   if (hasPersonalLens) {
     const lensLines: string[] = []
     if (personalPrefs) lensLines.push(`Stated preferences: ${personalPrefs}`)
+    if (personalRoutines) lensLines.push(`Their routines: ${personalRoutines}`)
+    if (personalInfo) lensLines.push(`Important info about them: ${personalInfo}`)
+    if (profileNotes.length) {
+      lensLines.push(
+        `Profile notes (things they've written about themselves):\n${profileNotes
+          .slice(0, 10)
+          .map((n) => `  - ${n.text}`)
+          .join('\n')}`
+      )
+    }
     if (personalMemories.length) {
       const sorted = [...personalMemories].sort((a, b) => {
         if (!!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1
         return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
       }).slice(0, 30)
       lensLines.push(
-        `What I have learned about this person specifically:\n${sorted
+        `What I have learned about this person:\n${sorted
           .map((m) => `  - ${m.category ? `[${m.category}] ` : ''}${m.text} (noted ${notedOn(m.createdAt, tz)})`)
           .join('\n')}`
       )
     }
     dataSections.push(
       `PERSONAL LENS FOR ${matchedSelf?.name ?? 'THE SIGNED-IN USER'} ` +
-      `(READ THIS FIRST — apply it as the primary filter on what you surface in this briefing. ` +
-      `Do not show them things that contradict their stated preferences or that they have ` +
-      `previously indicated they don't want to see. No hardcoded rules — use your judgment ` +
-      `about what this person would actually want to know):\n${lensLines.join('\n')}`
+      `(READ THIS FIRST — highest-priority context. Use this to personalise every part of the briefing: ` +
+      `what to surface, how to frame it, what to skip. Their routines, preferences, and important info ` +
+      `here are facts you already know — never ask them to repeat things listed here. ` +
+      `No hardcoded rules — use your judgment about what this specific person would want to know):\n${lensLines.join('\n')}`
     )
   }
 
