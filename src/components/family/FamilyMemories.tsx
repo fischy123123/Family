@@ -1,21 +1,18 @@
 'use client'
 
 import { useState } from 'react'
-import { Brain, Pin, PinOff, Trash2, Loader2, CornerDownLeft, Tags, Sparkles } from 'lucide-react'
+import { Brain, Pin, PinOff, Trash2, Loader2, CornerDownLeft, Sparkles } from 'lucide-react'
 import { useFirestore } from '@/hooks/useFirestore'
 import { useToast } from '@/contexts/ToastContext'
 import { generateId } from '@/lib/utils'
 import type { FamilyMemory, FamilyMember } from '@/lib/types'
 
-// "What your assistant knows" — durable facts that shape every briefing. The
-// add box is intentionally dead-simple: type or speak anything, and it sticks.
 export function FamilyMemories() {
   const { data: memories, create, update, remove } = useFirestore<FamilyMemory>('memories')
   const { data: members } = useFirestore<FamilyMember>('members')
   const { toast } = useToast()
   const [draft, setDraft] = useState('')
   const [saving, setSaving] = useState(false)
-  const [backfilling, setBackfilling] = useState(false)
   const [cleaning, setCleaning] = useState(false)
 
   const ordered = [...memories].sort((a, b) => {
@@ -23,19 +20,19 @@ export function FamilyMemories() {
     return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
   })
 
-  const untaggedCount = memories.filter((m) => !m.subjectEmail).length
+  function memberRefs() {
+    return members.map((m) => ({ id: m.id, name: m.name, email: m.email || undefined, role: m.role }))
+  }
 
   async function add() {
     const text = draft.trim()
     if (!text) return
     setSaving(true)
     try {
-      const memberRefs = members.map((m) => ({ id: m.id, name: m.name, email: m.email || undefined, role: m.role }))
-
       const res = await fetch('/api/ai/consolidate-memory', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ newText: text, existingMemories: memories, members: memberRefs }),
+        body: JSON.stringify({ newText: text, existingMemories: memories, members: memberRefs() }),
       })
       const result = res.ok ? await res.json() : null
 
@@ -43,7 +40,6 @@ export function FamilyMemories() {
       const finalText: string = result?.finalText ?? text
       const supersededIds: string[] = result?.supersededIds ?? []
 
-      // Delete any memories this one supersedes
       for (const oldId of supersededIds) {
         await remove(oldId)
       }
@@ -67,55 +63,27 @@ export function FamilyMemories() {
     }
   }
 
-  async function backfillTags() {
-    const untagged = memories.filter((m) => !m.subjectEmail)
-    if (!untagged.length) return
-    setBackfilling(true)
-    let tagged = 0
-    const memberRefs = members.map((m) => ({ id: m.id, name: m.name, email: m.email || undefined, role: m.role }))
-    try {
-      for (const memory of untagged) {
-        try {
-          const res = await fetch('/api/ai/classify-memory', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ text: memory.text, members: memberRefs }),
-          })
-          if (res.ok) {
-            const data = await res.json()
-            if (data.subjectIdentifier) {
-              await update({ ...memory, subjectEmail: data.subjectIdentifier })
-              tagged++
-            }
-          }
-        } catch {
-          // skip this one, continue
-        }
-      }
-      toast(`Tagged ${tagged} of ${untagged.length} memories`, 'success')
-    } finally {
-      setBackfilling(false)
-    }
-  }
-
   async function cleanupMemories() {
     if (memories.length < 2) return
     setCleaning(true)
     try {
-      const memberRefs = members.map((m) => ({ id: m.id, name: m.name, email: m.email || undefined, role: m.role }))
       const res = await fetch('/api/ai/cleanup-memories', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ memories, members: memberRefs }),
+        body: JSON.stringify({ memories, members: memberRefs() }),
       })
       if (!res.ok) throw new Error('cleanup failed')
       const result = await res.json()
 
       const toDelete: string[] = result.toDelete ?? []
       const toMerge: Array<{ supersededIds: string[]; consolidatedText: string; subjectIdentifier: string | null }> = result.toMerge ?? []
+      const toTag: Array<{ id: string; subjectIdentifier: string }> = result.toTag ?? []
 
-      let removed = toDelete.length
-      let merged = toMerge.length
+      // Tag untagged memories that belong to a specific member
+      for (const { id, subjectIdentifier } of toTag) {
+        const memory = memories.find((m) => m.id === id)
+        if (memory) await update({ ...memory, subjectEmail: subjectIdentifier })
+      }
 
       // Delete fully redundant memories
       for (const id of toDelete) {
@@ -134,15 +102,19 @@ export function FamilyMemories() {
           createdAt: new Date().toISOString(),
           ...(group.subjectIdentifier ? { subjectEmail: group.subjectIdentifier } : {}),
         } as FamilyMemory)
-        removed += group.supersededIds.length
       }
 
-      if (removed === 0 && merged === 0) {
-        toast('Memories are already clean — nothing to do', 'success')
+      const removed = toDelete.length + toMerge.reduce((n, g) => n + g.supersededIds.length, 0)
+      const tagged = toTag.length
+      const merged = toMerge.length
+
+      if (removed === 0 && tagged === 0 && merged === 0) {
+        toast('Memories are already clean', 'success')
       } else {
         const parts: string[] = []
         if (removed > 0) parts.push(`${removed} removed`)
         if (merged > 0) parts.push(`${merged} merged`)
+        if (tagged > 0) parts.push(`${tagged} linked to family members`)
         toast(`Cleaned up: ${parts.join(', ')}`, 'success')
       }
     } catch {
@@ -187,7 +159,6 @@ export function FamilyMemories() {
         Tell it anything — facts, routines, preferences. It remembers and uses these in every briefing.
       </p>
 
-      {/* Frictionless add */}
       <div className="relative mb-4">
         <textarea
           value={draft}
@@ -207,21 +178,8 @@ export function FamilyMemories() {
         {saving ? 'Saving…' : 'Remember this'}
       </button>
 
-      {/* Known facts */}
       {ordered.length > 0 && (
         <div className="mt-5 space-y-2">
-          {/* Backfill button — only when untagged memories exist */}
-          {untaggedCount > 0 && members.length > 0 && (
-            <button
-              onClick={backfillTags}
-              disabled={backfilling}
-              className="w-full flex items-center justify-center gap-2 py-2 rounded-xl text-xs font-semibold text-amber-700 bg-amber-50 hover:bg-amber-100 border border-amber-200 disabled:opacity-50 transition-all"
-            >
-              {backfilling ? <Loader2 size={12} className="animate-spin" /> : <Tags size={12} />}
-              {backfilling ? 'Tagging memories…' : `Auto-tag ${untaggedCount} unlinked ${untaggedCount === 1 ? 'memory' : 'memories'}`}
-            </button>
-          )}
-
           {ordered.map((m) => {
             const taggedName = m.subjectEmail ? memberNameForId(m.subjectEmail) : null
             return (

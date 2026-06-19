@@ -17,14 +17,20 @@ interface CleanupRequest {
 }
 
 interface MergeGroup {
-  supersededIds: string[]   // ids to delete
-  consolidatedText: string  // single replacement memory
+  supersededIds: string[]
+  consolidatedText: string
   subjectIdentifier: string | null
 }
 
+interface TagUpdate {
+  id: string
+  subjectIdentifier: string  // email or member id
+}
+
 export interface CleanupResult {
-  toDelete: string[]        // ids that are fully redundant — no replacement needed
-  toMerge: MergeGroup[]     // groups of related memories collapsed into one
+  toDelete: string[]     // fully redundant — delete with no replacement
+  toMerge: MergeGroup[]  // multiple entries about the same fact → one consolidated entry
+  toTag: TagUpdate[]     // untagged memories that belong to a specific member
 }
 
 export async function POST(request: NextRequest) {
@@ -33,14 +39,14 @@ export async function POST(request: NextRequest) {
   }
 
   const { memories, members }: CleanupRequest = await request.json()
-  if (!memories?.length) return NextResponse.json({ toDelete: [], toMerge: [] })
+  if (!memories?.length) return NextResponse.json({ toDelete: [], toMerge: [], toTag: [] })
 
   const memberList = members
     .map((m) => `- ${m.name} (${m.role})${m.email ? `, email: ${m.email}` : `, id: ${m.id}`}`)
     .join('\n')
 
   const memoryList = memories
-    .map((m) => `[id:${m.id}] ${m.subjectEmail ? `(about: ${m.subjectEmail}) ` : ''}${m.text}`)
+    .map((m) => `[id:${m.id}]${m.subjectEmail ? ` (tagged:${m.subjectEmail})` : ' (untagged)'} ${m.text}`)
     .join('\n')
 
   const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
@@ -48,18 +54,21 @@ export async function POST(request: NextRequest) {
   const response = await anthropic.messages.create({
     model: MODEL,
     max_tokens: 2000,
-    system: `You are cleaning up a family assistant's memory store. Your job is to produce the smallest, most accurate set of memories by:
-1. Deleting entries that are fully superseded by newer ones (e.g. an old date that has already passed and is no longer relevant)
-2. Merging related entries about the same fact into one clean sentence (e.g. multiple updates to a grounding situation → one current status)
-3. Leaving unrelated, still-accurate memories completely alone — do NOT merge unrelated facts
+    system: `You are auditing a family assistant's memory store. Do three things:
 
-Be conservative: only merge when two or more entries are clearly about the same evolving fact. When in doubt, leave them separate.
-For subjectIdentifier: return the member's email if they have one, their id if not, null if family-wide.
-Return ONLY valid JSON — no explanation, no markdown.`,
+1. TAG untagged memories: for any memory marked "(untagged)" that is clearly about one specific family member, identify that member
+2. DELETE fully redundant memories: entries that are stale, superseded, or already captured elsewhere
+3. MERGE related entries: when two or more memories are multiple versions of the same evolving fact, collapse them into one clean sentence
+
+Rules:
+- Only merge when entries are clearly about the same fact. Leave unrelated memories alone.
+- For subjectIdentifier: use email if the member has one, their id if not, null for family-wide facts
+- A memory being merged/deleted should NOT also appear in toTag
+- Return ONLY valid JSON`,
     messages: [
       {
         role: 'user',
-        content: `Family members:\n${memberList}\n\nCurrent memories:\n${memoryList}\n\nReturn this JSON:\n{\n  "toDelete": ["id_of_fully_redundant_memory", ...],\n  "toMerge": [\n    {\n      "supersededIds": ["id1", "id2"],\n      "consolidatedText": "single clean sentence capturing current state",\n      "subjectIdentifier": "email or id or null"\n    }\n  ]\n}\n\nOnly include entries that need action. Memories not mentioned are kept as-is.`,
+        content: `Family members:\n${memberList}\n\nMemories:\n${memoryList}\n\nReturn this JSON (only include entries that need action):\n{\n  "toTag": [\n    { "id": "...", "subjectIdentifier": "email or member id" }\n  ],\n  "toDelete": ["id", ...],\n  "toMerge": [\n    {\n      "supersededIds": ["id1", "id2"],\n      "consolidatedText": "single clean sentence",\n      "subjectIdentifier": "email or id or null"\n    }\n  ]\n}`,
       },
     ],
   })
@@ -67,14 +76,15 @@ Return ONLY valid JSON — no explanation, no markdown.`,
   try {
     const text = response.content[0].type === 'text' ? response.content[0].text : ''
     const match = text.match(/\{[\s\S]*\}/)
-    if (!match) return NextResponse.json({ toDelete: [], toMerge: [] })
+    if (!match) return NextResponse.json({ toDelete: [], toMerge: [], toTag: [] })
 
     const result = JSON.parse(match[0])
     return NextResponse.json({
       toDelete: Array.isArray(result.toDelete) ? result.toDelete : [],
       toMerge: Array.isArray(result.toMerge) ? result.toMerge : [],
+      toTag: Array.isArray(result.toTag) ? result.toTag : [],
     } satisfies CleanupResult)
   } catch {
-    return NextResponse.json({ toDelete: [], toMerge: [] })
+    return NextResponse.json({ toDelete: [], toMerge: [], toTag: [] })
   }
 }
