@@ -663,12 +663,24 @@ export function CommandCenter() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ctxSignature, hydrated])
 
+  // Poll Google Calendar every 5 minutes so new events show up without a
+  // manual refresh. Also refresh immediately whenever the app returns to the
+  // foreground — common on mobile when switching between apps.
+  useEffect(() => {
+    if (!isConnected) return
+    const interval = setInterval(() => setCalSyncKey((k) => k + 1), 5 * 60 * 1000)
+    return () => clearInterval(interval)
+  }, [isConnected])
+
   // Auto-retry when the user returns to the app. iOS Safari aborts in-flight
   // fetches when a PWA is backgrounded; when the user comes back we want a
-  // seamless retry rather than a stale error screen.
+  // seamless retry rather than a stale error screen. Also kick a calendar
+  // refresh on every foreground return so events are always up to date.
   useEffect(() => {
     function handleVisible() {
       if (document.visibilityState !== 'visible') return
+      // Always refresh calendar data when foregrounded.
+      if (isConnected) setCalSyncKey((k) => k + 1)
       const hasError = !!engineErrorRef.current
       const hasNoReport = !reportRef.current
       if (hasError || hasNoReport) {
@@ -679,7 +691,7 @@ export function CommandCenter() {
     }
     document.addEventListener('visibilitychange', handleVisible)
     return () => document.removeEventListener('visibilitychange', handleVisible)
-  }, [runEngine])
+  }, [isConnected, runEngine])
 
   // Auto-dismiss the "context saved" confirmation after a few seconds.
   useEffect(() => {
