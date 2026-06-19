@@ -1,7 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import { Brain, Pin, PinOff, Trash2, Loader2, CornerDownLeft, Tags } from 'lucide-react'
+import { Brain, Pin, PinOff, Trash2, Loader2, CornerDownLeft, Tags, Sparkles } from 'lucide-react'
 import { useFirestore } from '@/hooks/useFirestore'
 import { useToast } from '@/contexts/ToastContext'
 import { generateId } from '@/lib/utils'
@@ -16,6 +16,7 @@ export function FamilyMemories() {
   const [draft, setDraft] = useState('')
   const [saving, setSaving] = useState(false)
   const [backfilling, setBackfilling] = useState(false)
+  const [cleaning, setCleaning] = useState(false)
 
   const ordered = [...memories].sort((a, b) => {
     if (!!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1
@@ -97,6 +98,60 @@ export function FamilyMemories() {
     }
   }
 
+  async function cleanupMemories() {
+    if (memories.length < 2) return
+    setCleaning(true)
+    try {
+      const memberRefs = members.map((m) => ({ id: m.id, name: m.name, email: m.email || undefined, role: m.role }))
+      const res = await fetch('/api/ai/cleanup-memories', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ memories, members: memberRefs }),
+      })
+      if (!res.ok) throw new Error('cleanup failed')
+      const result = await res.json()
+
+      const toDelete: string[] = result.toDelete ?? []
+      const toMerge: Array<{ supersededIds: string[]; consolidatedText: string; subjectIdentifier: string | null }> = result.toMerge ?? []
+
+      let removed = toDelete.length
+      let merged = toMerge.length
+
+      // Delete fully redundant memories
+      for (const id of toDelete) {
+        await remove(id)
+      }
+
+      // Replace merged groups with a single consolidated entry
+      for (const group of toMerge) {
+        for (const id of group.supersededIds) {
+          await remove(id)
+        }
+        await create({
+          id: generateId(),
+          text: group.consolidatedText,
+          source: 'manual',
+          createdAt: new Date().toISOString(),
+          ...(group.subjectIdentifier ? { subjectEmail: group.subjectIdentifier } : {}),
+        } as FamilyMemory)
+        removed += group.supersededIds.length
+      }
+
+      if (removed === 0 && merged === 0) {
+        toast('Memories are already clean — nothing to do', 'success')
+      } else {
+        const parts: string[] = []
+        if (removed > 0) parts.push(`${removed} removed`)
+        if (merged > 0) parts.push(`${merged} merged`)
+        toast(`Cleaned up: ${parts.join(', ')}`, 'success')
+      }
+    } catch {
+      toast('Cleanup failed — try again', 'error')
+    } finally {
+      setCleaning(false)
+    }
+  }
+
   async function togglePin(m: FamilyMemory) {
     await update({ ...m, pinned: !m.pinned })
   }
@@ -116,6 +171,17 @@ export function FamilyMemories() {
           <Brain size={16} className="text-amber-600" />
         </div>
         <h2 className="text-base font-bold text-slate-900">What your assistant knows</h2>
+        {memories.length >= 2 && (
+          <button
+            onClick={cleanupMemories}
+            disabled={cleaning}
+            className="ml-auto flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold text-violet-700 bg-violet-50 hover:bg-violet-100 border border-violet-200 disabled:opacity-50 transition-all"
+            title="Have AI consolidate and clean up redundant memories"
+          >
+            {cleaning ? <Loader2 size={11} className="animate-spin" /> : <Sparkles size={11} />}
+            {cleaning ? 'Cleaning…' : 'Clean up'}
+          </button>
+        )}
       </div>
       <p className="text-xs text-slate-500 mb-4 ml-10">
         Tell it anything — facts, routines, preferences. It remembers and uses these in every briefing.
