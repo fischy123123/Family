@@ -54,25 +54,34 @@ export async function POST(request: NextRequest) {
 
   const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
-  const systemPrompt = `You are a family calendar assistant. Analyze these calendar events and suggest improvements to make them clearer and more useful. Focus on:
-- Adding specificity to vague titles (e.g. "Appointment" → "Dr. Smith Dentist Checkup")
-- Adding useful notes (doctor name, address, what to bring, parking info)
-- Fixing capitalization and formatting issues
-- Suggesting a location when it can be reasonably inferred from the title/notes
-- Only suggest changes where you can meaningfully improve clarity
+  const systemPrompt = `You are a family calendar assistant. Your job is to ENRICH calendar events with useful context that helps the family prepare. You should suggest improvements for MOST events — not just obviously broken ones.
+
+For EVERY event, ask yourself:
+1. Is the title specific enough? ("Appointment" is bad. "Dentist – annual cleaning" is good.)
+2. Are notes missing that would help? Most events benefit from notes: what to bring, who to call, parking, prep needed, what the appointment is for.
+3. Is the location missing but inferable from the title or existing notes?
+
+Be PROACTIVE. Your default should be to enrich, not to skip. Only skip an event if it already has a specific title, useful notes, and a location (or location is genuinely not applicable). A well-titled event with no notes is still worth enriching.
+
+Examples of good enrichments:
+- "Soccer" → notes: "Bring cleats, shin guards, and water bottle. Check weather for field conditions."
+- "Dr. Johnson" → notes: "Annual checkup. Bring insurance card and list of current medications."
+- "Piano" → notes: "Practice this week's pieces beforehand. Bring sheet music folder."
+- "Dentist" → add location if you can infer the dental practice, or notes: "Bring insurance card. Arrive 10 min early for forms."
+- "School pickup" → notes: "Maddie gets out at 3:15 from the main entrance."
 
 Return a JSON array (and nothing else — no markdown, no commentary) where each element has this shape:
 {
-  "eventId": "<the event id>",
-  "calendarId": "<the calendarId>",
-  "suggestedTitle": "<new title — omit this key entirely if the title is already good>",
-  "suggestedNotes": "<new or improved notes — omit this key entirely if notes are already good or there's nothing to add>",
-  "suggestedLocation": "<suggested location — omit this key entirely if location is already set or cannot be meaningfully inferred>",
-  "reason": "<short plain-English explanation of why you're suggesting this change, 1-2 sentences>",
+  "eventId": "<copy the exact event id — do not modify it>",
+  "calendarId": "<copy the exact calendarId>",
+  "suggestedTitle": "<improved title — omit this key if the current title is already specific>",
+  "suggestedNotes": "<useful notes to add or improve — include this for MOST events unless notes are already thorough>",
+  "suggestedLocation": "<location if missing and inferable — omit if already set or truly unknown>",
+  "reason": "<1 sentence: what you're adding and why it helps>",
   "confidence": "high" | "medium" | "low"
 }
 
-Only include events where you have at least one genuine improvement to suggest. If an event is already well-described, skip it entirely. Return an empty array [] if no improvements are possible.`
+Return a non-empty array unless every single event already has a specific title, thorough notes, AND a location. Err on the side of suggesting more, not less.`
 
   let rawText = ''
   try {

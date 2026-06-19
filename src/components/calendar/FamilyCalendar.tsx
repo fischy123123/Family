@@ -1,8 +1,8 @@
 'use client'
 
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import { useRouter } from 'next/navigation'
-import { addDays, format, parseISO, isToday, isTomorrow } from 'date-fns'
+import { format, parseISO, isToday, isTomorrow } from 'date-fns'
 import FullCalendar from '@fullcalendar/react'
 import dayGridPlugin from '@fullcalendar/daygrid'
 import interactionPlugin, { DateClickArg } from '@fullcalendar/interaction'
@@ -53,8 +53,8 @@ export function FamilyCalendar() {
   const [detailEvent, setDetailEvent] = useState<CalendarEvent | null>(null)
   const [selectedDate, setSelectedDate] = useState<string>()
   const [selectedEvent, setSelectedEvent] = useState<CalendarEvent>()
-  const [googleEvents, setGoogleEvents] = useState<CalendarEvent[]>([])
-  const [loadingEvents, setLoadingEvents] = useState(false)
+  const [syncing, setSyncing] = useState(false)
+  const lastSyncRef = useRef<number>(0)
 
   // AI Enhancement state
   const [enhanceOpen, setEnhanceOpen] = useState(false)
@@ -71,42 +71,34 @@ export function FamilyCalendar() {
     return member?.colorHex ?? e.color ?? '#3B82F6'
   }
 
-  // ── Fetch Google Calendar events ──────────────────────────────
+  // ── Manual Google Calendar re-sync ───────────────────────────
+  // The dashboard already syncs on load (writes to Firestore). The calendar
+  // page reads Firestore directly — no need to re-fetch from Google on every
+  // visit. The refresh button lets the user pull fresh data on demand.
 
-  const fetchGoogleEvents = useCallback(async () => {
-    const fresh = await getFreshTokens()
-    if (!fresh) return
-    setLoadingEvents(true)
-    const timeMin = new Date().toISOString()
-    const timeMax = addDays(new Date(), 60).toISOString()
-    const params = new URLSearchParams({
-      accessToken: fresh.accessToken,
-      refreshToken: fresh.refreshToken,
-      timeMin,
-      timeMax,
-    })
+  const triggerSync = useCallback(async () => {
+    if (syncing) return
+    // Debounce: don't re-sync within 60 s of the last manual refresh
+    if (Date.now() - lastSyncRef.current < 60_000) return
+    setSyncing(true)
+    lastSyncRef.current = Date.now()
     try {
-      const res = await fetch(`/api/calendar/events?${params}`)
-      if (!res.ok) return
-      const data = await res.json()
-      if (Array.isArray(data.events)) setGoogleEvents(data.events as CalendarEvent[])
+      const idToken = await user?.getIdToken()
+      if (!idToken) return
+      await fetch('/api/calendar/sync', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${idToken}` },
+      })
     } catch {
-      // Silently fall back to Firestore events
+      // Silent — Firestore already has the last good data
     } finally {
-      setLoadingEvents(false)
+      setSyncing(false)
     }
-  }, [getFreshTokens])
+  }, [syncing, user])
 
-  useEffect(() => {
-    if (!isConnected) return
-    fetchGoogleEvents()
-  }, [isConnected, tokens, fetchGoogleEvents])
-
-  // Merge: Firestore has Google-synced events + Copilot-created events
-  const googleIds = new Set(googleEvents.map((e) => e.id))
-  const events = isConnected
-    ? [...googleEvents, ...firestoreEvents.filter((e) => !googleIds.has(e.id))]
-    : firestoreEvents
+  // Firestore already contains the Google-synced events (written by /api/calendar/sync
+  // on dashboard load). Use those directly — no automatic re-fetch needed here.
+  const events = firestoreEvents
 
   const fcEvents = events.map((e) => {
     const color = eventColor(e)
@@ -154,7 +146,8 @@ export function FamilyCalendar() {
             },
           }),
         })
-        await fetchGoogleEvents()
+        // Re-sync Firestore so the new event appears in the list
+        await triggerSync()
         return
       }
     }
@@ -184,9 +177,8 @@ export function FamilyCalendar() {
             },
           }),
         })
-        setGoogleEvents((prev) =>
-          prev.map((e) => (e.id === selectedEvent.id ? { ...e, ...updates } : e)),
-        )
+        // Optimistically update in Firestore so the UI reflects the change immediately
+        await updateFirestore({ ...selectedEvent, ...updates })
         return
       }
     }
@@ -208,7 +200,8 @@ export function FamilyCalendar() {
             calendarId: target.calendarId,
           }),
         })
-        setGoogleEvents((prev) => prev.filter((e) => e.id !== target.id))
+        // Optimistically remove from Firestore so the UI reflects the change immediately
+        await removeFirestore(target.id)
         return
       }
     }
@@ -273,7 +266,7 @@ export function FamilyCalendar() {
         // Skip failed updates silently
       }
     }
-    await fetchGoogleEvents()
+    await triggerSync()
     setApplyingEnhancements(false)
     setEnhanceOpen(false)
   }
@@ -312,10 +305,18 @@ export function FamilyCalendar() {
       {/* ── Sync status ── */}
       <div className="px-4 mb-3">
         {isConnected ? (
-          <div className="flex items-center gap-1.5 text-xs text-green-600">
+          <div className="flex items-center gap-2 text-xs text-green-600">
             <Wifi size={12} />
             <span>Synced with Google Calendar</span>
-            {loadingEvents && <span className="text-slate-400 ml-1">· refreshing…</span>}
+            <button
+              onClick={triggerSync}
+              disabled={syncing}
+              className="ml-auto flex items-center gap-1 text-slate-400 hover:text-slate-600 disabled:opacity-40 transition-colors"
+              title="Refresh from Google Calendar"
+            >
+              <RefreshCw size={12} className={syncing ? 'animate-spin' : ''} />
+              {syncing ? 'Refreshing…' : 'Refresh'}
+            </button>
           </div>
         ) : (
           <div className="flex items-center gap-2">
