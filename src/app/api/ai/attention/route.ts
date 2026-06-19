@@ -127,83 +127,121 @@ If the user took the time to add context to, or assign, an event/task, that is a
 CRITICAL — Honor explicit assignments:
 Memories beginning with 'Assignment ·' are the family's explicit decisions about who an item is for and who is responsible. When you surface that item, ALWAYS reflect that assignment in "forEmails" (who it's about) and "assigneeEmail" (who's responsible), mapping the names to their emails from the FAMILY MEMBERS list — or to their exact name when the member has no email. Never contradict an explicit assignment.
 
+CRITICAL — Conflicting memories: the durable memory list is ordered NEWEST FIRST. When two memories state different things about the SAME fact (e.g. one says "Maddie's grounding ends Friday" and a later one says "Maddie's grounding is extended to Sunday"), the MOST RECENT memory is the correct, current one — it is a correction. Trust it and completely ignore the older, superseded version. Never average them, never surface the old date, and never note "originally said X" — just use the latest fact as if the old one never existed.
+
 For each problem, include an optional "actionType" field: "copilot" for conversational actions (asking the AI to add/plan something), "capture" for quick adds (events/tasks/lists), "calendar" for calendar navigation. Default to "copilot" when unsure.`
 
-  try {
-    const response = await anthropic.messages.create({
-      model: MODEL,
-      // A comprehensive briefing (greeting + 10 items, each with 8 fields,
-      // plus problems and recommendations) can reach 3000-3500 output tokens.
-      // 4096 provides a firm ceiling above any realistic briefing so the JSON
-      // is never truncated — a truncated response drops every status card.
-      max_tokens: 4096,
-      // System prompt: static → cache it (saves ~1800 tokens on every cache hit).
-      // 1-hour TTL (not the 5-min default): briefings run ~15 min apart per the
-      // client throttle, and multiple family members load within the same hour,
-      // so a 5-min cache almost always expired before the next run. A 1h TTL
-      // lets these calls actually hit the cache.
-      system: [
-        { type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral', ttl: '1h' } },
-      ],
-      messages: [{
-        role: 'user',
-        content: [
-          // Data block: members, events, tasks, etc. Changes only when the
-          // family's actual data changes — cache it (1h) so unchanged data
-          // re-reads at 10% cost across the throttle window and between users.
-          { type: 'text', text: `FAMILY CONTEXT:\n\n${dataBlock}`, cache_control: { type: 'ephemeral', ttl: '1h' } },
-          // Time header: always fresh — current time + today's date anchor + suppressed items.
-          { type: 'text', text: timeHeader + suppressionBlock },
-        ],
-      }],
-    })
+  // Stream the response as newline-delimited JSON events so the client can show
+  // the greeting the moment it finishes generating (~2s) instead of waiting for
+  // the entire briefing (~20s). Events:
+  //   {"t":"delta","d":"<raw text chunk>"}  — incremental model output
+  //   {"t":"final", ...report}              — authoritative parsed report
+  //   {"t":"error","error":"..."}           — failure (client keeps cached report)
+  const encoder = new TextEncoder()
 
-    logUsage('attention', MODEL, response.usage)
-
-    // Detect truncation before trying to parse — a truncated JSON is not useful
-    // and shouldn't overwrite the client's existing good report. Return a 500 so
-    // the client keeps showing the cached briefing and offers a retry button.
-    if (response.stop_reason === 'max_tokens') {
-      return NextResponse.json(
-        { error: 'Briefing was cut short — tap retry to try again.' },
-        { status: 500 }
-      )
-    }
-
-    const text = response.content[0].type === 'text' ? response.content[0].text : '{}'
-    const match = text.match(/\{[\s\S]*\}/)
-    let parsed: {
-      greeting?: string
-      items?: Record<string, unknown>[]
-      problems?: Record<string, unknown>[]
-      recommendations?: Record<string, unknown>[]
-    } = {}
-    if (match) {
-      try {
-        parsed = JSON.parse(match[0])
-      } catch {
-        // Unexpected parse failure (not a token limit issue — already checked above).
-        // Salvage the greeting so something appears rather than a blank screen.
-        const greetingMatch = match[0].match(/"greeting"\s*:\s*"((?:[^"\\]|\\[\s\S])*)"/)
-        parsed = { greeting: greetingMatch?.[1] ?? 'Here is what needs your attention.', items: [], problems: [], recommendations: [] }
+  const stream = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      const send = (obj: unknown) => {
+        try { controller.enqueue(encoder.encode(JSON.stringify(obj) + '\n')) } catch { /* closed */ }
       }
-    }
+      try {
+        const ai = anthropic.messages.stream(
+          {
+            model: MODEL,
+            // A comprehensive briefing (greeting + 10 items, each with 8 fields,
+            // plus problems and recommendations) can reach 3000-3500 output tokens.
+            // 4096 is a firm ceiling above any realistic briefing so the JSON is
+            // never truncated — a truncated response drops every status card.
+            max_tokens: 4096,
+            // System prompt: static → cache it (saves ~1800 tokens per cache hit).
+            // 1-hour TTL (not the 5-min default): briefings run ~15 min apart per
+            // the client throttle, and multiple family members load within the
+            // same hour, so a 5-min cache almost always expired before the next
+            // run. A 1h TTL lets these calls actually hit the cache.
+            system: [
+              { type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral', ttl: '1h' } },
+            ],
+            messages: [{
+              role: 'user',
+              content: [
+                // Data block: members, events, tasks, etc. Changes only when the
+                // family's actual data changes — cache it (1h) so unchanged data
+                // re-reads at 10% cost across the throttle window and between users.
+                { type: 'text', text: `FAMILY CONTEXT:\n\n${dataBlock}`, cache_control: { type: 'ephemeral', ttl: '1h' } },
+                // Time header: always fresh — current time + today's date anchor + suppressed items.
+                { type: 'text', text: timeHeader + suppressionBlock },
+              ],
+            }],
+          },
+          // Abort the upstream model call if the client disconnects, so we don't
+          // keep paying for a briefing nobody will see.
+          { signal: request.signal },
+        )
 
-    // Assign stable-ish ids
-    const items = (parsed.items ?? []).map((it: Record<string, unknown>, i: number) => ({ id: `att-${i}`, ...it }))
-    const problems = (parsed.problems ?? []).map((p: Record<string, unknown>, i: number) => ({ id: `prob-${i}`, ...p }))
-    const recommendations = (parsed.recommendations ?? []).map((r: Record<string, unknown>, i: number) => ({ id: `rec-${i}`, ...r }))
+        ai.on('text', (delta) => send({ t: 'delta', d: delta }))
 
-    return NextResponse.json({
-      generatedAt: new Date().toISOString(),
-      tier: ctx.tier ?? 'fast',
-      greeting: parsed.greeting ?? 'Here is what needs your attention.',
-      items,
-      problems,
-      recommendations,
-    })
-  } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : 'Attention engine failed'
-    return NextResponse.json({ error: msg }, { status: 500 })
-  }
+        const finalMsg = await ai.finalMessage()
+        logUsage('attention', MODEL, finalMsg.usage)
+
+        // A truncated JSON isn't useful and shouldn't overwrite the client's
+        // existing good report — surface an error so it offers a retry instead.
+        if (finalMsg.stop_reason === 'max_tokens') {
+          send({ t: 'error', error: 'Briefing was cut short — tap retry to try again.' })
+          try { controller.close() } catch { /* noop */ }
+          return
+        }
+
+        const text = finalMsg.content[0]?.type === 'text' ? finalMsg.content[0].text : '{}'
+        const match = text.match(/\{[\s\S]*\}/)
+        let parsed: {
+          greeting?: string
+          items?: Record<string, unknown>[]
+          problems?: Record<string, unknown>[]
+          recommendations?: Record<string, unknown>[]
+        } = {}
+        if (match) {
+          try {
+            parsed = JSON.parse(match[0])
+          } catch {
+            // Unexpected parse failure (not a token limit issue — already checked).
+            // Salvage the greeting so something appears rather than a blank screen.
+            const greetingMatch = match[0].match(/"greeting"\s*:\s*"((?:[^"\\]|\\[\s\S])*)"/)
+            parsed = { greeting: greetingMatch?.[1] ?? 'Here is what needs your attention.', items: [], problems: [], recommendations: [] }
+          }
+        }
+
+        // Assign stable-ish ids
+        const items = (parsed.items ?? []).map((it, i) => ({ id: `att-${i}`, ...it }))
+        const problems = (parsed.problems ?? []).map((p, i) => ({ id: `prob-${i}`, ...p }))
+        const recommendations = (parsed.recommendations ?? []).map((r, i) => ({ id: `rec-${i}`, ...r }))
+
+        send({
+          t: 'final',
+          generatedAt: new Date().toISOString(),
+          tier: ctx.tier ?? 'fast',
+          greeting: parsed.greeting ?? 'Here is what needs your attention.',
+          items,
+          problems,
+          recommendations,
+        })
+        try { controller.close() } catch { /* noop */ }
+      } catch (e: unknown) {
+        // Client-initiated aborts are expected (navigation, background) — don't
+        // treat them as errors; the client already handles its own abort.
+        if (e instanceof Error && e.name === 'AbortError') {
+          try { controller.close() } catch { /* noop */ }
+          return
+        }
+        send({ t: 'error', error: e instanceof Error ? e.message : 'Attention engine failed' })
+        try { controller.close() } catch { /* noop */ }
+      }
+    },
+  })
+
+  return new Response(stream, {
+    headers: {
+      'Content-Type': 'application/x-ndjson; charset=utf-8',
+      'Cache-Control': 'no-cache, no-transform',
+    },
+  })
 }

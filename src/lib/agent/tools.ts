@@ -340,6 +340,17 @@ export const TOOLS: Anthropic.Tool[] = [
       required: ['text'],
     },
   },
+  {
+    name: 'forget',
+    description: "Delete a durable memory that is no longer true. Use this whenever the user corrects or updates a fact you already remember (e.g. a grounding gets extended, a routine changes, a preference flips) — forget the stale memory by its id, then call remember with the corrected fact. Each memory in your context is labelled with [id:xxx]; pass that id here. Keeping contradictory memories around makes future briefings wrong.",
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        id: { type: 'string', description: 'The id of the memory to delete (from the [id:xxx] label in your context)' },
+      },
+      required: ['id'],
+    },
+  },
 ]
 
 // Tools that mutate data — these require explicit user confirmation before
@@ -360,6 +371,7 @@ export const WRITE_TOOLS = new Set<string>([
   'delete_google_event',
   'update_google_event',
   'remember',
+  'forget',
 ])
 
 // ---------------------------------------------------------------------------
@@ -415,12 +427,14 @@ DELETING EVENTS: Call get_google_events first to get the event_id and calendar_i
       ].filter(Boolean).join('\n')}\n`
     : ''
 
-  // Durable knowledge already on file.
+  // Durable knowledge already on file. Listed newest-first and labelled with
+  // [id:xxx] so the AI can supersede a stale fact via the forget tool when the
+  // user corrects it. When two entries conflict, the most recent one is current.
   const memoryBlock = memories?.length
-    ? `\nWHAT YOU ALREADY KNOW ABOUT THIS FAMILY (durable memory — use it; don't ask for things you already know):\n${[...memories]
+    ? `\nWHAT YOU ALREADY KNOW ABOUT THIS FAMILY (durable memory, newest first — use it; don't ask for things you already know. If the user corrects something here, forget the old [id:xxx] and remember the new fact):\n${[...memories]
         .sort((a, b) => (!!a.pinned !== !!b.pinned ? (a.pinned ? -1 : 1) : new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()))
         .slice(0, 50)
-        .map((m) => `- ${m.category ? `[${m.category}] ` : ''}${m.text}${m.subjectEmail ? ` (about ${m.subjectEmail})` : ''}`)
+        .map((m) => `- [id:${m.id}] ${m.category ? `[${m.category}] ` : ''}${m.text}${m.subjectEmail ? ` (about ${m.subjectEmail})` : ''}`)
         .join('\n')}\n`
     : ''
 
@@ -494,6 +508,7 @@ How to operate:
 - When listing events or data, be brief — use bullet points, not paragraphs.
 - When asked open-ended questions like "what needs my attention?" or "what am I forgetting?", gather the relevant context with the read tools first, then give a focused, prioritized answer.
 - REMEMBER what matters. When the user shares a durable fact about the family (an allergy, a routine, a preference, a relationship, a standing logistic), quietly queue a remember action so it informs every future briefing. Don't remember one-off tasks or events. Lean on what you already know above before asking the user to repeat themselves.
+- CORRECT stale memory. When the user updates or contradicts something already in durable memory (e.g. "actually Maddie's grounding is extended to Sunday" when memory says it ends Friday), queue a forget action for the old [id:xxx] AND a remember action for the corrected fact in the same turn. Never leave two contradictory memories on file — that makes briefings wrong. Match memories about a person even when tagged to that person, not just family-wide ones.
 
 Examples of what you can do:
 - "Add milk to shopping" → call list_shopping_lists to find the right list, then add_shopping_items (queued for confirmation)
@@ -698,6 +713,19 @@ export async function executeTool(
       await col('memories').doc(id).set(memory)
       actions.push(`Remembered: ${memory.text as string}`)
       return { success: true, id, memory }
+    }
+
+    case 'forget': {
+      if (!db) return { error: 'Firestore admin not configured. Cannot update memory.' }
+      const memId = input.id as string
+      if (!memId) return { error: 'No memory id provided.' }
+      const ref = col('memories').doc(memId)
+      const snap = await ref.get()
+      if (!snap.exists) return { error: `Memory ${memId} not found (it may already be gone).` }
+      const text = (snap.data()?.text as string) ?? ''
+      await ref.delete()
+      actions.push(`Forgot: ${text}`)
+      return { success: true, id: memId }
     }
 
     case 'create_chore': {

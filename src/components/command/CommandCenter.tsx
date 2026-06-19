@@ -76,6 +76,32 @@ const ENGINE_THROTTLE_MS = 15 * 60 * 1000
 // After this, re-run anyway so time-buckets (now/next/later) stay fresh.
 const ENGINE_DATA_UNCHANGED_TTL_MS = 45 * 60 * 1000
 
+// Pull the (possibly still-streaming) greeting out of the raw JSON the attention
+// engine is generating, so we can show it live before the full briefing lands.
+// Returns the greeting text decoded so far, or null if it hasn't started yet.
+function extractPartialGreeting(raw: string): string | null {
+  const key = raw.indexOf('"greeting"')
+  if (key === -1) return null
+  const colon = raw.indexOf(':', key)
+  if (colon === -1) return null
+  const open = raw.indexOf('"', colon + 1)
+  if (open === -1) return null
+  let out = ''
+  for (let i = open + 1; i < raw.length; i++) {
+    const c = raw[i]
+    if (c === '\\') {
+      const n = raw[i + 1]
+      if (n === undefined) break // incomplete escape at the stream edge — stop here
+      out += n === 'n' ? '\n' : n === 't' ? '\t' : n
+      i++
+      continue
+    }
+    if (c === '"') return out // closing quote — greeting complete
+    out += c
+  }
+  return out // still streaming
+}
+
 // Open a specific Gmail message in the system browser (Safari), NOT inside the
 // app's own webview. We use #all/<id> rather than #inbox/<id> so the message is
 // found even after it's been archived out of the inbox.
@@ -157,6 +183,9 @@ export function CommandCenter() {
   const [engineError, setEngineError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)        // true cold start only (no report yet)
   const [refreshing, setRefreshing] = useState(false)  // silent background update
+  // Greeting text as it streams in during a cold start, shown in place of the
+  // skeleton so the user reads the headline ~2s in rather than waiting ~20s.
+  const [streamingGreeting, setStreamingGreeting] = useState('')
   const [googleEvents, setGoogleEvents] = useState<CalendarEvent[]>([])
   const [googleLoaded, setGoogleLoaded] = useState(false)
   const [hydrated, setHydrated] = useState(false)
@@ -490,8 +519,58 @@ export function CommandCenter() {
         body: JSON.stringify(buildEngineBody(eventContext, 'fast')),
         signal: controller.signal,
       })
-      const data = await res.json() as AttentionReport & { error?: string }
-      if (res.ok) {
+
+      // Pre-stream failures (bad request, missing key) still come back as JSON.
+      if (!res.ok || !res.body) {
+        let msg = 'Something went wrong. Tap refresh to try again.'
+        try { const d = await res.json(); msg = d.error ?? msg } catch { /* keep default */ }
+        setEngineError(msg)
+        lastRun.current = 0
+        return
+      }
+
+      // Only show the streaming greeting on a foreground cold start — background
+      // refreshes must not disturb the report already on screen.
+      const progressive = !silent
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buf = ''
+      let rawText = ''
+      let finalReport: (AttentionReport & { error?: string }) | null = null
+      let streamError: string | null = null
+
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buf += decoder.decode(value, { stream: true })
+        let nl: number
+        while ((nl = buf.indexOf('\n')) !== -1) {
+          const line = buf.slice(0, nl).trim()
+          buf = buf.slice(nl + 1)
+          if (!line) continue
+          let evt: { t?: string; d?: string; error?: string } & Partial<AttentionReport>
+          try { evt = JSON.parse(line) } catch { continue }
+          if (evt.t === 'delta') {
+            if (progressive && evt.d) {
+              rawText += evt.d
+              const g = extractPartialGreeting(rawText)
+              if (g) setStreamingGreeting(g)
+            }
+          } else if (evt.t === 'final') {
+            finalReport = evt as AttentionReport
+          } else if (evt.t === 'error') {
+            streamError = evt.error ?? 'Something went wrong. Tap refresh to try again.'
+          }
+        }
+      }
+
+      if (streamError) {
+        // Keep the last good report on screen; just surface the retry affordance.
+        setEngineError(streamError)
+        lastRun.current = 0
+      } else if (finalReport) {
+        const data = finalReport
         if (isPending) {
           setPendingReport(data)
         } else {
@@ -506,11 +585,8 @@ export function CommandCenter() {
         lastRunSig.current = lastCtxSig.current
         if (lastRunSigKey) writeCache(lastRunSigKey, lastRunSig.current)
       } else {
-        // Surface the error so it's visible instead of silently showing nothing.
-        // Don't overwrite the existing report or cache — keep showing the last
-        // good briefing while the user decides whether to retry.
-        setEngineError(data.error ?? 'Something went wrong. Tap refresh to try again.')
-        // Reset the throttle so the engine retries automatically when new data arrives.
+        // Stream ended without a final payload — treat as a soft failure.
+        setEngineError('Could not load your briefing. Tap refresh to try again.')
         lastRun.current = 0
       }
     } catch (err) {
@@ -523,6 +599,7 @@ export function CommandCenter() {
     } finally {
       setLoading(false)
       setRefreshing(false)
+      setStreamingGreeting('')
     }
   }, [buildEngineBody, eventContexts, attnKey, report])
 
@@ -1024,10 +1101,21 @@ export function CommandCenter() {
       )}
 
       {/* Cold-start skeleton — only when we have nothing cached to show. Shaped
-          like the real content so there is no jump when the report arrives. */}
+          like the real content so there is no jump when the report arrives.
+          Once the greeting starts streaming in, show it live in place of the
+          top skeleton block so the user reads the headline ~2s in. */}
       {loading && !report && (
         <div className="space-y-6 animate-fade-in">
-          <div className="skeleton h-20 w-full rounded-2xl" />
+          {streamingGreeting ? (
+            <div className="rounded-2xl p-5 bg-gradient-to-br from-blue-600 to-purple-700 text-white shadow-elevated animate-scale-in">
+              <div className="flex items-start gap-3">
+                <Sparkles size={18} className="mt-0.5 shrink-0 opacity-90" />
+                <p className="text-[15px] leading-relaxed font-medium">{streamingGreeting}</p>
+              </div>
+            </div>
+          ) : (
+            <div className="skeleton h-20 w-full rounded-2xl" />
+          )}
           <div className="space-y-3">
             <div className="skeleton h-4 w-24 rounded" />
             <div className="skeleton h-20 w-full rounded-2xl" />
@@ -1087,6 +1175,10 @@ export function CommandCenter() {
                           allMembers={members}
                           responsible={responsible}
                           forMembers={forMembers}
+                          backedByRealItem={!!item.sourceId && (
+                            tasks.some((t) => t.id === item.sourceId) ||
+                            reminders.some((r) => r.id === item.sourceId)
+                          )}
                           onComplete={() => completeTaskFromItem(item)}
                           onDismiss={() => dismissItem(item.title)}
                           onSaveTask={() => saveItemAsTask(item.title, item.reason)}
@@ -1376,13 +1468,14 @@ function SectionLabel({ icon: Icon, color, children }: { icon: typeof Clock; col
 }
 
 function AttentionCard({
-  item, accent, allMembers, responsible, forMembers, onComplete, onDismiss, onSaveTask, onAddContext, onAssign,
+  item, accent, allMembers, responsible, forMembers, backedByRealItem, onComplete, onDismiss, onSaveTask, onAddContext, onAssign,
 }: {
   item: AttentionItem
   accent: string
   allMembers: FamilyMember[]
   responsible?: FamilyMember
   forMembers: FamilyMember[]
+  backedByRealItem: boolean
   onComplete: () => void
   onDismiss: () => void
   onSaveTask: () => void
@@ -1422,10 +1515,12 @@ function AttentionCard({
       style={{ borderLeft: `3px solid ${accent}`, opacity: done ? 0.5 : 1 }}
     >
       <div className="flex items-start gap-3 p-4">
-        {/* Checkbox only when there's a real Firestore task/reminder backing it.
-            AI-inferred awareness items use the same sourceType but have no
-            sourceId — there's nothing to mark complete, so no checkbox. */}
-        {item.sourceId && (item.sourceType === 'task' || item.sourceType === 'reminder') && (
+        {/* Checkbox only when the sourceId actually matches a real Firestore
+            task/reminder in the current data. The AI sometimes tags an
+            awareness item (e.g. a grounding pulled from memory) as a task with
+            a sourceId that doesn't exist — validating against live data here
+            means no phantom checkbox appears on things that aren't real tasks. */}
+        {backedByRealItem && (item.sourceType === 'task' || item.sourceType === 'reminder') && (
           <button
             onClick={() => { setDone(true); onComplete() }}
             className="mt-0.5 w-5 h-5 rounded-md border-2 flex items-center justify-center shrink-0 transition-colors"

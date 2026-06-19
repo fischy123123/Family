@@ -194,12 +194,26 @@ export function buildFamilyContextParts(input: FamilyContextInput): {
   dataSections.push(`SIGNED-IN USER (the person you are talking to right now — address them as "you"): ${selfDescriptor}`)
 
   // Split memories: family-wide vs personal to the current user.
-  // A memory with ANY subjectEmail is personal to that person only — it must
-  // never appear in another family member's context. Only memories with no
-  // subjectEmail at all are truly family-wide and shared with everyone.
-  const familyMemories = (memories ?? []).filter((m) => !m.subjectEmail)
+  // Privacy only matters between ADULTS who each have their own login — one
+  // parent's private notes shouldn't leak into the other parent's briefing.
+  // A memory about a CHILD (or a member with no login) is household logistics
+  // everyone needs: a parent must see their kid's grounding, allergy, schedule,
+  // etc. Previously any subjectEmail hid the memory from everyone but that
+  // subject, so a correction tagged to a child was invisible to the parents.
+  const memberByEmail = (email?: string) =>
+    email ? members.find((m) => m.email?.toLowerCase() === email.toLowerCase()) : undefined
+  const viewer = (currentUserEmail ?? '').toLowerCase()
+  const isPrivateToOtherAdult = (m: FamilyMemory) => {
+    if (!m.subjectEmail) return false
+    const subj = memberByEmail(m.subjectEmail)
+    if (subj?.role !== 'parent') return false // children/other → household-wide
+    return m.subjectEmail.toLowerCase() !== viewer
+  }
+  const familyMemories = (memories ?? []).filter(
+    (m) => !isPrivateToOtherAdult(m) && m.subjectEmail?.toLowerCase() !== viewer
+  )
   const personalMemories = (memories ?? []).filter(
-    (m) => m.subjectEmail && m.subjectEmail.toLowerCase() === (currentUserEmail ?? '').toLowerCase()
+    (m) => m.subjectEmail && m.subjectEmail.toLowerCase() === viewer
   )
 
   // The personal lens: what this individual has told us they care about (or
