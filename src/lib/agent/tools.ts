@@ -351,6 +351,17 @@ export const TOOLS: Anthropic.Tool[] = [
       required: ['id'],
     },
   },
+  {
+    name: 'search_web',
+    description: 'Search the web for real-time information not available in the family\'s data — e.g. package tracking status, business hours, weather, news, recipes, product info. Use whenever the user asks about something that requires up-to-date external information.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        query: { type: 'string', description: 'The search query. Be specific — include tracking numbers, addresses, dates, or other relevant details so results are accurate.' },
+      },
+      required: ['query'],
+    },
+  },
 ]
 
 // Tools that mutate data — these require explicit user confirmation before
@@ -947,6 +958,36 @@ export async function executeTool(
       const scopeLabel = scope === 'all' ? ' (all occurrences)' : ''
       actions.push(`Updated Google Calendar event: ${updated.title}${scopeLabel}`)
       return { success: true, event: updated, scope }
+    }
+
+    case 'search_web': {
+      const apiKey = process.env.TAVILY_API_KEY
+      if (!apiKey) return { error: 'Web search is not configured (TAVILY_API_KEY missing).' }
+      const query = input.query as string
+      const res = await fetch('https://api.tavily.com/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          api_key: apiKey,
+          query,
+          search_depth: 'basic',
+          max_results: 5,
+          include_answer: true,
+        }),
+      })
+      if (!res.ok) return { error: `Web search failed: HTTP ${res.status}` }
+      const data = await res.json() as {
+        answer?: string
+        results?: Array<{ title: string; url: string; content: string }>
+      }
+      return {
+        answer: data.answer ?? null,
+        results: (data.results ?? []).map((r) => ({
+          title: r.title,
+          url: r.url,
+          content: r.content,
+        })),
+      }
     }
 
     default:
