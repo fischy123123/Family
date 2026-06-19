@@ -1190,6 +1190,9 @@ export function CommandCenter() {
 
   const busy = loading || refreshing
 
+  // Which assignment card is showing the "pick the right person" member picker.
+  const [correctingKey, setCorrectingKey] = useState<string | null>(null)
+
   // Event assignment suggestions: filter out already-skipped and already-assigned ones.
   const pendingAssignments = useMemo<EventAssignmentSuggestion[]>(() => {
     if (!report?.eventAssignments?.length) return []
@@ -1202,28 +1205,47 @@ export function CommandCenter() {
     })
   }, [report?.eventAssignments, skippedAssignments, events])
 
-  const confirmEventAssignment = useCallback(async (s: EventAssignmentSuggestion) => {
+  // Confirm an event assignment — optionally with different names than the AI suggested.
+  // Applies optimistic removal immediately so the card disappears on tap.
+  const confirmEventAssignment = useCallback(async (s: EventAssignmentSuggestion, overrideNames?: string[]) => {
     if (!familyId) return
+    const forNames = overrideNames ?? s.forNames
     const event = events.find((e) => e.title === s.eventTitle && e.start.startsWith(s.eventDate))
-    if (!event) return
-    const resolvedIds = s.forNames
+    if (!event) {
+      toast(`Couldn't find "${s.eventTitle}" in calendar — it may have been removed`, 'error')
+      return
+    }
+    const resolvedIds = forNames
       .map((name) => resolveMemberRef(members, name)?.id)
       .filter((id): id is string => Boolean(id))
-    if (!resolvedIds.length) return
+    if (!resolvedIds.length) {
+      toast(`Couldn't match that name to a family member — tap "Not quite" to pick manually`, 'error')
+      return
+    }
+    // Optimistic: remove the card immediately without waiting for Firestore.
+    const key = `${s.eventTitle}|${s.eventDate}`
+    const next = new Set(Array.from(skippedAssignments).concat(key))
+    setSkippedAssignments(next)
+    setCorrectingKey(null)
     try {
       await updateDoc(doc(db, 'families', familyId, 'events', event.id), { forIds: resolvedIds })
-      toast(`"${event.title}" assigned to ${s.forNames.join(' & ')}`, 'success')
+      toast(`"${event.title}" assigned to ${forNames.join(' & ')}`, 'success')
+      writeCache(skipEaKey, Array.from(next))
     } catch (err) {
       console.error('Failed to assign event:', err)
-      toast('Could not save assignment', 'error')
+      toast('Could not save — check your connection and try again', 'error')
+      // Reverse the optimistic removal so the card comes back.
+      setSkippedAssignments(skippedAssignments)
     }
-  }, [familyId, events, members])
+  }, [familyId, events, members, skippedAssignments, skipEaKey])
 
-  const skipEventAssignment = useCallback((s: EventAssignmentSuggestion) => {
+  // Permanently dismiss a suggestion (X button). Persists across sessions.
+  const dismissEventAssignment = useCallback((s: EventAssignmentSuggestion) => {
     const key = `${s.eventTitle}|${s.eventDate}`
     const next = new Set(Array.from(skippedAssignments).concat(key))
     setSkippedAssignments(next)
     writeCache(skipEaKey, Array.from(next))
+    setCorrectingKey(null)
   }, [skippedAssignments, skipEaKey])
 
   return (
@@ -1662,6 +1684,7 @@ export function CommandCenter() {
           <div className="space-y-2 stagger-children">
             {pendingAssignments.map((s) => {
               const key = `${s.eventTitle}|${s.eventDate}`
+              const isPicking = correctingKey === key
               const displayDate = (() => {
                 try {
                   return new Date(s.eventDate + 'T12:00:00').toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })
@@ -1674,26 +1697,54 @@ export function CommandCenter() {
                   </div>
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-medium text-slate-900 truncate">"{s.eventTitle}"</p>
-                    <p className="text-xs text-slate-500 mt-0.5">{displayDate} · {s.reason}</p>
-                    <div className="flex items-center gap-2 mt-2.5 flex-wrap">
-                      <button
-                        onClick={() => confirmEventAssignment(s)}
-                        className="inline-flex items-center gap-1 text-xs font-semibold text-white bg-violet-600 hover:bg-violet-700 active:bg-violet-800 px-3 py-1.5 rounded-lg transition-colors"
-                      >
-                        <Check size={11} /> Yes, for {s.forNames.join(' & ')}
-                      </button>
-                      <button
-                        onClick={() => skipEventAssignment(s)}
-                        className="text-xs text-slate-400 hover:text-slate-600 transition-colors"
-                      >
-                        Not quite
-                      </button>
-                    </div>
+                    {!isPicking && (
+                      <p className="text-xs text-slate-500 mt-0.5">{displayDate} · {s.reason}</p>
+                    )}
+
+                    {isPicking ? (
+                      // Member picker — shown after tapping "Not quite"
+                      <div>
+                        <p className="text-xs text-slate-500 mt-1 mb-2">Who is this event for?</p>
+                        <div className="flex flex-wrap gap-1.5">
+                          {members.map((m) => (
+                            <button
+                              key={m.id}
+                              onClick={() => confirmEventAssignment(s, [m.name])}
+                              className="text-xs font-medium text-slate-700 bg-slate-100 hover:bg-violet-100 hover:text-violet-700 px-2.5 py-1 rounded-lg transition-colors"
+                            >
+                              {m.name}
+                            </button>
+                          ))}
+                          <button
+                            onClick={() => dismissEventAssignment(s)}
+                            className="text-xs text-slate-400 hover:text-slate-600 px-2.5 py-1 rounded-lg transition-colors"
+                          >
+                            No one specific
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      // Default: confirm AI suggestion or open the picker
+                      <div className="flex items-center gap-2 mt-2.5 flex-wrap">
+                        <button
+                          onClick={() => confirmEventAssignment(s)}
+                          className="inline-flex items-center gap-1 text-xs font-semibold text-white bg-violet-600 hover:bg-violet-700 active:bg-violet-800 px-3 py-1.5 rounded-lg transition-colors"
+                        >
+                          <Check size={11} /> Yes, for {s.forNames.join(' & ')}
+                        </button>
+                        <button
+                          onClick={() => setCorrectingKey(key)}
+                          className="text-xs text-slate-500 hover:text-slate-700 transition-colors"
+                        >
+                          Not quite →
+                        </button>
+                      </div>
+                    )}
                   </div>
                   <button
-                    onClick={() => skipEventAssignment(s)}
+                    onClick={() => dismissEventAssignment(s)}
                     className="p-1.5 rounded-lg text-slate-300 hover:text-slate-500 hover:bg-slate-100 transition-colors shrink-0"
-                    title="Skip"
+                    title="Dismiss — won't suggest this again"
                   >
                     <X size={14} />
                   </button>
