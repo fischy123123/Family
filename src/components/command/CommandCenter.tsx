@@ -155,11 +155,37 @@ function openGmailMessage(messageId: string, subject?: string) {
   }
 }
 
+const CACHE_TTL_MS: Partial<Record<string, number>> = {
+  // Gmail signals go stale after 6 hours — refresh so the engine doesn't
+  // keep reasoning about week-old inbox signals.
+  'gmail': 6 * 60 * 60 * 1000,
+  // Calendar event cache: 30 min (sync route writes fresh data anyway)
+  'gcal': 30 * 60 * 1000,
+}
+
+function getCacheTtl(key: string): number | undefined {
+  for (const [prefix, ttl] of Object.entries(CACHE_TTL_MS)) {
+    if (key.includes(prefix)) return ttl
+  }
+}
+
 function readCache<T>(key: string | null): T | null {
   if (!key) return null
   try {
     const raw = localStorage.getItem(key)
-    return raw ? (JSON.parse(raw) as T) : null
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as { v: T; ts: number } | T
+    // Support both legacy bare values and new timestamped wrapper
+    if (parsed && typeof parsed === 'object' && 'v' in (parsed as object) && 'ts' in (parsed as object)) {
+      const { v, ts } = parsed as { v: T; ts: number }
+      const ttl = getCacheTtl(key)
+      if (ttl && Date.now() - ts > ttl) {
+        localStorage.removeItem(key)
+        return null
+      }
+      return v
+    }
+    return parsed as T
   } catch {
     return null
   }
@@ -168,7 +194,10 @@ function readCache<T>(key: string | null): T | null {
 function writeCache(key: string | null, value: unknown) {
   if (!key) return
   try {
-    localStorage.setItem(key, JSON.stringify(value))
+    const ttl = getCacheTtl(key)
+    // Only wrap in timestamped envelope for keys that have a TTL
+    const entry = ttl ? { v: value, ts: Date.now() } : value
+    localStorage.setItem(key, JSON.stringify(entry))
   } catch {
     /* quota / private mode — ignore */
   }
