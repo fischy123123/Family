@@ -6,7 +6,7 @@ import type {
   FamilyProfile, FamilyMemory,
 } from '@/lib/types'
 import { memorySubjects, memoryConcernsMember } from '@/lib/types'
-import { resolveAssignee } from '@/lib/members'
+import { resolveAssignee, memberById } from '@/lib/members'
 
 // One actionable item the assistant noticed in the family's inbox. Folded into
 // the same reasoning as everything else — never shown as a separate silo.
@@ -346,9 +346,14 @@ export function buildFamilyContextParts(input: FamilyContextInput): {
             .map(
               (t) => {
                 const who = resolveAssignee(members, t)?.name ?? t.assigneeEmail
+                const forNames = (t.forIds ?? [])
+                  .map((id) => memberById(members, id)?.name)
+                  .filter((n): n is string => Boolean(n))
+                const forStr = forNames.length ? ` [for: ${forNames.join(', ')}]` : ''
+                const notesStr = t.notes ? ` | notes: ${t.notes.slice(0, 200)}` : ''
                 return `- [id:${t.id}] ${t.title}${t.dueDate ? ` (due ${fmtDate(t.dueDate, tz)})` : ''}${
-                  who ? ` [${who}]` : ''
-                } priority=${t.priority}`
+                  who ? ` [assigned: ${who}]` : ''
+                }${forStr} priority=${t.priority}${notesStr}`
               }
             )
             .join('\n')

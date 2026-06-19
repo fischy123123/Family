@@ -1200,7 +1200,7 @@ export function CommandCenter() {
         </div>
         <button
           onClick={() => { setPendingReport(null); runEngine(undefined, false) }}
-          disabled={busy}
+          disabled={loading}
           className="mt-1 p-2.5 rounded-xl bg-white border border-slate-200 text-slate-500 hover:text-blue-600 hover:border-blue-200 transition-colors shadow-card disabled:opacity-60"
           aria-label="Refresh"
         >
