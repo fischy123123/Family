@@ -8,7 +8,7 @@ import {
 import { db } from '@/lib/firebase'
 import {
   RefreshCw, AlertTriangle, Lightbulb, Clock,
-  Calendar as CalIcon, Sparkles, Check, HelpCircle, X, MessageCircle, Users, Bookmark,
+  Calendar as CalIcon, Sparkles, Check, HelpCircle, X, MessageCircle, Users, Bookmark, Plus,
 } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { useFirestore } from '@/hooks/useFirestore'
@@ -1263,15 +1263,26 @@ export function CommandCenter() {
                   <div className="flex-1">
                     <p className="text-sm font-medium text-slate-900">{r.title}</p>
                     <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">{r.rationale}</p>
-                    {r.actionLabel && (
-                      <button
-                        onClick={() => openBriefingInCopilot(`${r.title}. ${r.rationale}`)}
-                        className="mt-2 inline-flex items-center gap-1 text-xs font-medium text-purple-600 hover:text-purple-800"
-                      >
-                        <MessageCircle size={11} />
-                        {r.actionLabel} →
-                      </button>
-                    )}
+                    {r.actionLabel && (() => {
+                      // Most recommendations are concrete add-actions (a reminder,
+                      // task, list item, or event) — route those to the Capture
+                      // sheet so they happen in one tap without leaving the page.
+                      // Only genuinely conversational ones hand off to Copilot.
+                      const toCopilot = r.actionType === 'copilot'
+                      const text = `${r.actionLabel}: ${r.title}. ${r.rationale}`
+                      const Icon = toCopilot ? MessageCircle : Plus
+                      return (
+                        <button
+                          onClick={() => toCopilot
+                            ? openBriefingInCopilot(text)
+                            : openCapture({ text, autoAnalyze: true })}
+                          className="mt-2 inline-flex items-center gap-1 text-xs font-medium text-purple-600 hover:text-purple-800"
+                        >
+                          <Icon size={11} />
+                          {r.actionLabel} →
+                        </button>
+                      )
+                    })()}
                   </div>
                   <div className="flex items-start gap-1 shrink-0">
                     <button

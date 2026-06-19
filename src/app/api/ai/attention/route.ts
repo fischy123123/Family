@@ -91,7 +91,8 @@ Given the family context, produce a JSON report with this exact shape:
     {
       "title": "a proactive action that reduces future stress",
       "rationale": "why it helps",
-      "actionLabel": "short button text (optional)"
+      "actionLabel": "short button text (optional)",
+      "actionType": "capture" | "copilot"
     }
   ]
 }
@@ -114,6 +115,7 @@ Rules:
 - "recommendations" are optional, low-pressure ideas that reduce future stress. Return 0-3. Do not invent busywork; if there's nothing genuinely helpful, return an empty array.
 - CRITICAL — NEVER recommend app setup or onboarding tasks for data that already exists. If FAMILY MEMBERS already lists one or more people, do NOT recommend "add your family members", "set up profiles", or "tell me about your family" — that is done. If UPCOMING EVENTS is non-empty, do NOT recommend "connect your calendar". Only suggest a setup step when the corresponding data is genuinely absent. Repeating a completed setup step makes the assistant look broken.
 - Good recommendations are forward-looking and SPECIFIC to what's actually in the data: e.g. "Book a sitter for date night Friday — you have nothing scheduled for the kids that evening", "Maddie's prescription runs out before her next refill — reorder now", "Pack the soccer bag tonight; Saturday's game is across town". Tie each recommendation to a concrete event, task, or pattern you can see. Avoid generic life advice.
+- For each recommendation set "actionType" and write "actionLabel" to match the action the button performs: use "capture" (the default for almost all recommendations) when tapping it should turn the recommendation into a concrete item — a reminder, task, shopping/list item, or calendar event (labels like "Remind me tonight", "Add to list", "Add to calendar"). Use "copilot" ONLY when the recommendation genuinely needs a back-and-forth conversation to act on (e.g. "Help me plan a date night", "Draft a reply"). Never use "copilot" for something that is just creating a single reminder/task/event — that should be "capture" so it happens in one tap without leaving the page.
 - Honor the family's preferred tone and quiet hours from the FAMILY PROFILE.
 - If the family has truly NO data at all (no members, no events, no tasks), give a warm greeting and ONE gentle recommendation to connect their calendar or tell you about themselves — never a wall of setup tasks. Once any real data exists, switch entirely to substantive recommendations.
 - Output ONLY the JSON object, no markdown, no commentary.

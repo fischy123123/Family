@@ -208,6 +208,11 @@ export interface Recommendation {
   title: string                 // "Pack swim bags tonight"
   rationale: string             // why it reduces future stress
   actionLabel?: string          // "Add to tonight's list"
+  // How the action button should behave. 'capture' (default) opens the Capture
+  // sheet so the recommendation becomes a real task/event/list item in place;
+  // 'copilot' hands off to a conversation only when genuine back-and-forth is
+  // needed (e.g. "help me plan a date night").
+  actionType?: 'copilot' | 'capture' | 'calendar'
 }
 
 export interface AttentionReport {
