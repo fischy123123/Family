@@ -795,6 +795,25 @@ export function CommandCenter() {
     toast(`Saved "${title}" as a task`, 'success')
   }
 
+  // Acting on a recommendation creates the to-do directly and clears the card,
+  // rather than popping the Capture sheet or handing off to Copilot. One tap,
+  // a confirmation toast, done — the recommendation is "nice to do", so it
+  // lands at medium priority instead of high.
+  async function addRecommendationAsTask(title: string, rationale: string) {
+    if (!familyId) return
+    await createTask({
+      id: generateId(),
+      title,
+      notes: rationale,
+      isCompleted: false,
+      priority: 'medium',
+      source: 'ai',
+      createdAt: new Date().toISOString(),
+    } as Task)
+    setCompletedTitles((prev) => new Set(prev).add(title))
+    toast(`Added "${title}" to your tasks`, 'success')
+  }
+
   // Save one clarification, then immediately re-run the engine with it included.
   async function saveClarification(c: CalendarClarification) {
     const answer = clarificationAnswers[c.id]?.trim()
@@ -1264,18 +1283,17 @@ export function CommandCenter() {
                     <p className="text-sm font-medium text-slate-900">{r.title}</p>
                     <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">{r.rationale}</p>
                     {r.actionLabel && (() => {
-                      // Most recommendations are concrete add-actions (a reminder,
-                      // task, list item, or event) — route those to the Capture
-                      // sheet so they happen in one tap without leaving the page.
-                      // Only genuinely conversational ones hand off to Copilot.
+                      // Most recommendations are a concrete to-do — tapping the
+                      // action creates it directly with a confirmation toast and
+                      // clears the card. Only genuinely conversational ones
+                      // (actionType 'copilot') hand off to Copilot.
                       const toCopilot = r.actionType === 'copilot'
-                      const text = `${r.actionLabel}: ${r.title}. ${r.rationale}`
                       const Icon = toCopilot ? MessageCircle : Plus
                       return (
                         <button
                           onClick={() => toCopilot
-                            ? openBriefingInCopilot(text)
-                            : openCapture({ text, autoAnalyze: true })}
+                            ? openBriefingInCopilot(`${r.actionLabel}: ${r.title}. ${r.rationale}`)
+                            : addRecommendationAsTask(r.title, r.rationale)}
                           className="mt-2 inline-flex items-center gap-1 text-xs font-medium text-purple-600 hover:text-purple-800"
                         >
                           <Icon size={11} />
