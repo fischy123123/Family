@@ -80,62 +80,86 @@ export default function SettingsPage() {
 
   // ── Memory cleanup ────────────────────────────────────────────
   async function cleanupMemories() {
-    if (memories.length < 2) return
+    if (memories.length === 0) return
     setCleaning(true)
     setCleanResult(null)
+
+    const refs = members.map((m) => ({
+      id: m.id, name: m.name, email: m.email || undefined, role: m.role,
+    }))
+
+    // Work from a local snapshot so Phase 2 sees Phase 1's tagging without
+    // waiting for Firestore's onSnapshot to propagate.
+    const snapshot = [...memories]
+    let tagged = 0
+    let removed = 0
+    let merged = 0
+
     try {
-      const memberRefs = members.map((m) => ({
-        id: m.id,
-        name: m.name,
-        email: m.email || undefined,
-        role: m.role,
-      }))
-      const res = await fetch('/api/ai/cleanup-memories', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ memories, members: memberRefs }),
-      })
-      if (!res.ok) throw new Error('cleanup failed')
-      const result = await res.json()
-
-      const toDelete: string[] = result.toDelete ?? []
-      const toMerge: Array<{ supersededIds: string[]; consolidatedText: string; subjectIdentifier: string | null }> = result.toMerge ?? []
-      const toTag: Array<{ id: string; subjectIdentifier: string }> = result.toTag ?? []
-
-      for (const { id, subjectIdentifier } of toTag) {
-        const memory = memories.find((m) => m.id === id)
-        if (memory) await update({ ...memory, subjectEmail: subjectIdentifier })
+      // ── Phase 1: tag each unlinked memory individually ──────────
+      // One classify call per memory is more reliable than asking one big
+      // prompt to tag all of them at once.
+      const untagged = snapshot.filter((m) => !m.subjectEmail)
+      for (const memory of untagged) {
+        try {
+          const res = await fetch('/api/ai/classify-memory', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text: memory.text, members: refs }),
+          })
+          if (res.ok) {
+            const data = await res.json()
+            if (data.subjectIdentifier) {
+              await update({ ...memory, subjectEmail: data.subjectIdentifier })
+              const idx = snapshot.findIndex((m) => m.id === memory.id)
+              if (idx >= 0) snapshot[idx] = { ...memory, subjectEmail: data.subjectIdentifier }
+              tagged++
+            }
+          }
+        } catch { /* skip this one, move on */ }
       }
-      for (const id of toDelete) {
-        await remove(id)
-      }
-      for (const group of toMerge) {
-        for (const id of group.supersededIds) {
-          await remove(id)
+
+      // ── Phase 2: merge and delete duplicates using updated snapshot ──
+      if (snapshot.length >= 2) {
+        const res = await fetch('/api/ai/cleanup-memories', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ memories: snapshot, members: refs }),
+        })
+        if (res.ok) {
+          const result = await res.json()
+          const toDelete: string[] = result.toDelete ?? []
+          const toMerge: Array<{ supersededIds: string[]; consolidatedText: string; subjectIdentifier: string | null }> = result.toMerge ?? []
+
+          for (const id of toDelete) {
+            await remove(id)
+          }
+          for (const group of toMerge) {
+            for (const id of group.supersededIds) {
+              await remove(id)
+            }
+            await create({
+              id: generateId(),
+              text: group.consolidatedText,
+              source: 'manual',
+              createdAt: new Date().toISOString(),
+              ...(group.subjectIdentifier ? { subjectEmail: group.subjectIdentifier } : {}),
+            } as FamilyMemory)
+          }
+          removed = toDelete.length + toMerge.reduce((n, g) => n + g.supersededIds.length, 0)
+          merged = toMerge.length
         }
-        await create({
-          id: generateId(),
-          text: group.consolidatedText,
-          source: 'manual',
-          createdAt: new Date().toISOString(),
-          ...(group.subjectIdentifier ? { subjectEmail: group.subjectIdentifier } : {}),
-        } as FamilyMemory)
       }
 
-      const removed = toDelete.length + toMerge.reduce((n, g) => n + g.supersededIds.length, 0)
-      const tagged = toTag.length
-      const merged = toMerge.length
-
-      if (removed === 0 && tagged === 0 && merged === 0) {
+      if (tagged === 0 && removed === 0 && merged === 0) {
         setCleanResult('Already clean — nothing to do.')
         setShowMemories(true)
       } else {
         const parts: string[] = []
-        if (removed > 0) parts.push(`${removed} removed`)
-        if (merged > 0) parts.push(`${merged} merged`)
         if (tagged > 0) parts.push(`${tagged} linked to family members`)
+        if (merged > 0) parts.push(`${merged} merged`)
+        if (removed > 0) parts.push(`${removed} removed`)
         setCleanResult(`Done: ${parts.join(', ')}.`)
-        // Collapse then reopen the list so the update is visually obvious
         setShowMemories(false)
         setTimeout(() => setShowMemories(true), 150)
       }
