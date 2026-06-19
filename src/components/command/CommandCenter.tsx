@@ -1252,6 +1252,7 @@ export function CommandCenter() {
                           allMembers={members}
                           responsible={responsible}
                           forMembers={forMembers}
+                          emailSubject={item.sourceEmailId ? emailSubject(item.sourceEmailId) : undefined}
                           backedByRealItem={!!item.sourceId && (
                             tasks.some((t) => t.id === item.sourceId) ||
                             reminders.some((r) => r.id === item.sourceId)
@@ -1307,6 +1308,7 @@ export function CommandCenter() {
                   <ProblemCard
                     key={p.id}
                     problem={p}
+                    emailSubject={p.sourceEmailId ? emailSubject(p.sourceEmailId) : undefined}
                     onSaveTask={() => saveItemAsTask(p.title, p.detail)}
                     onDismiss={() => dismissItem(p.title)}
                     onCopilot={(text) => openBriefingInCopilot(text)}
@@ -1439,12 +1441,14 @@ export function CommandCenter() {
 
 function ProblemCard({
   problem: p,
+  emailSubject,
   onSaveTask,
   onDismiss,
   onCopilot,
   onCapture,
 }: {
   problem: PotentialProblem
+  emailSubject?: string
   onSaveTask: () => void
   onDismiss: () => void
   onCopilot: (text: string) => void
@@ -1468,7 +1472,7 @@ function ProblemCard({
           <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">{p.detail}</p>
           {p.sourceEmailId && (
             <button
-              onClick={() => openGmailMessage(p.sourceEmailId!, emailSubject(p.sourceEmailId!))}
+              onClick={() => openGmailMessage(p.sourceEmailId!, emailSubject)}
               className="inline-flex items-center gap-1 mt-1 text-[11px] font-medium text-blue-600 hover:text-blue-800 hover:underline"
             >
               <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor" className="shrink-0">
@@ -1557,13 +1561,14 @@ function SectionLabel({ icon: Icon, color, children }: { icon: typeof Clock; col
 }
 
 function AttentionCard({
-  item, accent, allMembers, responsible, forMembers, backedByRealItem, onComplete, onDismiss, onSaveTask, onAddContext, onAssign,
+  item, accent, allMembers, responsible, forMembers, emailSubject, backedByRealItem, onComplete, onDismiss, onSaveTask, onAddContext, onAssign,
 }: {
   item: AttentionItem
   accent: string
   allMembers: FamilyMember[]
   responsible?: FamilyMember
   forMembers: FamilyMember[]
+  emailSubject?: string
   backedByRealItem: boolean
   onComplete: () => void
   onDismiss: () => void
@@ -1623,7 +1628,7 @@ function AttentionCard({
           <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">{item.reason}</p>
           {item.sourceEmailId && (
             <button
-              onClick={() => openGmailMessage(item.sourceEmailId!, emailSubject(item.sourceEmailId!))}
+              onClick={() => openGmailMessage(item.sourceEmailId!, emailSubject)}
               className="inline-flex items-center gap-1 mt-1 text-[11px] font-medium text-blue-600 hover:text-blue-800 hover:underline"
             >
               <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor" className="shrink-0">
