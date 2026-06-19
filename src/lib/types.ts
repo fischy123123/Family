@@ -412,8 +412,10 @@ export interface CalendarEvent {
   location?: string
   notes?: string
   calendarId: string
+  calendarName?: string
   ownerEmail: string
   color: string
+  recurringEventId?: string
 }
 
 export interface RecurrenceRule {
