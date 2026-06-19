@@ -84,7 +84,7 @@ export async function getEvents(
           color,
           calendarId: cal.id,
           calendarName: cal.summary ?? '',
-          ownerEmail: '',
+          ownerEmail: cal.id?.includes('@') ? cal.id : '',
         }
         if (item.recurringEventId) eventEntry.recurringEventId = item.recurringEventId
         allEvents.push(eventEntry)
