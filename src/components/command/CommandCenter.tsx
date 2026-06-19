@@ -243,10 +243,13 @@ export function CommandCenter() {
   // Keeping report/googleEvents visible prevents the blank-then-reload flicker.
   const clearCaches = useCallback(() => {
     if (!familyId) return
-    const prefixes = [ATTN_PREFIX, GCAL_PREFIX, CLAR_PREFIX, GMAIL_PREFIX, LAST_RUN_PREFIX, CTX_SIG_PREFIX, LAST_RUN_SIG_PREFIX]
+    // Include the dismissed-items list so "Reset cached data" also brings back
+    // any cards the user dismissed (e.g. an accidental tap on the X).
+    const prefixes = [ATTN_PREFIX, GCAL_PREFIX, CLAR_PREFIX, GMAIL_PREFIX, LAST_RUN_PREFIX, CTX_SIG_PREFIX, LAST_RUN_SIG_PREFIX, DISMISS_PREFIX]
     prefixes.forEach((p) => {
       try { localStorage.removeItem(p + familyId) } catch { /* ignore */ }
     })
+    setDismissedTitles(new Set())
     lastRun.current = 0
     lastCtxSig.current = ''
     lastRunSig.current = ''
@@ -878,6 +881,18 @@ export function CommandCenter() {
     setTeachPrompt({ title, reason: '' })
   }
 
+  // Reverse a dismissal (e.g. an accidental X tap): un-hide the card and stop
+  // suppressing it so it returns to the briefing on the next run.
+  function undoDismiss(title: string) {
+    setDismissedTitles((prev) => {
+      const next = new Set(prev)
+      next.delete(title)
+      writeCache(dismissKey, Array.from(next))
+      return next
+    })
+    setTeachPrompt(null)
+  }
+
   // An item stays in its list slot while its teach prompt is open, so the
   // feedback box appears exactly where the dismissed card was — not at the top.
   function showInList(title: string) {
@@ -1171,6 +1186,7 @@ export function CommandCenter() {
                             title={item.title}
                             onTeach={(feedback) => teachAssistant(item.title, feedback)}
                             onDismiss={() => setTeachPrompt(null)}
+                            onUndo={() => undoDismiss(item.title)}
                           />
                         )
                       }
@@ -1243,6 +1259,7 @@ export function CommandCenter() {
                     title={p.title}
                     onTeach={(feedback) => teachAssistant(p.title, feedback)}
                     onDismiss={() => setTeachPrompt(null)}
+                    onUndo={() => undoDismiss(p.title)}
                   />
                 ) : (
                   <ProblemCard
@@ -1273,6 +1290,7 @@ export function CommandCenter() {
                     title={r.title}
                     onTeach={(feedback) => teachAssistant(r.title, feedback)}
                     onDismiss={() => setTeachPrompt(null)}
+                    onUndo={() => undoDismiss(r.title)}
                   />
                 ) : (
                 <div key={r.id} className="rounded-2xl p-4 bg-white shadow-card animate-slide-up flex items-start gap-3">
@@ -1775,18 +1793,27 @@ function AssignPanel({
 }
 
 function TeachPrompt({
-  title, onTeach, onDismiss,
+  title, onTeach, onDismiss, onUndo,
 }: {
   title: string
   onTeach: (feedback: string) => void
   onDismiss: () => void
+  onUndo: () => void
 }) {
   const [feedback, setFeedback] = useState('')
   return (
     <div className="rounded-2xl p-4 bg-slate-50 border border-slate-200 animate-slide-up">
-      <p className="text-xs font-medium text-slate-700 mb-2">
-        Want to teach your assistant not to show things like this?
-      </p>
+      <div className="flex items-center justify-between mb-2 gap-2">
+        <p className="text-xs font-medium text-slate-700">
+          Dismissed. Want to teach your assistant not to show things like this?
+        </p>
+        <button
+          onClick={onUndo}
+          className="shrink-0 inline-flex items-center gap-1 text-[11px] font-semibold text-blue-600 hover:text-blue-800"
+        >
+          <RefreshCw size={11} /> Undo
+        </button>
+      </div>
       <div className="flex gap-2 mb-2">
         {["It's work-related, not family", "Not relevant to us", "Already handled"].map((opt) => (
           <button
