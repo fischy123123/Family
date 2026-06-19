@@ -11,7 +11,9 @@ export async function GET(request: NextRequest) {
   if (!accessToken || !refreshToken) return NextResponse.json({ error: 'Tokens required' }, { status: 401 })
 
   try {
+    const t0 = Date.now()
     const events = await getEvents(accessToken, refreshToken, timeMin, timeMax)
+    console.log(`[perf/calendar-fetch] duration=${Date.now() - t0}ms events=${events.length}`)
     return NextResponse.json({ events })
   } catch (e: unknown) {
     const message = e instanceof Error ? e.message : 'Calendar error'

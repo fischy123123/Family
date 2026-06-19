@@ -15,10 +15,18 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'ANTHROPIC_API_KEY not configured' }, { status: 500 })
   }
 
+  const reqStart = Date.now()
   const ctx: FamilyContextInput & { tier?: 'fast' | 'deep'; suppressedTitles?: string[] } = await request.json()
   // Build context as two parts: the static data block (cacheable) and the
   // dynamic time header (changes every run — not cached).
+  const ctxStart = Date.now()
   const { timeHeader, dataBlock } = buildFamilyContextParts(ctx)
+  console.log(
+    `[perf/attention] ctx_build=${Date.now() - ctxStart}ms` +
+    ` events=${ctx.events?.length ?? 0} tasks=${ctx.tasks?.length ?? 0}` +
+    ` members=${ctx.members?.length ?? 0} inbox=${ctx.inbox?.length ?? 0}` +
+    ` prompt_chars=${(timeHeader + dataBlock).length}`
+  )
 
   // Build suppression block from titles the user has explicitly dismissed.
   // This goes into the dynamic (non-cached) part of the prompt so it always
@@ -151,6 +159,8 @@ For each problem, include an optional "actionType" field: "copilot" for conversa
         try { controller.enqueue(encoder.encode(JSON.stringify(obj) + '\n')) } catch { /* closed */ }
       }
       try {
+        const aiStart = Date.now()
+        let ttft = -1
         const ai = anthropic.messages.stream(
           {
             model: MODEL,
@@ -184,9 +194,23 @@ For each problem, include an optional "actionType" field: "copilot" for conversa
           { signal: request.signal },
         )
 
-        ai.on('text', (delta) => send({ t: 'delta', d: delta }))
+        ai.on('text', (delta) => {
+          if (ttft === -1) {
+            ttft = Date.now() - aiStart
+            console.log(`[perf/attention] ttft=${ttft}ms`)
+          }
+          send({ t: 'delta', d: delta })
+        })
 
         const finalMsg = await ai.finalMessage()
+        const u = finalMsg.usage as Record<string, number>
+        const cacheRead = u.cache_read_input_tokens ?? 0
+        const cacheWrite = u.cache_creation_input_tokens ?? 0
+        console.log(
+          `[perf/attention] total=${Date.now() - aiStart}ms wall=${Date.now() - reqStart}ms` +
+          ` cache=${cacheRead > 0 ? 'HIT' : cacheWrite > 0 ? 'WRITE' : 'MISS'}` +
+          ` cr=${cacheRead} cw=${cacheWrite} in=${u.input_tokens ?? 0} out=${u.output_tokens ?? 0}`
+        )
         logUsage('attention', MODEL, finalMsg.usage)
 
         // A truncated JSON isn't useful and shouldn't overwrite the client's

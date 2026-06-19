@@ -398,6 +398,7 @@ export function CommandCenter() {
       if (!fresh || cancelled) return
       const timeMin = new Date().toISOString()
       const timeMax = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString()
+      const calFetchStart = performance.now()
       try {
         const res = await fetch(
           `/api/calendar/events?accessToken=${encodeURIComponent(fresh.accessToken)}&refreshToken=${encodeURIComponent(fresh.refreshToken)}&timeMin=${encodeURIComponent(timeMin)}&timeMax=${encodeURIComponent(timeMax)}`
@@ -409,6 +410,7 @@ export function CommandCenter() {
             ...e,
             ownerEmail: e.ownerEmail || ownerEmail,
           }))
+          console.log(`[perf:calendar] fetch=${Math.round(performance.now() - calFetchStart)}ms events=${loadedEvents.length}`)
           setGoogleEvents(loadedEvents)
           writeCache(gcalKey, loadedEvents)
 
@@ -541,6 +543,9 @@ export function CommandCenter() {
     // (which call runEngine directly) will record the correct timestamp.
     const runAt = Date.now()
     lastRun.current = runAt
+    const engineStart = performance.now()
+    let engineTTFT = -1
+    console.log(`[perf:engine] start events=${events.length} tasks=${tasks.length + reminders.length} members=${members.length}`)
     // Bump the token: this fast run is now the latest, so any in-flight deep pass
     // from a previous run will be ignored when it returns.
     const myToken = ++deepToken.current
@@ -595,12 +600,17 @@ export function CommandCenter() {
           let evt: { t?: string; d?: string; error?: string } & Partial<AttentionReport>
           try { evt = JSON.parse(line) } catch { continue }
           if (evt.t === 'delta') {
+            if (engineTTFT === -1 && evt.d) {
+              engineTTFT = Math.round(performance.now() - engineStart)
+              console.log(`[perf:engine] ttft=${engineTTFT}ms`)
+            }
             if (progressive && evt.d) {
               rawText += evt.d
               const g = extractPartialGreeting(rawText)
               if (g) setStreamingGreeting(g)
             }
           } else if (evt.t === 'final') {
+            console.log(`[perf:engine] total=${Math.round(performance.now() - engineStart)}ms ttft=${engineTTFT}ms`)
             finalReport = evt as AttentionReport
           } else if (evt.t === 'error') {
             streamError = evt.error ?? 'Something went wrong. Tap refresh to try again.'

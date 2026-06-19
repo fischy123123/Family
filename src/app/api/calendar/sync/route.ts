@@ -42,6 +42,7 @@ export async function POST(request: NextRequest) {
   const timeMax = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString()
 
   let synced = 0
+  const syncStart = Date.now()
 
   for (const tokenDoc of tokensSnap.docs) {
     const { accessToken, refreshToken, email } = tokenDoc.data() as {
@@ -50,6 +51,7 @@ export async function POST(request: NextRequest) {
     if (!accessToken || !refreshToken) continue
 
     try {
+      const memberStart = Date.now()
       const rawEvents = await getEvents(accessToken, refreshToken, timeMin, timeMax)
       const events: CalendarEvent[] = rawEvents.map((e) => ({
         ...e,
@@ -83,6 +85,7 @@ export async function POST(request: NextRequest) {
       // (getEvents may have refreshed it internally — we can't detect that here,
       // but the refresh endpoint handles token rotation on the client side)
 
+      console.log(`[perf/sync] user=${email} gcal=${Date.now() - memberStart}ms events=${rawEvents.length}`)
       synced++
     } catch (err) {
       // One member's token failing shouldn't block others
@@ -90,5 +93,6 @@ export async function POST(request: NextRequest) {
     }
   }
 
+  console.log(`[perf/sync] total=${Date.now() - syncStart}ms members=${tokensSnap.docs.length} synced=${synced}`)
   return NextResponse.json({ synced })
 }
