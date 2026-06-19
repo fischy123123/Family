@@ -17,17 +17,40 @@ export function getAnthropic(): Anthropic {
   return new Anthropic({ apiKey })
 }
 
-// Centralized usage logging so every Claude call reports its token cost with a
-// route tag. Grep Vercel logs for "[ai-usage]" to see which routes dominate the
-// bill, e.g.:
-//   [ai-usage] route=gmail-suggestions model=claude-haiku... in=12043 cw=0 cr=0 out=842
-// in=uncached input, cw=cache write, cr=cache read, out=output.
+// Per-model pricing in $ per 1M tokens: [input, cacheWrite, cacheRead, output]
+const MODEL_PRICING: Record<string, [number, number, number, number]> = {
+  'claude-opus-4-8':           [5.00, 6.25, 0.50, 25.00],
+  'claude-sonnet-4-6':         [3.00, 3.75, 0.30, 15.00],
+  'claude-haiku-4-5-20251001': [1.00, 1.25, 0.10,  5.00],
+  'claude-haiku-4-5':          [1.00, 1.25, 0.10,  5.00],
+}
+
+function estimateCost(model: string, u: Record<string, number>): string {
+  const pricing = MODEL_PRICING[model]
+  if (!pricing) return '?'
+  const [pIn, pCw, pCr, pOut] = pricing
+  const cost =
+    (u.input_tokens ?? 0)                * pIn  / 1_000_000 +
+    (u.cache_creation_input_tokens ?? 0) * pCw  / 1_000_000 +
+    (u.cache_read_input_tokens ?? 0)     * pCr  / 1_000_000 +
+    (u.output_tokens ?? 0)               * pOut / 1_000_000
+  return `$${cost.toFixed(4)}`
+}
+
+// Centralized usage logging. Grep Vercel logs for "[ai-usage]" to see spend
+// per route and model. Example:
+//   [ai-usage] route=attention model=claude-sonnet-4-6 in=850 cw=0 cr=4200 out=320 cost=$0.0062
+// in=uncached input tokens (full price)
+// cw=cache write tokens (1.25x input price, paid once to populate cache)
+// cr=cache read tokens (0.1x input price — the saving)
+// out=output tokens (most expensive per token)
 export function logUsage(route: string, model: string, usage: unknown) {
   const u = (usage ?? {}) as Record<string, number>
   console.log(
     `[ai-usage] route=${route} model=${model} ` +
     `in=${u.input_tokens ?? 0} cw=${u.cache_creation_input_tokens ?? 0} ` +
-    `cr=${u.cache_read_input_tokens ?? 0} out=${u.output_tokens ?? 0}`
+    `cr=${u.cache_read_input_tokens ?? 0} out=${u.output_tokens ?? 0} ` +
+    `cost=${estimateCost(model, u)}`
   )
 }
 

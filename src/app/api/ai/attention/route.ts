@@ -206,12 +206,12 @@ For each problem, include an optional "actionType" field: "copilot" for conversa
         const u = finalMsg.usage
         const cacheRead = (u as unknown as Record<string, number>).cache_read_input_tokens ?? 0
         const cacheWrite = (u as unknown as Record<string, number>).cache_creation_input_tokens ?? 0
+        logUsage('attention', MODEL, finalMsg.usage)
         console.log(
           `[perf/attention] total=${Date.now() - aiStart}ms wall=${Date.now() - reqStart}ms` +
           ` cache=${cacheRead > 0 ? 'HIT' : cacheWrite > 0 ? 'WRITE' : 'MISS'}` +
           ` cr=${cacheRead} cw=${cacheWrite} in=${u.input_tokens ?? 0} out=${u.output_tokens ?? 0}`
         )
-        logUsage('attention', MODEL, finalMsg.usage)
 
         // A truncated JSON isn't useful and shouldn't overwrite the client's
         // existing good report — surface an error so it offers a retry instead.
