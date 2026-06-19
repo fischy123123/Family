@@ -95,6 +95,7 @@ export default function SettingsPage() {
     let tagged = 0
     let removed = 0
     let merged = 0
+    let rewritten = 0
     let errors = 0
     let lastError = ''
 
@@ -129,12 +130,12 @@ export default function SettingsPage() {
         }
       }
 
-      // ── Phase 2: merge and delete duplicates using updated snapshot ──
+      // ── Phase 2: merge, delete, and rewrite using updated snapshot ──
       if (snapshot.length >= 2) {
         const res = await fetch('/api/ai/cleanup-memories', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ memories: snapshot, members: refs }),
+          body: JSON.stringify({ memories: snapshot, members: refs, now: new Date().toISOString() }),
         })
         const result = await res.json().catch(() => ({}))
         if (!res.ok) {
@@ -143,6 +144,13 @@ export default function SettingsPage() {
         } else {
           const toDelete: string[] = result.toDelete ?? []
           const toMerge: Array<{ supersededIds: string[]; consolidatedText: string; subjectIdentifiers: string[] }> = result.toMerge ?? []
+          const toRewrite: Array<{ id: string; newText: string }> = result.toRewrite ?? []
+
+          // Rewrite single memories in place (stale relative time / transient state)
+          for (const r of toRewrite) {
+            const mem = snapshot.find((m) => m.id === r.id)
+            if (mem) await update({ ...mem, text: r.newText })
+          }
 
           for (const id of toDelete) {
             await remove(id)
@@ -161,12 +169,14 @@ export default function SettingsPage() {
           }
           removed = toDelete.length + toMerge.reduce((n, g) => n + g.supersededIds.length, 0)
           merged = toMerge.length
+          rewritten = toRewrite.length
         }
       }
 
       const parts: string[] = []
       if (tagged > 0) parts.push(`${tagged} linked to family members`)
       if (merged > 0) parts.push(`${merged} merged`)
+      if (rewritten > 0) parts.push(`${rewritten} cleaned up`)
       if (removed > 0) parts.push(`${removed} removed`)
 
       if (parts.length === 0 && errors === 0) {

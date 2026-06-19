@@ -15,6 +15,7 @@ interface MemberRef {
 interface CleanupRequest {
   memories: FamilyMemory[]
   members: MemberRef[]
+  now?: string
 }
 
 interface MergeGroup {
@@ -23,9 +24,15 @@ interface MergeGroup {
   subjectIdentifiers: string[]   // who the merged memory concerns (empty = family-wide)
 }
 
+interface RewriteItem {
+  id: string
+  newText: string                // same memory, cleaned (absolute dates, no transient state)
+}
+
 export interface CleanupResult {
-  toDelete: string[]     // fully redundant — delete with no replacement
-  toMerge: MergeGroup[]  // multiple entries about the same fact → one consolidated entry
+  toDelete: string[]      // fully redundant — delete with no replacement
+  toMerge: MergeGroup[]   // multiple entries about the same fact → one consolidated entry
+  toRewrite: RewriteItem[]// single memories whose text needs cleaning (stale relative time, transient state)
 }
 
 export async function POST(request: NextRequest) {
@@ -33,8 +40,12 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'ANTHROPIC_API_KEY not configured' }, { status: 500 })
   }
 
-  const { memories, members }: CleanupRequest = await request.json()
+  const { memories, members, now }: CleanupRequest = await request.json()
   if (!memories?.length) return NextResponse.json({ toDelete: [], toMerge: [] })
+
+  const todayStr = new Date(now ?? Date.now()).toLocaleDateString('en-US', {
+    weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+  })
 
   const memberList = members
     .map((m) => `- ${m.name} (${m.role})${m.email ? `, email: ${m.email}` : `, id: ${m.id}`}`)
@@ -54,32 +65,38 @@ export async function POST(request: NextRequest) {
     const response = await anthropic.messages.create({
     model: MODEL,
     max_tokens: 2000,
-    system: `You are deduplicating a family assistant's memory store. Your ONLY job is to find memories that are redundant or that belong together.
+    system: `You are cleaning up a family assistant's memory store. You find memories that are redundant, belong together, or contain time references that will rot. Today is ${todayStr}.
 
 DELETE a memory when:
 - It says the same thing as another memory (exact or near-exact duplicate)
 - It is clearly superseded (e.g. an older version of a fact that has since been updated)
 - It is a question fragment or incomplete thought with no durable information
+- It is purely transient state with no lasting value (e.g. "this week's sessions were Mon/Wed/Thu")
 
 MERGE memories when:
 - Two or more entries are clearly about the same evolving situation (e.g. multiple updates about grounding, same event mentioned twice)
 - Write a single clean sentence capturing the current state
 
-Leave memories alone when they are genuinely distinct facts, even if they mention the same person.
+REWRITE a single memory (toRewrite) when it is worth keeping but its wording will rot:
+- It contains a relative time reference ("this week", "next Tuesday", "in 10 days", "10 days out", "tomorrow"). Convert to an ABSOLUTE date based on today (${todayStr}).
+- It mixes a durable fact with transient one-off state. Keep only the durable part. Example: "Eric trains Mon/Wed/Fri, but this week it was Mon/Wed/Thu" → "Eric trains with Jeff on Mon/Wed/Fri (schedule can flex some weeks)".
+- The newText must read as a fact that stays accurate weeks from now.
 
-For "subjects" on merged memories: an array of the names of everyone the merged memory concerns (empty array if family-wide). A memory can concern multiple people.
+Leave memories alone when they are genuinely distinct, durable facts with no rotting time references.
+
+For "subjects" on merged memories: an array of the names of everyone it concerns (empty if family-wide). A memory can concern multiple people.
 Return ONLY valid JSON. Only include memories that need action — omit anything you're leaving unchanged.`,
     messages: [
       {
         role: 'user',
-        content: `Family members:\n${memberList}\n\nMemories:\n${memoryList}\n\nReturn this JSON:\n{\n  "toDelete": ["id_of_redundant_memory", ...],\n  "toMerge": [\n    {\n      "supersededIds": ["id1", "id2"],\n      "consolidatedText": "single clean sentence capturing current state",\n      "subjects": ["Name1", "Name2"]\n    }\n  ]\n}`,
+        content: `Family members:\n${memberList}\n\nMemories:\n${memoryList}\n\nReturn this JSON:\n{\n  "toDelete": ["id_of_redundant_memory", ...],\n  "toMerge": [\n    {\n      "supersededIds": ["id1", "id2"],\n      "consolidatedText": "single clean sentence capturing current state",\n      "subjects": ["Name1", "Name2"]\n    }\n  ],\n  "toRewrite": [\n    { "id": "id_of_memory_to_clean", "newText": "same fact with absolute dates and no transient state" }\n  ]\n}`,
       },
     ],
   })
 
     const text = response.content[0].type === 'text' ? response.content[0].text : ''
     const match = text.match(/\{[\s\S]*\}/)
-    if (!match) return NextResponse.json({ toDelete: [], toMerge: [] })
+    if (!match) return NextResponse.json({ toDelete: [], toMerge: [], toRewrite: [] })
 
     const result = JSON.parse(match[0])
 
@@ -111,9 +128,16 @@ Return ONLY valid JSON. Only include memories that need action — omit anything
         }))
       : []
 
+    const toRewrite: RewriteItem[] = Array.isArray(result.toRewrite)
+      ? result.toRewrite
+          .filter((r: { id?: unknown; newText?: unknown }) => typeof r?.id === 'string' && typeof r?.newText === 'string' && r.newText.trim())
+          .map((r: { id: string; newText: string }) => ({ id: r.id, newText: r.newText.trim() }))
+      : []
+
     return NextResponse.json({
       toDelete: Array.isArray(result.toDelete) ? result.toDelete : [],
       toMerge,
+      toRewrite,
     } satisfies CleanupResult)
   } catch (e) {
     const msg = e instanceof Error ? e.message : 'cleanup error'

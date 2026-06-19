@@ -15,6 +15,7 @@ interface ConsolidateRequest {
   newText: string
   existingMemories: FamilyMemory[]
   members: MemberRef[]
+  now?: string   // ISO date so relative time can be converted to absolute
 }
 
 export interface ConsolidateResult {
@@ -29,8 +30,12 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'ANTHROPIC_API_KEY not configured' }, { status: 500 })
   }
 
-  const { newText, existingMemories, members }: ConsolidateRequest = await request.json()
+  const { newText, existingMemories, members, now }: ConsolidateRequest = await request.json()
   if (!newText) return NextResponse.json({ error: 'newText required' }, { status: 400 })
+
+  const todayStr = new Date(now ?? Date.now()).toLocaleDateString('en-US', {
+    weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+  })
 
   const memberList = members
     .map((m) => `- ${m.name} (${m.role})${m.email ? `, email: ${m.email}` : `, id: ${m.id}`}`)
@@ -65,6 +70,11 @@ Consolidation rules:
 - When merging, write a concise single sentence capturing the full current state
 - Never supersede unrelated memories
 - If the new memory is genuinely new/unrelated: action = "new", supersededIds = []
+
+Durability rules (IMPORTANT — memories must stay true over time):
+- Today is ${todayStr}. Convert every relative time reference to an ABSOLUTE date. "in 10 days" → the actual date; "next Tuesday" → "Tuesday, Month D"; "tomorrow" → the date. Never store "this week", "next week", "10 days out", etc.
+- Strip transient one-off state from durable facts. "Eric trains Mon/Wed/Fri, but this week it was Mon/Wed/Thu" → store only the durable routine: "Eric trains with Jeff on Mon/Wed/Fri (schedule can flex some weeks)". Do not preserve which days a single past week happened to use.
+- finalText must read as a fact that will still be accurate weeks from now.
 - Return ONLY valid JSON`,
       messages: [
         {

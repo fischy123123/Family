@@ -95,6 +95,16 @@ function fmtDate(iso: string, tz?: string): string {
   }
 }
 
+// Compact "noted Jun 5" date stamp for a memory, so the AI can judge how stale
+// any relative time reference ("this week", "next Tuesday") inside it might be.
+function notedOn(iso: string, tz?: string): string {
+  try {
+    return new Date(iso).toLocaleDateString('en-US', { timeZone: tz, month: 'short', day: 'numeric' })
+  } catch {
+    return ''
+  }
+}
+
 // Onboarding historically saved routines/importantInfo as free-text strings,
 // while the structured editors save arrays. Render either shape gracefully.
 function flattenRoutines(v: FamilyMember['routines']): string {
@@ -179,7 +189,15 @@ export function buildFamilyContextParts(input: FamilyContextInput): {
   const timeHeader =
     `CURRENT TIME: ${nowFormatted}${tz ? ` (timezone: ${tz})` : ''}\n` +
     `TODAY'S LOCAL DATE: ${localDateStr} — use this as the anchor for all relative date reasoning. ` +
-    `"Tomorrow" means the calendar day AFTER this date in the user's timezone, not the next UTC day.`
+    `"Tomorrow" means the calendar day AFTER this date in the user's timezone, not the next UTC day.\n` +
+    `MEMORY TIME RULES (critical):\n` +
+    `- A memory describing a ROUTINE or HABIT (e.g. "trains Mon/Wed/Fri", "trash goes out Tuesdays") is NOT evidence ` +
+    `that the activity is happening today. NEVER create a "now"/"next"/"later" timed item from a recurring pattern. ` +
+    `Only a confirmed entry in UPCOMING EVENTS (the calendar) proves a specific occurrence is happening on a specific day. ` +
+    `If a routine "usually" falls today but it is not on the calendar, do not assert it is happening — at most, gently note it as a possibility.\n` +
+    `- Each memory shows when it was "noted". Treat relative time words inside a memory ("this week", "next Tuesday", ` +
+    `"in 10 days", "tomorrow") as relative to its noted date, NOT to today. Such references are very likely STALE — ` +
+    `do not surface them as current facts. Prefer the calendar and absolute dates for anything time-sensitive.`
 
   // ── Data block (mostly static — eligible for prompt caching) ────────────
   const dataSections: string[] = []
@@ -241,7 +259,7 @@ export function buildFamilyContextParts(input: FamilyContextInput): {
       }).slice(0, 30)
       lensLines.push(
         `What I have learned about this person specifically:\n${sorted
-          .map((m) => `  - ${m.category ? `[${m.category}] ` : ''}${m.text}`)
+          .map((m) => `  - ${m.category ? `[${m.category}] ` : ''}${m.text} (noted ${notedOn(m.createdAt, tz)})`)
           .join('\n')}`
       )
     }
@@ -279,7 +297,7 @@ export function buildFamilyContextParts(input: FamilyContextInput): {
             .map((s) => memberByIdent(s)?.name ?? s)
           const who = subs.length ? ` (about ${subs.join(', ')})` : ''
           const cat = m.category ? `[${m.category}] ` : ''
-          return `- ${cat}${m.text}${who}`
+          return `- ${cat}${m.text}${who} (noted ${notedOn(m.createdAt, tz)})`
         })
         .join('\n')}`
     )
