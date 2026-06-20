@@ -8,7 +8,7 @@ import {
 import { db } from '@/lib/firebase'
 import {
   RefreshCw, AlertTriangle, Lightbulb, Clock,
-  Calendar as CalIcon, Sparkles, Check, HelpCircle, X, MessageCircle, Users, Bookmark, Plus, ChevronDown, Bug,
+  Calendar as CalIcon, Sparkles, Check, HelpCircle, X, MessageCircle, Users, Bookmark, Plus, ChevronDown,
 } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { useFirestore } from '@/hooks/useFirestore'
@@ -40,24 +40,6 @@ type EventContext = {
   eventTitle: string
   context: string
   savedAt: string
-}
-
-// Debug provenance for a single briefing item — surfaced on-screen when debug
-// mode is on, so it's possible to see exactly where an item and its assignment
-// are coming from (AI inference vs in-memory override) and where it's persisted
-// (memory, event doc, task, or reminder).
-type ItemDebug = {
-  sourceType: string
-  sourceId: string
-  shownFrom: string        // what the on-screen assignment is rendered from
-  aiForEmails: string      // raw item.forEmails from the AI report
-  aiAssigneeEmail: string  // raw item.assigneeEmail from the AI report
-  override: string         // in-memory assignmentOverrides[title], if any
-  memoryExact: string | null   // exact-title Assignment memory, if any
-  memoryFuzzy: string[]        // fuzzy-title Assignment memories that may match
-  eventMatch: string | null    // matching calendar event + its stored forIds/assigneeId
-  taskMatch: string | null     // matching task + its stored assignment
-  reminderMatch: string | null // matching reminder + its stored assignment
 }
 
 type EmailSuggestion = {
@@ -100,7 +82,6 @@ function groupItems(items: AttentionItem[]): ItemGroup[] {
 // Everything that gates the page is cached per-family so returning visits
 // render instantly and only update in the background.
 const ATTN_PREFIX = 'fam-attn-'
-const GCAL_PREFIX = 'fam-gcal-'
 const CLAR_PREFIX = 'fam-clar-'
 const GMAIL_PREFIX = 'fam-gmail-'
 const LAST_RUN_PREFIX = 'fam-lastrun-'
@@ -263,7 +244,6 @@ export function CommandCenter() {
   const profile = profiles[0] ?? null
 
   const attnKey = familyId ? ATTN_PREFIX + familyId : null
-  const gcalKey = familyId ? GCAL_PREFIX + familyId : null
   const clarKey = familyId ? CLAR_PREFIX + familyId : null
   const gmailKey = familyId ? GMAIL_PREFIX + familyId : null
   const lastRunKey = familyId ? LAST_RUN_PREFIX + familyId : null
@@ -281,7 +261,6 @@ export function CommandCenter() {
   // Greeting text as it streams in during a cold start, shown in place of the
   // skeleton so the user reads the headline ~2s in rather than waiting ~20s.
   const [streamingGreeting, setStreamingGreeting] = useState('')
-  const [googleEvents, setGoogleEvents] = useState<CalendarEvent[]>([])
   const [googleLoaded, setGoogleLoaded] = useState(false)
   const [hydrated, setHydrated] = useState(false)
   const lastRun = useRef<number>(0)
@@ -339,30 +318,15 @@ export function CommandCenter() {
   const [assignmentOverrides, setAssignmentOverrides] = useState<
     Record<string, { responsibleId?: string; forIds?: string[] }>
   >({})
-  // On-screen debug overlay: shows the provenance of each briefing item and its
-  // assignment. Persisted to localStorage so it survives reloads.
-  const [showDebug, setShowDebug] = useState(false)
-  useEffect(() => {
-    try { setShowDebug(localStorage.getItem('fam-debug') === '1') } catch { /* ignore */ }
-  }, [])
-  const toggleDebug = useCallback(() => {
-    setShowDebug((v) => {
-      const next = !v
-      try { localStorage.setItem('fam-debug', next ? '1' : '0') } catch { /* ignore */ }
-      return next
-    })
-  }, [])
-
   const REPORT_TTL_MS = 4 * 60 * 60 * 1000
 
   // Clear all per-family localStorage caches and trigger a fresh Google Calendar
   // sync + engine run — WITHOUT wiping the current report from the screen.
-  // Keeping report/googleEvents visible prevents the blank-then-reload flicker.
   const clearCaches = useCallback(() => {
     if (!familyId) return
     // Include the dismissed-items list so "Reset cached data" also brings back
     // any cards the user dismissed (e.g. an accidental tap on the X).
-    const prefixes = [ATTN_PREFIX, GCAL_PREFIX, CLAR_PREFIX, GMAIL_PREFIX, LAST_RUN_PREFIX, CTX_SIG_PREFIX, LAST_RUN_SIG_PREFIX, DISMISS_PREFIX, COMPLETED_PREFIX, SKIP_EA_PREFIX]
+    const prefixes = [ATTN_PREFIX, CLAR_PREFIX, GMAIL_PREFIX, LAST_RUN_PREFIX, CTX_SIG_PREFIX, LAST_RUN_SIG_PREFIX, DISMISS_PREFIX, COMPLETED_PREFIX, SKIP_EA_PREFIX]
     prefixes.forEach((p) => {
       try { localStorage.removeItem(p + familyId) } catch { /* ignore */ }
     })
@@ -396,8 +360,6 @@ export function CommandCenter() {
       setReport(r)
       if (reportAge > REPORT_TTL_MS) forceDirectRef.current = true
     }
-    const g = readCache<CalendarEvent[]>(gcalKey)
-    if (g?.length) setGoogleEvents(g)
     const c = readCache<CalendarClarification[]>(clarKey)
     if (c?.length) setClarifications(c)
     const em = readCache<EmailSuggestion[]>(gmailKey)
@@ -415,7 +377,7 @@ export function CommandCenter() {
     const savedRunSig = readCache<string>(lastRunSigKey)
     if (savedRunSig) lastRunSig.current = savedRunSig
     setHydrated(true)
-  }, [familyId, attnKey, gcalKey, clarKey, gmailKey, dismissKey, lastRunKey, ctxSigKey, lastRunSigKey, skipEaKey])
+  }, [familyId, attnKey, clarKey, gmailKey, dismissKey, lastRunKey, ctxSigKey, lastRunSigKey, skipEaKey])
 
   // Scan Gmail incrementally — only emails newer than the last scan.
   // Cache stores { signals, lastScanTs } so we never re-process seen emails.
@@ -503,104 +465,37 @@ export function CommandCenter() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isConnected, gmailKey])
 
-  // Trigger a server-side calendar sync once per session for any family member.
-  // This keeps events fresh in Firestore even if the person who connected their
-  // calendar hasn't opened the app recently — anyone's load triggers the refresh.
-  const calSyncedRef = useRef(false)
-  useEffect(() => {
-    if (!familyId || calSyncedRef.current) return
-    calSyncedRef.current = true
-    ;(async () => {
-      try {
-        const { auth: firebaseAuth } = await import('@/lib/firebase')
-        const idToken = await firebaseAuth.currentUser?.getIdToken()
-        if (idToken) {
-          await fetch('/api/calendar/sync', {
-            method: 'POST',
-            headers: { Authorization: `Bearer ${idToken}` },
-          })
-        }
-      } catch { /* non-fatal */ }
-    })()
-  }, [familyId])
-
-  // Fetch fresh Google Calendar events when connected (updates the cache).
+  // Sync Google Calendar events via the server-side incremental endpoint.
+  // Deleted events arrive as status:'cancelled' in the delta — no full wipe needed.
+  // The Firestore realtime listener (localEvents) picks up results automatically.
   useEffect(() => {
     let cancelled = false
-    async function load() {
-      if (!isConnected || !familyId || !user?.email) {
-        setGoogleEvents([])
-        setGoogleLoaded(true)
-        return
-      }
-      // Reset to false so the auto-run guard correctly waits for real calendar
-      // data. Without this, the guard sees googleLoaded=true left over from a
-      // prior non-connected run and fires the engine before events arrive.
+    async function sync() {
+      if (!familyId) { setGoogleLoaded(true); return }
       setGoogleLoaded(false)
       setCalendarFetching(true)
-      const fresh = await getFreshTokens()
-      if (!fresh || cancelled) {
-        if (!cancelled) { setGoogleLoaded(true); setCalendarFetching(false) }
-        return
-      }
-      const timeMin = new Date().toISOString()
-      const timeMax = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString()
-      const calFetchStart = performance.now()
       try {
-        const res = await fetch(
-          `/api/calendar/events?accessToken=${encodeURIComponent(fresh.accessToken)}&refreshToken=${encodeURIComponent(fresh.refreshToken)}&timeMin=${encodeURIComponent(timeMin)}&timeMax=${encodeURIComponent(timeMax)}`
-        )
-        const data = await res.json()
-        if (!cancelled && res.ok) {
-          const ownerEmail = user.email
-          const loadedEvents: CalendarEvent[] = (data.events ?? []).map((e: CalendarEvent) => ({
-            ...e,
-            ownerEmail: e.ownerEmail || ownerEmail,
-          }))
-          console.log(`[perf:calendar] fetch=${Math.round(performance.now() - calFetchStart)}ms events=${loadedEvents.length}`)
-          setGoogleEvents(loadedEvents)
-          writeCache(gcalKey, loadedEvents)
-
-          // Sync into Firestore so all family members see this person's events.
-          // Diff against existing docs: delete only events removed from Google,
-          // upsert the rest while preserving any locally-set forIds/assigneeId.
-          try {
-            const eventsCol = collection(db, 'families', familyId, 'events')
-            const oldSnap = await getDocs(
-              query(eventsCol, where('ownerEmail', '==', ownerEmail), where('source', '==', 'google'))
-            )
-            const existingData = new Map<string, Record<string, unknown>>()
-            oldSnap.docs.forEach((d) => existingData.set(d.id, d.data()))
-            const freshIds = new Set(loadedEvents.map((e) => e.id))
-            const batch = writeBatch(db)
-            // Remove events that no longer exist in Google Calendar
-            oldSnap.docs.forEach((d) => {
-              if (!freshIds.has(d.id)) batch.delete(d.ref)
-            })
-            // Upsert fresh events, carrying over any locally-set assignment fields
-            loadedEvents.forEach((e) => {
-              const prev = existingData.get(e.id)
-              const preserved: Record<string, unknown> = {}
-              if (prev?.forIds) preserved.forIds = prev.forIds
-              if (prev?.assigneeId) preserved.assigneeId = prev.assigneeId
-              batch.set(doc(eventsCol, e.id), { ...e, source: 'google', ...preserved })
-            })
-            await batch.commit()
-          } catch { /* sync failure is non-fatal */ }
-        }
-      } catch { /* keep cached events */ } finally {
+        if (isConnected) await getFreshTokens()
+        if (cancelled) return
+        const idToken = await user?.getIdToken()
+        if (!idToken || cancelled) return
+        await fetch('/api/calendar/sync', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${idToken}` },
+        })
+      } catch { /* keep existing Firestore data */ } finally {
         if (!cancelled) { setGoogleLoaded(true); setCalendarFetching(false) }
       }
     }
-    load()
+    sync()
     return () => { cancelled = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isConnected, gcalKey, familyId, calSyncKey])
+  }, [familyId, calSyncKey])
 
   // Ask the AI which calendar events are ambiguous — once per session, skipping
   // events the family has already explained. Cached so it doesn't pop in again.
   useEffect(() => {
-    const eventsForContext = googleEvents.length > 0 ? googleEvents : localEvents
+    const eventsForContext = localEvents
     if (eventsForContext.length === 0 || clarificationsFetched.current) return
     clarificationsFetched.current = true
     let cancelled = false
@@ -626,13 +521,9 @@ export function CommandCenter() {
     })()
     return () => { cancelled = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [googleEvents.length, localEvents.length, eventContexts.length])
+  }, [localEvents.length, eventContexts.length])
 
-  // All family members read events from Firestore (which is kept in sync with
-  // Google Calendar by the fetch above). This means connected members' events
-  // are visible to everyone in the family, not just the person who connected.
-  // Fall back to live googleEvents only if Firestore hasn't populated yet.
-  const events = localEvents.length > 0 ? localEvents : googleEvents
+  const events = localEvents
 
   // Build the request body shared by both the fast and deep passes.
   const buildEngineBody = useCallback((
@@ -843,7 +734,7 @@ export function CommandCenter() {
     ) return
     runEngine(undefined, !!report)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hydrated, googleLoaded, members.length, events.length, tasks.length, reminders.length, googleEvents.length])
+  }, [hydrated, googleLoaded, members.length, events.length, tasks.length, reminders.length])
 
   // The inbox scan, durable memory, and profile often arrive a beat after the
   // first render. When they change, weave them into the briefing right away —
@@ -1262,85 +1153,6 @@ export function CommandCenter() {
     }
   }
 
-  // Compute the full provenance of an item's assignment — every place the data
-  // could be coming from or stored in. Used by the on-screen debug overlay.
-  function debugProvenance(item: AttentionItem): ItemDebug {
-    const nameOf = (ref?: string) => {
-      if (!ref) return ''
-      const m = resolveMemberRef(members, ref)
-      return m ? `${m.name}` : ref
-    }
-    const ov = assignmentOverrides[item.title]
-    const shownFrom = ov
-      ? 'in-memory override (this session)'
-      : (item.forEmails?.length || item.assigneeEmail)
-        ? 'AI report fields (item.forEmails / item.assigneeEmail)'
-        : 'nothing set'
-
-    // Assignment memories (the durable store written by assignItem)
-    const ASSIGN_PREFIX = 'Assignment · '
-    const exactMarker = `${ASSIGN_PREFIX}"${item.title}":`
-    const exactMem = memories.find((m) => m.text.startsWith(exactMarker))
-    const titleWords = new Set(
-      item.title.toLowerCase().split(/\W+/).filter((w) => w.length > 3)
-    )
-    const fuzzyMems = memories
-      .filter((m) => m.text.startsWith(ASSIGN_PREFIX) && m !== exactMem)
-      .filter((m) => {
-        const quoted = m.text.match(/Assignment · "([^"]+)":/)?.[1]?.toLowerCase() ?? ''
-        const qWords = quoted.split(/\W+/).filter((w) => w.length > 3)
-        return qWords.some((w) => titleWords.has(w))
-      })
-
-    // Matching calendar event
-    const evById = item.sourceId ? events.find((e) => e.id === item.sourceId) : undefined
-    const evByTitle = !evById
-      ? events.find((e) => {
-          const a = e.title.toLowerCase(); const b = item.title.toLowerCase()
-          return a === b || a.includes(b) || b.includes(a)
-        })
-      : undefined
-    const ev = evById ?? evByTitle
-    const evFor = (ev?.forIds ?? []).map((id) => nameOf(id)).join(', ') || '∅'
-    const evResp = ev?.assigneeId ? nameOf(ev.assigneeId) : '∅'
-
-    // Matching task / reminder
-    const task = item.sourceId
-      ? tasks.find((t) => t.id === item.sourceId)
-      : tasks.find((t) => t.title.toLowerCase() === item.title.toLowerCase())
-    const reminder = item.sourceId
-      ? reminders.find((r) => r.id === item.sourceId)
-      : reminders.find((r) => r.title.toLowerCase() === item.title.toLowerCase())
-
-    return {
-      sourceType: item.sourceType,
-      sourceId: item.sourceId ?? '∅',
-      shownFrom,
-      aiForEmails: item.forEmails?.length ? item.forEmails.join(', ') : '∅',
-      aiAssigneeEmail: item.assigneeEmail ?? '∅',
-      override: ov
-        ? `for=[${(ov.forIds ?? []).map(nameOf).join(', ')}] resp=${ov.responsibleId ? nameOf(ov.responsibleId) : '∅'}`
-        : '∅',
-      memoryExact: exactMem ? `"${exactMem.text}" (noted ${exactMem.createdAt})` : null,
-      memoryFuzzy: fuzzyMems.map((m) => `"${m.text}" (noted ${m.createdAt})`),
-      eventMatch: ev
-        ? `${ev.id} [matched by ${evById ? 'sourceId' : 'title'}] forIds=[${evFor}] assigneeId=${evResp}`
-        : null,
-      taskMatch: task
-        ? `${task.id} assigneeId=${task.assigneeId ? nameOf(task.assigneeId) : '∅'} forIds=[${(task.forIds ?? []).map(nameOf).join(', ') || '∅'}]`
-        : null,
-      reminderMatch: reminder
-        ? `${reminder.id} assigneeEmail=${reminder.assigneeEmail ?? '∅'}`
-        : null,
-    }
-  }
-
-  // All Assignment-type memories, for the global debug panel.
-  const allAssignmentMemories = useMemo(
-    () => memories.filter((m) => m.text.startsWith('Assignment · ')),
-    [memories]
-  )
-
   // All visible items grouped by groupKey, then sorted into bucket sections.
   const allGroups = useMemo(() => {
     const visible = (report?.items ?? []).filter((i) => showInList(i.title))
@@ -1460,18 +1272,6 @@ export function CommandCenter() {
         </div>
         <div className="flex items-center gap-2">
           <button
-            onClick={toggleDebug}
-            title={showDebug ? 'Hide data sources' : 'Show data sources'}
-            className={`mt-1 p-2.5 rounded-xl border shadow-card transition-all ${
-              showDebug
-                ? 'bg-amber-50 border-amber-300 text-amber-600 hover:bg-amber-100'
-                : 'bg-white border-slate-200 text-slate-400 hover:text-amber-600 hover:border-amber-200'
-            }`}
-            aria-label="Toggle debug"
-          >
-            <Bug size={16} />
-          </button>
-          <button
             onClick={() => { setPendingReport(null); runEngine(undefined, false) }}
             disabled={loading || calendarFetching}
             title={loading || calendarFetching ? 'Loading calendar…' : refreshing ? 'Updating — tap to refresh now' : 'Refresh briefing'}
@@ -1486,44 +1286,6 @@ export function CommandCenter() {
           </button>
         </div>
       </div>
-
-      {/* ── Global debug panel: where event + assignment data lives ── */}
-      {showDebug && (
-        <div className="rounded-2xl border border-amber-300 bg-amber-50 p-4 text-[11px] leading-relaxed font-mono text-amber-900 space-y-2 overflow-x-auto">
-          <p className="font-bold flex items-center gap-1.5"><Bug size={12} /> DEBUG — data sources</p>
-          <div>
-            <span className="font-bold">events[] source:</span>{' '}
-            {localEvents.length > 0
-              ? `Firestore (localEvents=${localEvents.length})`
-              : `live Google fetch (googleEvents=${googleEvents.length})`}
-            {' · '}googleEvents={googleEvents.length} · localEvents={localEvents.length}
-          </div>
-          <div>
-            <span className="font-bold">report:</span>{' '}
-            {report
-              ? `generatedAt=${report.generatedAt} · items=${report.items?.length ?? 0} · eventAssignments=${report.eventAssignments?.length ?? 0}`
-              : '∅ (no report yet)'}
-            {' · '}lastRun={lastRun.current ? new Date(lastRun.current).toLocaleTimeString() : '∅'}
-          </div>
-          <div>
-            <span className="font-bold">Assignment memories ({allAssignmentMemories.length}):</span>
-            {allAssignmentMemories.length === 0 ? (
-              <span> ∅ none stored</span>
-            ) : (
-              <ul className="mt-1 space-y-1">
-                {allAssignmentMemories.map((m) => (
-                  <li key={m.id} className="pl-2 border-l-2 border-amber-300">
-                    {m.text}{' '}
-                    <span className="text-amber-600">
-                      (id={m.id.slice(0, 6)}… · subjects=[{(m.subjectEmails ?? []).join(', ') || '∅'}] · noted {m.createdAt})
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        </div>
-      )}
 
       {/* Pending briefing banner — appears when a background run finishes.
           Content stays frozen until the user explicitly taps to apply it. */}
@@ -1783,7 +1545,6 @@ export function CommandCenter() {
                             onSaveTaskItem={(title, reason) => saveItemAsTask(title, reason)}
                             onAddContextItem={addContextForItem}
                             onAssignItem={(item, f, r) => assignItem(item, f, r)}
-                            debugFor={showDebug ? debugProvenance : undefined}
                           />
                         )
                       }
@@ -1817,7 +1578,6 @@ export function CommandCenter() {
                           onSaveTask={() => saveItemAsTask(item.title, item.reason)}
                           onAssign={(f, r) => assignItem(item, f, r)}
                           onAddContext={(context) => addContextForItem(item.title, context)}
-                          debug={showDebug ? debugProvenance(item) : null}
                         />
                       )
                     })}
@@ -2196,7 +1956,7 @@ type ResolvedItemForGroup = {
 
 function GroupedAttentionCard({
   groupTitle, resolvedItems, accent, allMembers,
-  onCompleteItem, onDismissItem, onSaveTaskItem, onAddContextItem, onAssignItem, debugFor,
+  onCompleteItem, onDismissItem, onSaveTaskItem, onAddContextItem, onAssignItem,
 }: {
   groupTitle: string
   resolvedItems: ResolvedItemForGroup[]
@@ -2207,7 +1967,6 @@ function GroupedAttentionCard({
   onSaveTaskItem: (title: string, reason: string) => void
   onAddContextItem: (title: string, context: string) => void
   onAssignItem: (item: AttentionItem, forIds: string[], responsibleId?: string) => void
-  debugFor?: (item: AttentionItem) => ItemDebug | null
 }) {
   const [expanded, setExpanded] = useState(false)
 
@@ -2287,7 +2046,6 @@ function GroupedAttentionCard({
               onSaveTask={() => onSaveTaskItem(item.title, item.reason)}
               onAddContext={(ctx) => onAddContextItem(item.title, ctx)}
               onAssign={(f, r) => onAssignItem(item, f, r)}
-              debug={debugFor ? debugFor(item) : null}
             />
           ))}
         </div>
@@ -2341,7 +2099,7 @@ function CompactItemRow({
 // ── Individual attention card ────────────────────────────────
 
 function AttentionCard({
-  item, accent, allMembers, responsible, forMembers, emailSubject, backedByRealItem, onComplete, onDismiss, onSaveTask, onAddContext, onAssign, debug,
+  item, accent, allMembers, responsible, forMembers, emailSubject, backedByRealItem, onComplete, onDismiss, onSaveTask, onAddContext, onAssign,
 }: {
   item: AttentionItem
   accent: string
@@ -2355,7 +2113,6 @@ function AttentionCard({
   onSaveTask: () => void
   onAddContext: (context: string) => void
   onAssign: (forIds: string[], responsibleId?: string) => void
-  debug?: ItemDebug | null
 }) {
   const [done, setDone] = useState(false)
   const [saved, setSaved] = useState(false)
@@ -2535,36 +2292,6 @@ function AttentionCard({
         </div>
       )}
 
-      {/* ── Per-item debug provenance ── */}
-      {debug && (
-        <div className="mx-4 mb-4 rounded-lg border border-amber-300 bg-amber-50 p-3 text-[10px] leading-relaxed font-mono text-amber-900 space-y-1 overflow-x-auto">
-          <p className="font-bold flex items-center gap-1"><Bug size={10} /> item provenance</p>
-          <div><span className="font-bold">sourceType:</span> {debug.sourceType} · <span className="font-bold">sourceId:</span> {debug.sourceId}</div>
-          <div><span className="font-bold">assignment shown from:</span> {debug.shownFrom}</div>
-          <div><span className="font-bold">AI fields:</span> forEmails=[{debug.aiForEmails}] · assigneeEmail={debug.aiAssigneeEmail}</div>
-          <div><span className="font-bold">in-memory override:</span> {debug.override}</div>
-          <div className={debug.memoryExact ? 'text-amber-900' : 'text-amber-500'}>
-            <span className="font-bold">memory (exact title):</span> {debug.memoryExact ?? '∅ none'}
-          </div>
-          {debug.memoryFuzzy.length > 0 && (
-            <div className="text-rose-700">
-              <span className="font-bold">⚠ memory (fuzzy/title drift):</span>
-              <ul className="pl-2">
-                {debug.memoryFuzzy.map((t, i) => <li key={i} className="border-l-2 border-rose-300 pl-1">{t}</li>)}
-              </ul>
-            </div>
-          )}
-          <div className={debug.eventMatch ? 'text-amber-900' : 'text-amber-500'}>
-            <span className="font-bold">calendar event:</span> {debug.eventMatch ?? '∅ no match'}
-          </div>
-          <div className={debug.taskMatch ? 'text-amber-900' : 'text-amber-500'}>
-            <span className="font-bold">task:</span> {debug.taskMatch ?? '∅ no match'}
-          </div>
-          <div className={debug.reminderMatch ? 'text-amber-900' : 'text-amber-500'}>
-            <span className="font-bold">reminder:</span> {debug.reminderMatch ?? '∅ no match'}
-          </div>
-        </div>
-      )}
     </div>
   )
 }
