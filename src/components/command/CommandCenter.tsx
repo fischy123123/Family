@@ -562,24 +562,27 @@ export function CommandCenter() {
           writeCache(gcalKey, loadedEvents)
 
           // Sync into Firestore so all family members see this person's events.
-          // Replace the owner's existing Google-sourced events with the fresh batch,
-          // but preserve any manually-set forIds/assigneeId so assignments survive a refresh.
+          // Diff against existing docs: delete only events removed from Google,
+          // upsert the rest while preserving any locally-set forIds/assigneeId.
           try {
             const eventsCol = collection(db, 'families', familyId, 'events')
             const oldSnap = await getDocs(
               query(eventsCol, where('ownerEmail', '==', ownerEmail), where('source', '==', 'google'))
             )
-            const savedAssignments = new Map<string, { forIds?: string[]; assigneeId?: string }>()
-            oldSnap.docs.forEach((d) => {
-              const data = d.data()
-              if (data.forIds?.length || data.assigneeId) {
-                savedAssignments.set(d.id, { forIds: data.forIds, assigneeId: data.assigneeId })
-              }
-            })
+            const existingData = new Map<string, Record<string, unknown>>()
+            oldSnap.docs.forEach((d) => existingData.set(d.id, d.data()))
+            const freshIds = new Set(loadedEvents.map((e) => e.id))
             const batch = writeBatch(db)
-            oldSnap.docs.forEach((d) => batch.delete(d.ref))
+            // Remove events that no longer exist in Google Calendar
+            oldSnap.docs.forEach((d) => {
+              if (!freshIds.has(d.id)) batch.delete(d.ref)
+            })
+            // Upsert fresh events, carrying over any locally-set assignment fields
             loadedEvents.forEach((e) => {
-              const preserved = savedAssignments.get(e.id) ?? {}
+              const prev = existingData.get(e.id)
+              const preserved: Record<string, unknown> = {}
+              if (prev?.forIds) preserved.forIds = prev.forIds
+              if (prev?.assigneeId) preserved.assigneeId = prev.assigneeId
               batch.set(doc(eventsCol, e.id), { ...e, source: 'google', ...preserved })
             })
             await batch.commit()
