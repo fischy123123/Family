@@ -259,6 +259,7 @@ export function CommandCenter() {
   const [engineError, setEngineError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)        // true cold start only (no report yet)
   const [refreshing, setRefreshing] = useState(false)  // silent background update
+  const [calendarFetching, setCalendarFetching] = useState(false) // Google Calendar fetch in progress
   // Greeting text as it streams in during a cold start, shown in place of the
   // skeleton so the user reads the headline ~2s in rather than waiting ~20s.
   const [streamingGreeting, setStreamingGreeting] = useState('')
@@ -275,6 +276,10 @@ export function CommandCenter() {
   const forceDirectRef = useRef(false)
   const deepToken = useRef<number>(0)
   const engineAbortRef = useRef<AbortController | null>(null)
+  // Each runEngine call gets a monotonically-increasing token. The finally block
+  // only clears loading state if it's still the current run — prevents an aborted
+  // run's finally from clearing state owned by the newer run that aborted it.
+  const runTokenRef = useRef(0)
   // Refs so the visibilitychange handler can read current state without stale closures.
   const engineErrorRef = useRef<string | null>(null)
   const reportRef = useRef<AttentionReport | null>(null)
@@ -501,8 +506,12 @@ export function CommandCenter() {
       // data. Without this, the guard sees googleLoaded=true left over from a
       // prior non-connected run and fires the engine before events arrive.
       setGoogleLoaded(false)
+      setCalendarFetching(true)
       const fresh = await getFreshTokens()
-      if (!fresh || cancelled) return
+      if (!fresh || cancelled) {
+        if (!cancelled) { setGoogleLoaded(true); setCalendarFetching(false) }
+        return
+      }
       const timeMin = new Date().toISOString()
       const timeMax = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString()
       const calFetchStart = performance.now()
@@ -537,7 +546,7 @@ export function CommandCenter() {
           } catch { /* sync failure is non-fatal */ }
         }
       } catch { /* keep cached events */ } finally {
-        if (!cancelled) setGoogleLoaded(true)
+        if (!cancelled) { setGoogleLoaded(true); setCalendarFetching(false) }
       }
     }
     load()
@@ -642,6 +651,7 @@ export function CommandCenter() {
     engineAbortRef.current?.abort()
     const controller = new AbortController()
     engineAbortRef.current = controller
+    const myRunToken = ++runTokenRef.current
 
     if (silent) setRefreshing(true)
     else setLoading(true)
@@ -757,9 +767,13 @@ export function CommandCenter() {
       setEngineError('Could not reach the server. Check your connection and tap refresh.')
       lastRun.current = 0
     } finally {
-      setLoading(false)
-      setRefreshing(false)
-      setStreamingGreeting('')
+      // Only clear loading state if this is still the active run. An aborted
+      // run must not clear the state set by the newer run that replaced it.
+      if (myRunToken === runTokenRef.current) {
+        setLoading(false)
+        setRefreshing(false)
+        setStreamingGreeting('')
+      }
     }
   }, [buildEngineBody, eventContexts, attnKey, report])
 
@@ -1205,12 +1219,42 @@ export function CommandCenter() {
     })
   }, [report?.eventAssignments, skippedAssignments, events])
 
+  // Fuzzy-match a calendar event by title + date. The AI's generated title rarely
+  // exactly matches the real event title (spaces, casing, truncation). We try
+  // progressively looser matches before giving up.
+  function findMatchingCalendarEvent(title: string, date: string): CalendarEvent | undefined {
+    const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '')
+    const normTitle = norm(title)
+    const sameDay = events.filter((e) => e.start.startsWith(date))
+    if (!sameDay.length) return undefined
+    // 1. Exact title
+    const exact = sameDay.find((e) => e.title === title)
+    if (exact) return exact
+    // 2. Normalized ("Hair cut" → "haircut" vs "Haircut" → "haircut")
+    const byNorm = sameDay.find((e) => norm(e.title) === normTitle)
+    if (byNorm) return byNorm
+    // 3. One normalized title contains the other
+    const byContains = sameDay.find((e) => {
+      const et = norm(e.title)
+      return et.includes(normTitle) || normTitle.includes(et)
+    })
+    if (byContains) return byContains
+    // 4. Word overlap — ≥60% of the AI's significant words appear in the event title
+    const sigWords = (s: string) => s.toLowerCase().split(/\W+/).filter((w) => w.length > 2)
+    const aiWords = sigWords(title)
+    if (!aiWords.length) return undefined
+    return sameDay.find((e) => {
+      const evWords = new Set(sigWords(e.title))
+      return aiWords.filter((w) => evWords.has(w)).length / aiWords.length >= 0.6
+    })
+  }
+
   // Confirm an event assignment — optionally with different names than the AI suggested.
   // Applies optimistic removal immediately so the card disappears on tap.
   const confirmEventAssignment = useCallback(async (s: EventAssignmentSuggestion, overrideNames?: string[]) => {
     if (!familyId) return
     const forNames = overrideNames ?? s.forNames
-    const event = events.find((e) => e.title === s.eventTitle && e.start.startsWith(s.eventDate))
+    const event = findMatchingCalendarEvent(s.eventTitle, s.eventDate)
     if (!event) {
       toast(`Couldn't find "${s.eventTitle}" in calendar — it may have been removed`, 'error')
       return
@@ -1250,7 +1294,7 @@ export function CommandCenter() {
 
   return (
     <div className="max-w-3xl mx-auto px-4 sm:px-6 py-6 space-y-6">
-      <TopProgressBar active={busy} />
+      <TopProgressBar active={busy || calendarFetching} />
 
       {/* Header */}
       <div className="flex items-start justify-between">
@@ -1270,8 +1314,8 @@ export function CommandCenter() {
         </div>
         <button
           onClick={() => { setPendingReport(null); runEngine(undefined, false) }}
-          disabled={loading}
-          title={loading ? 'Refreshing briefing…' : refreshing ? 'Updating — tap to refresh now' : 'Refresh briefing'}
+          disabled={loading || calendarFetching}
+          title={loading || calendarFetching ? 'Loading calendar…' : refreshing ? 'Updating — tap to refresh now' : 'Refresh briefing'}
           className={`mt-1 p-2.5 rounded-xl border shadow-card transition-all disabled:opacity-60 ${
             refreshing
               ? 'bg-blue-50 border-blue-200 text-blue-500 hover:bg-blue-100'
