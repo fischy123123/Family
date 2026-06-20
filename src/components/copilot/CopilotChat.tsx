@@ -4,6 +4,7 @@ import { useState, useRef, useEffect, useCallback } from 'react'
 import {
   Send, Sparkles, Bot, CheckCircle2, AlertTriangle,
   CalendarDays, ShoppingCart, ListChecks, Plane, AudioLines,
+  Paperclip, X, FileText,
 } from 'lucide-react'
 import { RealtimeVoiceMode } from '@/components/copilot/RealtimeVoiceMode'
 import { useAuth } from '@/contexts/AuthContext'
@@ -20,14 +21,26 @@ import type { FamilyMember } from '@/lib/types'
 // Types
 // ---------------------------------------------------------------------------
 
+interface Attachment {
+  id: string
+  name: string
+  mediaType: string
+  data: string // base64
+  preview?: string // object URL for images
+}
+
 interface Message {
   role: 'user' | 'assistant'
   content: string
+  attachments?: Attachment[]
   isStreaming?: boolean
   actions?: string[]
   pendingActions?: PendingAction[]
   actionStatus?: ActionStatus
 }
+
+const ACCEPTED_TYPES = 'image/*,.pdf,.txt,.md,.csv'
+const MAX_FILE_MB = 10
 
 // ---------------------------------------------------------------------------
 // Example prompts (for the empty-state hero)
@@ -110,10 +123,35 @@ function AssistantBubble({
 function UserBubble({ msg }: { msg: Message }) {
   return (
     <div className="flex justify-end animate-slide-up">
-      <div className="max-w-[80%]">
-        <div className="bg-gradient-to-br from-blue-600 to-blue-700 text-white rounded-2xl rounded-tr-md px-4 py-3 shadow-card">
-          <p className="text-[15px] leading-relaxed whitespace-pre-wrap">{msg.content}</p>
-        </div>
+      <div className="max-w-[80%] flex flex-col items-end gap-2">
+        {msg.attachments && msg.attachments.length > 0 && (
+          <div className="flex flex-wrap gap-2 justify-end">
+            {msg.attachments.map((a) =>
+              a.preview ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  key={a.id}
+                  src={a.preview}
+                  alt={a.name}
+                  className="h-36 max-w-[200px] rounded-xl object-cover shadow-card border border-white/20"
+                />
+              ) : (
+                <div
+                  key={a.id}
+                  className="flex items-center gap-2 bg-blue-500/30 border border-white/20 rounded-xl px-3 py-2 text-white text-xs font-medium"
+                >
+                  <FileText size={14} className="shrink-0" />
+                  <span className="truncate max-w-[140px]">{a.name}</span>
+                </div>
+              ),
+            )}
+          </div>
+        )}
+        {msg.content && (
+          <div className="bg-gradient-to-br from-blue-600 to-blue-700 text-white rounded-2xl rounded-tr-md px-4 py-3 shadow-card">
+            <p className="text-[15px] leading-relaxed whitespace-pre-wrap">{msg.content}</p>
+          </div>
+        )}
       </div>
     </div>
   )
@@ -185,9 +223,11 @@ export function CopilotChat() {
   const [loading, setLoading] = useState(false)
   const [voiceOpen, setVoiceOpen] = useState(false)
   const [availableCalendars, setAvailableCalendars] = useState<Array<{ id: string; name: string; primary: boolean }>>([])
+  const [pendingAttachments, setPendingAttachments] = useState<Attachment[]>([])
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   // Seed the conversation from another screen (e.g. tapping the Home briefing).
   useEffect(() => {
@@ -205,14 +245,43 @@ export function CopilotChat() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, loading])
 
+  const handleFileSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files ?? [])
+    e.target.value = ''
+    files.forEach((file) => {
+      if (file.size > MAX_FILE_MB * 1024 * 1024) {
+        toast(`${file.name} exceeds ${MAX_FILE_MB} MB limit`, 'error')
+        return
+      }
+      const reader = new FileReader()
+      reader.onload = () => {
+        const dataUrl = reader.result as string
+        const base64 = dataUrl.split(',')[1]
+        const isImage = file.type.startsWith('image/')
+        const attachment: Attachment = {
+          id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+          name: file.name,
+          mediaType: file.type || 'application/octet-stream',
+          data: base64,
+          preview: isImage ? dataUrl : undefined,
+        }
+        setPendingAttachments((prev) => [...prev, attachment])
+      }
+      reader.readAsDataURL(file)
+    })
+  }, [toast])
+
   const handleSend = useCallback(
     async (text?: string) => {
       const content = (text ?? input).trim()
-      if (!content || loading || !familyId || !user?.email) return
+      const hasAttachments = pendingAttachments.length > 0
+      if ((!content && !hasAttachments) || loading || !familyId || !user?.email) return
 
-      const userMsg: Message = { role: 'user', content }
+      const attachments = [...pendingAttachments]
+      const userMsg: Message = { role: 'user', content, attachments: attachments.length ? attachments : undefined }
       setMessages((prev) => [...prev, userMsg])
       setInput('')
+      setPendingAttachments([])
       setLoading(true)
 
       try {
@@ -221,10 +290,21 @@ export function CopilotChat() {
           ? { accessToken: freshTokens.accessToken, refreshToken: freshTokens.refreshToken }
           : null
 
-        const history = [...messages, userMsg].map((m) => ({
-          role: m.role,
-          content: m.content,
-        }))
+        const history = [...messages, userMsg].map((m) => {
+          if (!m.attachments?.length) return { role: m.role, content: m.content }
+          // Build a content block array: attachments first, then text
+          type ContentBlock =
+            | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } }
+            | { type: 'document'; source: { type: 'base64'; media_type: string; data: string }; title: string }
+            | { type: 'text'; text: string }
+          const blocks: ContentBlock[] = m.attachments.map((a) =>
+            a.mediaType.startsWith('image/')
+              ? { type: 'image', source: { type: 'base64', media_type: a.mediaType, data: a.data } }
+              : { type: 'document', source: { type: 'base64', media_type: a.mediaType || 'application/pdf', data: a.data }, title: a.name },
+          )
+          if (m.content) blocks.push({ type: 'text', text: m.content })
+          return { role: m.role, content: blocks }
+        })
 
         const res = await fetch('/api/agent', {
           method: 'POST',
@@ -339,7 +419,7 @@ export function CopilotChat() {
         setTimeout(() => inputRef.current?.focus(), 50)
       }
     },
-    [input, loading, familyId, user?.email, members, messages, getFreshTokens, toast],
+    [input, pendingAttachments, loading, familyId, user?.email, members, messages, getFreshTokens, toast],
   )
 
   // Resolve the dynamic context the realtime voice session needs (fresh Google
@@ -499,8 +579,65 @@ export function CopilotChat() {
 
       {/* Sticky input bar */}
       <div className="shrink-0 border-t border-slate-100 bg-slate-50/80 backdrop-blur px-5 sm:px-8 py-4">
-        <div className="max-w-3xl mx-auto">
-          <div className="flex items-center gap-3">
+        <div className="max-w-3xl mx-auto space-y-2">
+          {/* Attachment previews */}
+          {pendingAttachments.length > 0 && (
+            <div className="flex flex-wrap gap-2">
+              {pendingAttachments.map((a) => (
+                <div key={a.id} className="relative group">
+                  {a.preview ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={a.preview}
+                      alt={a.name}
+                      className="h-16 w-16 rounded-xl object-cover border border-slate-200 shadow-sm"
+                    />
+                  ) : (
+                    <div className="flex items-center gap-1.5 bg-white border border-slate-200 rounded-xl px-3 py-2 shadow-sm">
+                      <FileText size={14} className="text-slate-500 shrink-0" />
+                      <span className="text-xs text-slate-700 font-medium truncate max-w-[120px]">{a.name}</span>
+                    </div>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setPendingAttachments((prev) => prev.filter((x) => x.id !== a.id))}
+                    className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-slate-700 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity shadow"
+                    aria-label={`Remove ${a.name}`}
+                  >
+                    <X size={10} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="flex items-center gap-2">
+            {/* Hidden file input */}
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept={ACCEPTED_TYPES}
+              multiple
+              className="hidden"
+              onChange={handleFileSelect}
+            />
+            {/* Attach button */}
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={loading || !familyId}
+              className={cn(
+                'w-10 h-10 rounded-full flex items-center justify-center shrink-0 transition-all duration-150',
+                'bg-white border border-slate-200 text-slate-500 shadow-sm',
+                'hover:border-blue-300 hover:text-blue-600',
+                'disabled:opacity-40 disabled:cursor-not-allowed',
+                'active:scale-95',
+              )}
+              aria-label="Attach file or image"
+            >
+              <Paperclip size={17} />
+            </button>
+
             <input
               ref={inputRef}
               value={input}
@@ -514,7 +651,7 @@ export function CopilotChat() {
                 'disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-150',
               )}
             />
-            {input.trim() ? (
+            {(input.trim() || pendingAttachments.length > 0) ? (
               <button
                 onClick={() => handleSend()}
                 disabled={loading || !familyId}

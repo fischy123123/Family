@@ -99,9 +99,10 @@ export async function POST(request: NextRequest) {
       const systemPrompt = buildSystemPrompt(members, today, !!googleTokens, userEmail, timezone, memories, profile)
 
       const conversationMessages: Anthropic.MessageParam[] = (messages ?? []).map(
-        (m: { role: 'user' | 'assistant'; content: string }) => ({
+        (m: { role: 'user' | 'assistant'; content: string | unknown[] }) => ({
           role: m.role,
-          content: m.content,
+          // Pass content through as-is — the SDK accepts both string and content block arrays.
+          content: m.content as Anthropic.MessageParam['content'],
         }),
       )
 
