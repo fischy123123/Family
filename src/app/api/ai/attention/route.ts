@@ -80,7 +80,7 @@ Given the family context, produce a JSON report with this exact shape:
       "assigneeEmail": "the person RESPONSIBLE for handling this (the parent doing the pickup, the person who must act). Use their email if they have one; if they have no email (e.g. a child or pet), use their EXACT name instead. Optional.",
       "forEmails": ["who this is FOR or ABOUT — often the kids or a pet. Use each person's email if they have one, otherwise their EXACT name. Can differ from the responsible person. Optional array."],
       "sourceType": "event" | "task" | "chore" | "plan" | "reminder" | "inferred",
-      "sourceId": "for task/reminder sourceType: the raw id from [id:xxx] in the tasks list (omit the 'id:' prefix). Omit for other types.",
+      "sourceId": "for event/task/reminder sourceType: the raw id from [id:xxx] in the events or tasks list (omit the 'id:' prefix). Omit for other types.",
       "sourceEmailId": "if this item derives from an inbox signal with a [msgid:ID] label, copy that ID here verbatim (omit otherwise)",
       "priority": 0-100,
       "groupKey": "optional — set the SAME short phrase on 2+ items that are about the same underlying event, appointment, or topic (e.g. 'Well-child checkups today', 'Soccer Tuesday pickup'). Items sharing a groupKey are collapsed into one card in the UI. Only group items that truly belong to the same topic. Omit for unrelated items."

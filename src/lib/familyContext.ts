@@ -335,7 +335,7 @@ export function buildFamilyContextParts(input: FamilyContextInput): {
               const forStr = forNames.length ? ` [for: ${forNames.join(', ')}]` : ''
               const respName = e.assigneeId ? memberById(members, e.assigneeId)?.name : undefined
               const respStr = respName ? ` [responsible: ${respName}]` : ''
-              return `- ${e.title} | ${e.isAllDay ? 'all-day ' : ''}${fmtDatetime(e.start, tz)}${
+              return `- [id:${e.id}] ${e.title} | ${e.isAllDay ? 'all-day ' : ''}${fmtDatetime(e.start, tz)}${
                 e.location ? ` @ ${e.location}` : ''
               }${e.ownerEmail ? ` (${e.ownerEmail})` : ''}${forStr}${respStr}`
             })

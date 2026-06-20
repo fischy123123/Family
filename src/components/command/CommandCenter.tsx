@@ -801,12 +801,13 @@ export function CommandCenter() {
 
   // Assign an item to people. Two-sided: `forIds` is who it concerns (e.g. the
   // kids); `responsibleId` is who handles it (e.g. a parent). Keyed by member ID
-  // because kids/pets often have no email. We persist this three ways so it sticks
-  // across engine re-runs:
+  // because kids/pets often have no email. Persists in two ways:
   //  1. Optimistic on-screen override so the chips update instantly.
-  //  2. Update the underlying task/reminder's assigneeEmail (the responsible person).
-  //  3. A family-wide memory capturing the full nuance, deduped per item title,
-  //     so the AI re-emits the assignment on every future briefing.
+  //  2. For entity-backed items: write directly to the Firestore entity (event,
+  //     task, or reminder) so the context includes [for:]/[responsible:] on next
+  //     AI run without needing a family memory.
+  //  3. For truly inferred items (no backing entity): write a family memory as
+  //     the only available durable store.
   async function assignItem(item: AttentionItem, forIds: string[], responsibleId?: string) {
     setAssignmentOverrides((prev) => ({
       ...prev,
@@ -819,10 +820,12 @@ export function CommandCenter() {
     const forNames = forMembers.map((m) => m.name).join(', ')
     const respName = responsible?.name ?? ''
 
-    // 2. Update the backing Firestore record based on sourceType.
+    let wroteToEntity = false
+
     if (item.sourceType === 'event' && familyId) {
       // Write forIds + assigneeId directly to the calendar event doc and fan out
       // to all occurrences of a recurring event so the calendar list stays in sync.
+      // merge:true on Google Calendar sync means these fields are never overwritten.
       try {
         const eventsCol = collection(db, 'families', familyId, 'events')
         const targetEvent = item.sourceId
@@ -843,47 +846,54 @@ export function CommandCenter() {
           } else {
             await updateDoc(doc(eventsCol, targetEvent.id), eventUpdate)
           }
+          wroteToEntity = true
         }
       } catch { /* non-fatal */ }
-    } else if (responsible) {
-      // For tasks/reminders, update the assignee field on the backing doc.
-      const af = { assigneeId: responsible.id, assigneeEmail: responsible.email || undefined }
+    } else if (item.sourceType === 'task' || item.sourceType === 'reminder') {
+      // Store forIds and assigneeId on the entity so resolveItem can read them
+      // directly and the context includes [for:]/[assigned:] on the next AI run.
+      const assigneeFields = responsible ? { assigneeId: responsible.id, assigneeEmail: responsible.email || undefined } : {}
       const t = item.sourceId
         ? tasks.find((x) => x.id === item.sourceId)
         : tasks.find((x) => x.title.toLowerCase() === item.title.toLowerCase())
-      if (t) await updateTask({ ...t, ...af })
+      // Task has forIds; store both the subjects and the responsible person.
+      if (t) { await updateTask({ ...t, forIds, ...assigneeFields }); wroteToEntity = true }
       const r = item.sourceId
         ? reminders.find((x) => x.id === item.sourceId)
         : reminders.find((x) => x.title.toLowerCase() === item.title.toLowerCase())
-      if (r) await updateReminder({ ...r, ...af })
+      // FamilyReminder doesn't have forIds — only persist the responsible person.
+      if (r) { await updateReminder({ ...r, ...assigneeFields }); wroteToEntity = true }
     }
 
-    // 3. Persist the nuance as a deduped family memory, tagged to everyone it
-    //    concerns (the kids it's for + the responsible person) so it surfaces in
-    //    each of their individual profiles.
-    const marker = `Assignment · "${item.title}":`
-    const parts: string[] = []
-    if (forNames) parts.push(`it concerns ${forNames}`)
-    if (respName) parts.push(`${respName} is responsible for handling it`)
-    const text = `${marker} ${parts.join('; ')}.`
-    const subjectEmails = Array.from(
-      new Set([...forMembers, ...(responsible ? [responsible] : [])].map((m) => m.email || m.id))
-    )
-    try {
-      const existing = memories.find((m) => m.text.startsWith(marker))
-      if (existing) {
-        await updateMemory({ ...existing, text, subjectEmails, createdAt: new Date().toISOString() })
-      } else {
-        await createMemory({
-          id: generateId(),
-          text,
-          category: 'logistics',
-          source: 'manual',
-          subjectEmails,
-          createdAt: new Date().toISOString(),
-        } as FamilyMemory)
-      }
-    } catch { /* non-fatal */ }
+    // Only write a family memory for truly inferred items — ones with no backing
+    // entity (or where the entity write failed). For entity-backed items the
+    // entity itself is the durable store; the context already exposes assignments
+    // as [for:]/[responsible:] so the AI picks them up on the next run.
+    if (!wroteToEntity) {
+      const marker = `Assignment · "${item.title}":`
+      const parts: string[] = []
+      if (forNames) parts.push(`it concerns ${forNames}`)
+      if (respName) parts.push(`${respName} is responsible for handling it`)
+      const text = `${marker} ${parts.join('; ')}.`
+      const subjectEmails = Array.from(
+        new Set([...forMembers, ...(responsible ? [responsible] : [])].map((m) => m.email || m.id))
+      )
+      try {
+        const existing = memories.find((m) => m.text.startsWith(marker))
+        if (existing) {
+          await updateMemory({ ...existing, text, subjectEmails, createdAt: new Date().toISOString() })
+        } else {
+          await createMemory({
+            id: generateId(),
+            text,
+            category: 'logistics',
+            source: 'manual',
+            subjectEmails,
+            createdAt: new Date().toISOString(),
+          } as FamilyMemory)
+        }
+      } catch { /* non-fatal */ }
+    }
 
     const who = respName ? `${respName} (for ${forNames || 'the family'})` : forNames || 'the family'
     toast(`Assigned "${item.title}" — ${who}`, 'success')
@@ -1113,18 +1123,57 @@ export function CommandCenter() {
   function resolveItem(item: AttentionItem): ResolvedItem {
     const ov = assignmentOverrides[item.title]
     const byId = (id?: string) => members.find((m) => m.id === id)
-    const responsible = (ov ? byId(ov.responsibleId) : resolveMemberRef(members, item.assigneeEmail)) ?? undefined
-    const forMembers = ov
-      ? (ov.forIds ?? []).map(byId).filter(Boolean) as FamilyMember[]
-      : (item.forEmails ?? []).map((ref) => resolveMemberRef(members, ref)).filter(Boolean) as FamilyMember[]
+
+    const backedByRealItem = !!item.sourceId && (
+      item.sourceType === 'event'
+        ? localEvents.some((e) => e.id === item.sourceId)
+        : tasks.some((t) => t.id === item.sourceId) || reminders.some((r) => r.id === item.sourceId)
+    )
+
+    // Priority 1: optimistic override set immediately when the user assigns
+    if (ov) {
+      return {
+        item,
+        responsible: byId(ov.responsibleId),
+        forMembers: (ov.forIds ?? []).map(byId).filter(Boolean) as FamilyMember[],
+        backedByRealItem,
+      }
+    }
+
+    // Priority 2: read from Firestore entity when sourceId links us to one
+    if (item.sourceId) {
+      if (item.sourceType === 'event') {
+        const event = localEvents.find((e) => e.id === item.sourceId)
+        if (event && ((event.forIds?.length ?? 0) > 0 || event.assigneeId)) {
+          return {
+            item,
+            responsible: byId(event.assigneeId),
+            forMembers: (event.forIds ?? []).map((id) => byId(id)).filter(Boolean) as FamilyMember[],
+            backedByRealItem: true,
+          }
+        }
+      } else {
+        // Keep task and reminder as separate typed variables — forIds only exists on Task
+        const t = tasks.find((x) => x.id === item.sourceId)
+        const r = !t ? reminders.find((x) => x.id === item.sourceId) : undefined
+        const entity = t ?? r
+        if (entity && (entity.assigneeId || entity.assigneeEmail || t?.forIds?.length)) {
+          return {
+            item,
+            responsible: entity.assigneeId ? byId(entity.assigneeId) : (resolveMemberRef(members, entity.assigneeEmail) ?? undefined),
+            forMembers: (t?.forIds ?? []).map((id: string) => byId(id)).filter(Boolean) as FamilyMember[],
+            backedByRealItem: true,
+          }
+        }
+      }
+    }
+
+    // Priority 3/4: fall back to AI output (hint when entity has no assignment yet; sole source for inferred items)
     return {
       item,
-      responsible,
-      forMembers,
-      backedByRealItem: !!item.sourceId && (
-        tasks.some((t) => t.id === item.sourceId) ||
-        reminders.some((r) => r.id === item.sourceId)
-      ),
+      responsible: resolveMemberRef(members, item.assigneeEmail) ?? undefined,
+      forMembers: (item.forEmails ?? []).map((ref) => resolveMemberRef(members, ref)).filter(Boolean) as FamilyMember[],
+      backedByRealItem,
     }
   }
 
