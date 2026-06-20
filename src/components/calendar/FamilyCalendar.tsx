@@ -8,6 +8,7 @@ import dayGridPlugin from '@fullcalendar/daygrid'
 import interactionPlugin, { DateClickArg } from '@fullcalendar/interaction'
 import type { EventClickArg } from '@fullcalendar/core'
 import { Plus, Wifi, WifiOff, Sparkles, X, ChevronRight, RefreshCw, Check } from 'lucide-react'
+import { memberById } from '@/lib/members'
 import { useAuth } from '@/contexts/AuthContext'
 import { useFirestore } from '@/hooks/useFirestore'
 import { useGoogleTokens } from '@/hooks/useGoogleTokens'
@@ -67,8 +68,11 @@ export function FamilyCalendar() {
   // Member color lookup by email
   const memberByEmail = new Map(members.map((m) => [m.email?.toLowerCase() ?? '', m]))
   function eventColor(e: CalendarEvent): string {
-    const member = e.ownerEmail ? memberByEmail.get(e.ownerEmail.toLowerCase()) : undefined
-    return member?.colorHex ?? e.color ?? '#3B82F6'
+    // forIds takes priority: use the first assigned member's color
+    const forMember = (e.forIds ?? [])[0] ? memberById(members, e.forIds![0]) : undefined
+    if (forMember) return forMember.colorHex
+    const owner = e.ownerEmail ? memberByEmail.get(e.ownerEmail.toLowerCase()) : undefined
+    return owner?.colorHex ?? e.color ?? '#3B82F6'
   }
 
   // ── Manual Google Calendar re-sync ───────────────────────────
@@ -475,6 +479,7 @@ function AgendaView({
   onEventClick: (e: CalendarEvent) => void
 }) {
   const memberByEmail = new Map(members.map((m) => [m.email?.toLowerCase() ?? '', m]))
+  const memberByIdMap = new Map(members.map((m) => [m.id, m]))
 
   const now = new Date()
   const upcoming = events
@@ -519,9 +524,15 @@ function AgendaView({
             <div className="space-y-2">
               {dayEvents.map((e) => {
                 const color = eventColor(e)
-                const member = e.ownerEmail
+                const ownerMember = e.ownerEmail
                   ? memberByEmail.get(e.ownerEmail.toLowerCase())
                   : undefined
+                const forMembers = (e.forIds ?? [])
+                  .map((id) => memberByIdMap.get(id))
+                  .filter((m): m is FamilyMember => Boolean(m))
+                // Show forIds members if set, otherwise fall back to the calendar owner
+                const displayMembers = forMembers.length > 0 ? forMembers : ownerMember ? [ownerMember] : []
+                const isAssigned = forMembers.length > 0
                 return (
                   <button
                     key={e.id}
@@ -546,16 +557,25 @@ function AgendaView({
                       </div>
                       <div className="flex-1 min-w-0">
                         <p className="text-sm font-semibold text-slate-900 truncate">{e.title}</p>
-                        {e.location && (
+                        {/* Who the event is for — names when assigned, location otherwise */}
+                        {isAssigned ? (
+                          <p className="text-xs truncate mt-0.5" style={{ color }}>
+                            {forMembers.map((m) => `${m.emoji} ${m.name}`).join(' · ')}
+                          </p>
+                        ) : e.location ? (
                           <p className="text-xs text-slate-400 truncate mt-0.5">{e.location}</p>
-                        )}
+                        ) : null}
                       </div>
                       <div className="flex items-center gap-1.5 shrink-0">
-                        {member && (
-                          <span className="text-base leading-none" title={member.name}>
-                            {member.emoji}
+                        {displayMembers.map((m) => (
+                          <span
+                            key={m.id}
+                            className="text-base leading-none"
+                            title={isAssigned ? `For: ${m.name}` : m.name}
+                          >
+                            {m.emoji}
                           </span>
-                        )}
+                        ))}
                         {e.recurringEventId && (
                           <RefreshCw size={11} className="text-slate-300" />
                         )}
