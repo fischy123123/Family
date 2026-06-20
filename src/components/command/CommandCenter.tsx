@@ -8,7 +8,7 @@ import {
 import { db } from '@/lib/firebase'
 import {
   RefreshCw, AlertTriangle, Lightbulb, Clock,
-  Calendar as CalIcon, Sparkles, Check, HelpCircle, X, MessageCircle, Users, Bookmark, Plus, ChevronDown,
+  Calendar as CalIcon, Sparkles, Check, HelpCircle, X, MessageCircle, Users, Bookmark, Plus, ChevronDown, Bug,
 } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { useFirestore } from '@/hooks/useFirestore'
@@ -19,6 +19,7 @@ import { useToast } from '@/contexts/ToastContext'
 import { ConnectGooglePrompt } from '@/components/dashboard/ConnectGooglePrompt'
 import { generateId } from '@/lib/utils'
 import { resolveMemberRef } from '@/lib/members'
+import { isAiDebugEnabled } from '@/lib/aiDebug'
 import { BUCKET_META } from '@/lib/types'
 import type {
   FamilyMember, CalendarEvent, Task, Chore, Plan, SmartList,
@@ -1000,6 +1001,47 @@ export function CommandCenter() {
     router.push('/copilot')
   }
 
+  // Debug mode (set in Settings) surfaces a "trace" affordance on cards so the
+  // user can ask the AI exactly where a piece of info came from.
+  const [debugMode, setDebugMode] = useState(false)
+  useEffect(() => {
+    const sync = () => setDebugMode(isAiDebugEnabled())
+    sync()
+    window.addEventListener('focus', sync)
+    return () => window.removeEventListener('focus', sync)
+  }, [])
+
+  // Hand a card off to Copilot with an auto-sent question asking it to trace the
+  // sources of this exact item. Copilot answers with citations (debug mode is on).
+  function traceInCopilot(question: string) {
+    try { sessionStorage.setItem('copilot-ask', question) } catch { /* non-fatal */ }
+    router.push('/copilot')
+  }
+
+  function traceItem(item: AttentionItem) {
+    const lines = [
+      'Debug: trace where this briefing card came from. Cite every source.',
+      `Card title: "${item.title}"`,
+      `Reason shown: "${item.reason}"`,
+      `Source type: ${item.sourceType}${item.sourceId ? ` (id: ${item.sourceId})` : ''}`,
+      item.dueAt ? `Due at: ${item.dueAt}` : '',
+      item.startBy ? `Start by: ${item.startBy}` : '',
+      'Tell me exactly where each fact came from (which memory id, member profile field, calendar event, or tool), show how any dates or day-names were derived from the reference table, and flag anything uncertain or contradictory.',
+    ].filter(Boolean)
+    traceInCopilot(lines.join('\n'))
+  }
+
+  function traceProblem(p: PotentialProblem) {
+    const lines = [
+      'Debug: trace where this flagged problem came from. Cite every source.',
+      `Problem: "${p.title}"`,
+      `Detail shown: "${p.detail}"`,
+      p.relatedDate ? `Related date: ${p.relatedDate}` : '',
+      'Tell me exactly where each fact came from (which memory id, member profile field, calendar event, or tool), show how any dates were derived, and flag anything uncertain or contradictory.',
+    ].filter(Boolean)
+    traceInCopilot(lines.join('\n'))
+  }
+
   function dismissItem(title: string) {
     setDismissedTitles((prev) => {
       const next = new Set(prev).add(title)
@@ -1445,6 +1487,8 @@ export function CommandCenter() {
                             onSaveTaskItem={(title, reason) => saveItemAsTask(title, reason)}
                             onAddContextItem={addContextForItem}
                             onAssignItem={(item, f, r) => assignItem(item, f, r)}
+                            debugMode={debugMode}
+                            onTraceItem={traceItem}
                           />
                         )
                       }
@@ -1478,6 +1522,8 @@ export function CommandCenter() {
                           onSaveTask={() => saveItemAsTask(item.title, item.reason)}
                           onAssign={(f, r) => assignItem(item, f, r)}
                           onAddContext={(context) => addContextForItem(item.title, context)}
+                          debugMode={debugMode}
+                          onTrace={() => traceItem(item)}
                         />
                       )
                     })}
@@ -1513,6 +1559,8 @@ export function CommandCenter() {
                     onDismiss={() => dismissItem(p.title)}
                     onCopilot={(text) => openBriefingInCopilot(text)}
                     onCapture={(text) => openCapture({ text, autoAnalyze: true })}
+                    debugMode={debugMode}
+                    onTrace={() => traceProblem(p)}
                   />
                 ),
               )}
@@ -1721,6 +1769,8 @@ function ProblemCard({
   onDismiss,
   onCopilot,
   onCapture,
+  debugMode,
+  onTrace,
 }: {
   problem: PotentialProblem
   onSaveTask: () => void
@@ -1729,6 +1779,8 @@ function ProblemCard({
   // Opens the Capture dialog (which has a per-calendar event picker) pre-filled
   // with this problem, for "add to calendar" style actions.
   onCapture: (text: string) => void
+  debugMode?: boolean
+  onTrace?: () => void
 }) {
   const [saved, setSaved] = useState(false)
   const severityBg = p.severity === 'high' ? '#fee2e2' : p.severity === 'medium' ? '#ffedd5' : '#fef9c3'
@@ -1774,6 +1826,15 @@ function ProblemCard({
           >
             {p.severity}
           </span>
+          {debugMode && onTrace && (
+            <button
+              onClick={onTrace}
+              className="p-1.5 rounded-lg text-blue-400 hover:text-blue-600 hover:bg-blue-50 transition-colors"
+              title="Trace sources (debug)"
+            >
+              <Bug size={14} />
+            </button>
+          )}
           <button
             onClick={() => { setSaved(true); onSaveTask() }}
             disabled={saved}
@@ -1842,7 +1903,7 @@ type ResolvedItemForGroup = {
 
 function GroupedAttentionCard({
   groupTitle, resolvedItems, accent, allMembers,
-  onCompleteItem, onDismissItem, onSaveTaskItem, onAddContextItem, onAssignItem,
+  onCompleteItem, onDismissItem, onSaveTaskItem, onAddContextItem, onAssignItem, debugMode, onTraceItem,
 }: {
   groupTitle: string
   resolvedItems: ResolvedItemForGroup[]
@@ -1853,6 +1914,8 @@ function GroupedAttentionCard({
   onSaveTaskItem: (title: string, reason: string) => void
   onAddContextItem: (title: string, context: string) => void
   onAssignItem: (item: AttentionItem, forIds: string[], responsibleId?: string) => void
+  debugMode?: boolean
+  onTraceItem?: (item: AttentionItem) => void
 }) {
   const [expanded, setExpanded] = useState(false)
 
@@ -1932,6 +1995,8 @@ function GroupedAttentionCard({
               onSaveTask={() => onSaveTaskItem(item.title, item.reason)}
               onAddContext={(ctx) => onAddContextItem(item.title, ctx)}
               onAssign={(f, r) => onAssignItem(item, f, r)}
+              debugMode={debugMode}
+              onTrace={onTraceItem ? () => onTraceItem(item) : undefined}
             />
           ))}
         </div>
@@ -1985,7 +2050,7 @@ function CompactItemRow({
 // ── Individual attention card ────────────────────────────────
 
 function AttentionCard({
-  item, accent, allMembers, responsible, forMembers, backedByRealItem, isRecurring, onComplete, onDismiss, onSaveTask, onAddContext, onAssign,
+  item, accent, allMembers, responsible, forMembers, backedByRealItem, isRecurring, onComplete, onDismiss, onSaveTask, onAddContext, onAssign, debugMode, onTrace,
 }: {
   item: AttentionItem
   accent: string
@@ -1999,6 +2064,8 @@ function AttentionCard({
   onSaveTask: () => void
   onAddContext: (context: string) => void
   onAssign: (forIds: string[], responsibleId?: string) => void
+  debugMode?: boolean
+  onTrace?: () => void
 }) {
   const [done, setDone] = useState(false)
   const [saved, setSaved] = useState(false)
@@ -2099,6 +2166,15 @@ function AttentionCard({
           </div>
         </div>
         <div className="flex gap-0.5 shrink-0">
+          {debugMode && onTrace && (
+            <button
+              onClick={onTrace}
+              className="p-1.5 rounded-lg text-blue-400 hover:text-blue-600 hover:bg-blue-50 transition-colors"
+              title="Trace sources (debug)"
+            >
+              <Bug size={14} />
+            </button>
+          )}
           <button
             onClick={() => setAssigning((v) => !v)}
             className="p-1.5 rounded-lg text-slate-300 hover:text-slate-500 hover:bg-slate-50 transition-colors"

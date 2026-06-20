@@ -2,12 +2,13 @@
 
 export const dynamic = 'force-dynamic'
 
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import {
   LogOut, Trash2, UserMinus, ArrowLeft, ShieldAlert, RefreshCw,
-  Loader2, RotateCcw, Sparkles, Brain, ChevronDown,
+  Loader2, RotateCcw, Sparkles, Brain, ChevronDown, Bug,
 } from 'lucide-react'
+import { isAiDebugEnabled, setAiDebugEnabled } from '@/lib/aiDebug'
 import { useAuth } from '@/contexts/AuthContext'
 import { useFamily } from '@/contexts/FamilyContext'
 import { useFirestore } from '@/hooks/useFirestore'
@@ -57,6 +58,18 @@ export default function SettingsPage() {
   const [cleaning, setCleaning] = useState(false)
   const [cleanResult, setCleanResult] = useState<string | null>(null)
   const [showMemories, setShowMemories] = useState(false)
+  const [debugMode, setDebugMode] = useState(false)
+
+  // Hydrate the AI-debug toggle from localStorage on mount.
+  useEffect(() => {
+    setDebugMode(isAiDebugEnabled())
+  }, [])
+
+  function toggleDebugMode() {
+    const next = !debugMode
+    setDebugMode(next)
+    setAiDebugEnabled(next)
+  }
 
   // --- Admin panel state ---
   const isAdmin = isAdminEmail(user?.email, process.env.NEXT_PUBLIC_ADMIN_EMAILS)
@@ -520,6 +533,47 @@ export default function SettingsPage() {
               })()}
             </div>
           )}
+        </section>
+
+        {/* AI Diagnostics */}
+        <section className="bg-white rounded-2xl border border-slate-200 divide-y divide-slate-100 mb-4">
+          <div className="px-5 py-4 flex items-center gap-2">
+            <Bug size={15} className="text-slate-400" />
+            <p className="text-xs font-semibold text-slate-400 uppercase tracking-widest">AI Diagnostics</p>
+          </div>
+          <div className="px-5 py-4">
+            <div className="flex items-start justify-between gap-4">
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-slate-700 mb-1">AI debugging mode</p>
+                <p className="text-xs text-slate-400 leading-relaxed">
+                  When something looks wrong, turn this on and ask Copilot about it. It will show its work — citing
+                  exactly where each fact came from (a specific memory, a member&apos;s profile, a calendar event, or a
+                  tool it called) and flagging anything uncertain or contradictory. Turn it off for normal,
+                  conversational replies.
+                </p>
+              </div>
+              <button
+                role="switch"
+                aria-checked={debugMode}
+                onClick={toggleDebugMode}
+                className={`relative shrink-0 w-11 h-6 rounded-full transition-colors duration-200 ${
+                  debugMode ? 'bg-blue-600' : 'bg-slate-200'
+                }`}
+                aria-label="Toggle AI debugging mode"
+              >
+                <span
+                  className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-200 ${
+                    debugMode ? 'translate-x-5' : 'translate-x-0'
+                  }`}
+                />
+              </button>
+            </div>
+            {debugMode && (
+              <p className="text-xs text-blue-600 mt-3 flex items-center gap-1.5">
+                <Bug size={12} /> Debugging mode is on — Copilot will cite its sources.
+              </p>
+            )}
+          </div>
         </section>
 
         {/* Family */}

@@ -4,7 +4,7 @@ import { useState, useRef, useEffect, useCallback } from 'react'
 import {
   Send, Sparkles, Bot, CheckCircle2, AlertTriangle,
   CalendarDays, ShoppingCart, ListChecks, Plane, AudioLines,
-  Paperclip, X, FileText,
+  Paperclip, X, FileText, Bug,
 } from 'lucide-react'
 import { RealtimeVoiceMode } from '@/components/copilot/RealtimeVoiceMode'
 import { useAuth } from '@/contexts/AuthContext'
@@ -15,6 +15,7 @@ import { useToast } from '@/contexts/ToastContext'
 import { Markdown } from '@/components/ui/Markdown'
 import { ProposedActions, type PendingAction, type ActionStatus } from '@/components/copilot/ProposedActions'
 import { cn } from '@/lib/utils'
+import { isAiDebugEnabled } from '@/lib/aiDebug'
 import type { FamilyMember } from '@/lib/types'
 
 // ---------------------------------------------------------------------------
@@ -224,6 +225,17 @@ export function CopilotChat() {
   const [voiceOpen, setVoiceOpen] = useState(false)
   const [availableCalendars, setAvailableCalendars] = useState<Array<{ id: string; name: string; primary: boolean }>>([])
   const [pendingAttachments, setPendingAttachments] = useState<Attachment[]>([])
+  const [debugMode, setDebugMode] = useState(false)
+
+  // Reflect the AI-debug toggle (set in Settings) in the header so the user
+  // knows source-tracing is active. Re-check when the tab regains focus in case
+  // they just changed it.
+  useEffect(() => {
+    const sync = () => setDebugMode(isAiDebugEnabled())
+    sync()
+    window.addEventListener('focus', sync)
+    return () => window.removeEventListener('focus', sync)
+  }, [])
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -244,6 +256,11 @@ export function CopilotChat() {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, loading])
+
+  // A "trace" question carried in from a briefing card (debug mode). Unlike the
+  // seed above, this is a USER question that we auto-send so the AI answers it
+  // with its sources. Fires once, after family/user context is ready.
+  const askFiredRef = useRef(false)
 
   const handleFileSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files ?? [])
@@ -314,6 +331,7 @@ export function CopilotChat() {
             familyId,
             userEmail: user.email,
             googleTokens,
+            debug: isAiDebugEnabled(),
             context: {
               members,
               today: new Date().toISOString(),
@@ -421,6 +439,20 @@ export function CopilotChat() {
     },
     [input, pendingAttachments, loading, familyId, user?.email, members, messages, getFreshTokens, toast],
   )
+
+  // Auto-send a trace question handed off from a briefing card.
+  useEffect(() => {
+    if (askFiredRef.current) return
+    if (typeof window === 'undefined') return
+    if (!familyId || !user?.email) return
+    let ask: string | null = null
+    try { ask = sessionStorage.getItem('copilot-ask') } catch { /* ignore */ }
+    if (ask) {
+      try { sessionStorage.removeItem('copilot-ask') } catch { /* ignore */ }
+      askFiredRef.current = true
+      handleSend(ask)
+    }
+  }, [familyId, user?.email, handleSend])
 
   // Resolve the dynamic context the realtime voice session needs (fresh Google
   // tokens, family members, timezone) at the moment the conversation starts.
@@ -538,10 +570,19 @@ export function CopilotChat() {
           <div className="w-11 h-11 rounded-2xl bg-gradient-to-br from-blue-600 to-purple-600 flex items-center justify-center shrink-0 shadow-card">
             <Sparkles size={21} className="text-white" />
           </div>
-          <div className="min-w-0">
-            <h1 className="text-lg font-bold text-slate-900 leading-tight">Copilot</h1>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <h1 className="text-lg font-bold text-slate-900 leading-tight">Copilot</h1>
+              {debugMode && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-blue-50 text-blue-600 border border-blue-100">
+                  <Bug size={10} /> Debug
+                </span>
+              )}
+            </div>
             <p className="text-sm text-slate-500 leading-tight">
-              Your family&apos;s chief of staff. Ask anything, or tell me what to do.
+              {debugMode
+                ? 'Debugging mode on — I’ll cite where each fact comes from.'
+                : 'Your family’s chief of staff. Ask anything, or tell me what to do.'}
             </p>
           </div>
         </div>

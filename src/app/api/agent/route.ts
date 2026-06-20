@@ -56,7 +56,7 @@ export async function POST(request: NextRequest) {
   // Run the async agent work in the background; the stream is returned immediately.
   ;(async () => {
     try {
-      const { messages, familyId, userEmail, googleTokens, context } = await request.json()
+      const { messages, familyId, userEmail, googleTokens, context, debug } = await request.json()
 
       if (!familyId) {
         send({ type: 'error', error: 'familyId is required' })
@@ -96,7 +96,30 @@ export async function POST(request: NextRequest) {
         } catch { /* non-fatal */ }
       }
 
-      const systemPrompt = buildSystemPrompt(members, today, !!googleTokens, userEmail, timezone, memories, profile)
+      let systemPrompt = buildSystemPrompt(members, today, !!googleTokens, userEmail, timezone, memories, profile)
+
+      // AI debugging mode — the user has turned on source-tracing in Settings.
+      // Make the assistant show its work so they can find where a fact came from
+      // when something looks wrong (a stale date, a fact not visible in the UI).
+      if (debug) {
+        systemPrompt += `
+
+═══════════════════════════════════════════════════════════════
+AI DEBUGGING MODE IS ON — SHOW YOUR WORK
+═══════════════════════════════════════════════════════════════
+The user has enabled diagnostic mode to trace where your information comes from. For THIS conversation, change how you answer:
+
+1. CITE EVERY FACT. For each piece of information you state, name its exact source inline:
+   - A durable memory → quote its [id:xxx] label (e.g. "from memory [id:ab12]").
+   - A member's profile → name the field and member (e.g. "from Maddie's profile notes", "from Leo's routines", "from Maddie's importantInfo").
+   - A calendar event / reminder / task / list → say which tool returned it (e.g. "from list_events", "from get_google_events").
+   - Your own reasoning or general knowledge → say so explicitly ("this is my inference, not from family data").
+2. DISTINGUISH SOURCES. Family memories (the remember/forget store) are SEPARATE from member-profile notes (stored on each person's profile). If a fact is in one but not the other, say which — this is often why a user "can't find" something in the UI.
+3. SHOW DATE MATH. When you state a day-of-week, show how you derived it from the DAY-DATE REFERENCE table (e.g. "June 28 = Sunday per the reference table"). Flag any stored text whose embedded day name disagrees with the table.
+4. SURFACE CONFLICTS AND GAPS. If two sources disagree, list every conflicting entry with its [id:xxx] and source. If you have no source for something the user expects, say plainly "I have no record of that in <where you looked>."
+5. LIST WHAT YOU CHECKED. When the user asks where something is stored or why you said something, briefly enumerate which tools/sources you consulted, even the ones that came back empty.
+Be precise and transparent over being concise. This mode is for trust and debugging, not polish.`
+      }
 
       const conversationMessages: Anthropic.MessageParam[] = (messages ?? []).map(
         (m: { role: 'user' | 'assistant'; content: string | unknown[] }) => ({
