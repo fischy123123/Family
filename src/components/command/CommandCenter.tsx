@@ -8,7 +8,7 @@ import {
 import { db } from '@/lib/firebase'
 import {
   RefreshCw, AlertTriangle, Lightbulb, Clock,
-  Calendar as CalIcon, Sparkles, Check, HelpCircle, X, MessageCircle, Users, Bookmark, Plus, ChevronDown,
+  Calendar as CalIcon, Sparkles, Check, HelpCircle, X, MessageCircle, Users, Bookmark, Plus, ChevronDown, Bug,
 } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { useFirestore } from '@/hooks/useFirestore'
@@ -40,6 +40,24 @@ type EventContext = {
   eventTitle: string
   context: string
   savedAt: string
+}
+
+// Debug provenance for a single briefing item — surfaced on-screen when debug
+// mode is on, so it's possible to see exactly where an item and its assignment
+// are coming from (AI inference vs in-memory override) and where it's persisted
+// (memory, event doc, task, or reminder).
+type ItemDebug = {
+  sourceType: string
+  sourceId: string
+  shownFrom: string        // what the on-screen assignment is rendered from
+  aiForEmails: string      // raw item.forEmails from the AI report
+  aiAssigneeEmail: string  // raw item.assigneeEmail from the AI report
+  override: string         // in-memory assignmentOverrides[title], if any
+  memoryExact: string | null   // exact-title Assignment memory, if any
+  memoryFuzzy: string[]        // fuzzy-title Assignment memories that may match
+  eventMatch: string | null    // matching calendar event + its stored forIds/assigneeId
+  taskMatch: string | null     // matching task + its stored assignment
+  reminderMatch: string | null // matching reminder + its stored assignment
 }
 
 type EmailSuggestion = {
@@ -321,6 +339,19 @@ export function CommandCenter() {
   const [assignmentOverrides, setAssignmentOverrides] = useState<
     Record<string, { responsibleId?: string; forIds?: string[] }>
   >({})
+  // On-screen debug overlay: shows the provenance of each briefing item and its
+  // assignment. Persisted to localStorage so it survives reloads.
+  const [showDebug, setShowDebug] = useState(false)
+  useEffect(() => {
+    try { setShowDebug(localStorage.getItem('fam-debug') === '1') } catch { /* ignore */ }
+  }, [])
+  const toggleDebug = useCallback(() => {
+    setShowDebug((v) => {
+      const next = !v
+      try { localStorage.setItem('fam-debug', next ? '1' : '0') } catch { /* ignore */ }
+      return next
+    })
+  }, [])
 
   const REPORT_TTL_MS = 4 * 60 * 60 * 1000
 
@@ -1195,6 +1226,85 @@ export function CommandCenter() {
     }
   }
 
+  // Compute the full provenance of an item's assignment — every place the data
+  // could be coming from or stored in. Used by the on-screen debug overlay.
+  function debugProvenance(item: AttentionItem): ItemDebug {
+    const nameOf = (ref?: string) => {
+      if (!ref) return ''
+      const m = resolveMemberRef(members, ref)
+      return m ? `${m.name}` : ref
+    }
+    const ov = assignmentOverrides[item.title]
+    const shownFrom = ov
+      ? 'in-memory override (this session)'
+      : (item.forEmails?.length || item.assigneeEmail)
+        ? 'AI report fields (item.forEmails / item.assigneeEmail)'
+        : 'nothing set'
+
+    // Assignment memories (the durable store written by assignItem)
+    const ASSIGN_PREFIX = 'Assignment · '
+    const exactMarker = `${ASSIGN_PREFIX}"${item.title}":`
+    const exactMem = memories.find((m) => m.text.startsWith(exactMarker))
+    const titleWords = new Set(
+      item.title.toLowerCase().split(/\W+/).filter((w) => w.length > 3)
+    )
+    const fuzzyMems = memories
+      .filter((m) => m.text.startsWith(ASSIGN_PREFIX) && m !== exactMem)
+      .filter((m) => {
+        const quoted = m.text.match(/Assignment · "([^"]+)":/)?.[1]?.toLowerCase() ?? ''
+        const qWords = quoted.split(/\W+/).filter((w) => w.length > 3)
+        return qWords.some((w) => titleWords.has(w))
+      })
+
+    // Matching calendar event
+    const evById = item.sourceId ? events.find((e) => e.id === item.sourceId) : undefined
+    const evByTitle = !evById
+      ? events.find((e) => {
+          const a = e.title.toLowerCase(); const b = item.title.toLowerCase()
+          return a === b || a.includes(b) || b.includes(a)
+        })
+      : undefined
+    const ev = evById ?? evByTitle
+    const evFor = (ev?.forIds ?? []).map((id) => nameOf(id)).join(', ') || '∅'
+    const evResp = ev?.assigneeId ? nameOf(ev.assigneeId) : '∅'
+
+    // Matching task / reminder
+    const task = item.sourceId
+      ? tasks.find((t) => t.id === item.sourceId)
+      : tasks.find((t) => t.title.toLowerCase() === item.title.toLowerCase())
+    const reminder = item.sourceId
+      ? reminders.find((r) => r.id === item.sourceId)
+      : reminders.find((r) => r.title.toLowerCase() === item.title.toLowerCase())
+
+    return {
+      sourceType: item.sourceType,
+      sourceId: item.sourceId ?? '∅',
+      shownFrom,
+      aiForEmails: item.forEmails?.length ? item.forEmails.join(', ') : '∅',
+      aiAssigneeEmail: item.assigneeEmail ?? '∅',
+      override: ov
+        ? `for=[${(ov.forIds ?? []).map(nameOf).join(', ')}] resp=${ov.responsibleId ? nameOf(ov.responsibleId) : '∅'}`
+        : '∅',
+      memoryExact: exactMem ? `"${exactMem.text}" (noted ${exactMem.createdAt})` : null,
+      memoryFuzzy: fuzzyMems.map((m) => `"${m.text}" (noted ${m.createdAt})`),
+      eventMatch: ev
+        ? `${ev.id} [matched by ${evById ? 'sourceId' : 'title'}] forIds=[${evFor}] assigneeId=${evResp}`
+        : null,
+      taskMatch: task
+        ? `${task.id} assigneeId=${task.assigneeId ? nameOf(task.assigneeId) : '∅'} forIds=[${(task.forIds ?? []).map(nameOf).join(', ') || '∅'}]`
+        : null,
+      reminderMatch: reminder
+        ? `${reminder.id} assigneeEmail=${reminder.assigneeEmail ?? '∅'}`
+        : null,
+    }
+  }
+
+  // All Assignment-type memories, for the global debug panel.
+  const allAssignmentMemories = useMemo(
+    () => memories.filter((m) => m.text.startsWith('Assignment · ')),
+    [memories]
+  )
+
   // All visible items grouped by groupKey, then sorted into bucket sections.
   const allGroups = useMemo(() => {
     const visible = (report?.items ?? []).filter((i) => showInList(i.title))
@@ -1312,20 +1422,72 @@ export function CommandCenter() {
             Good {greeting()}, {firstName}
           </h1>
         </div>
-        <button
-          onClick={() => { setPendingReport(null); runEngine(undefined, false) }}
-          disabled={loading || calendarFetching}
-          title={loading || calendarFetching ? 'Loading calendar…' : refreshing ? 'Updating — tap to refresh now' : 'Refresh briefing'}
-          className={`mt-1 p-2.5 rounded-xl border shadow-card transition-all disabled:opacity-60 ${
-            refreshing
-              ? 'bg-blue-50 border-blue-200 text-blue-500 hover:bg-blue-100'
-              : 'bg-white border-slate-200 text-slate-500 hover:text-blue-600 hover:border-blue-200'
-          }`}
-          aria-label="Refresh"
-        >
-          <RefreshCw size={16} className={busy ? 'animate-spin' : ''} />
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={toggleDebug}
+            title={showDebug ? 'Hide data sources' : 'Show data sources'}
+            className={`mt-1 p-2.5 rounded-xl border shadow-card transition-all ${
+              showDebug
+                ? 'bg-amber-50 border-amber-300 text-amber-600 hover:bg-amber-100'
+                : 'bg-white border-slate-200 text-slate-400 hover:text-amber-600 hover:border-amber-200'
+            }`}
+            aria-label="Toggle debug"
+          >
+            <Bug size={16} />
+          </button>
+          <button
+            onClick={() => { setPendingReport(null); runEngine(undefined, false) }}
+            disabled={loading || calendarFetching}
+            title={loading || calendarFetching ? 'Loading calendar…' : refreshing ? 'Updating — tap to refresh now' : 'Refresh briefing'}
+            className={`mt-1 p-2.5 rounded-xl border shadow-card transition-all disabled:opacity-60 ${
+              refreshing
+                ? 'bg-blue-50 border-blue-200 text-blue-500 hover:bg-blue-100'
+                : 'bg-white border-slate-200 text-slate-500 hover:text-blue-600 hover:border-blue-200'
+            }`}
+            aria-label="Refresh"
+          >
+            <RefreshCw size={16} className={busy ? 'animate-spin' : ''} />
+          </button>
+        </div>
       </div>
+
+      {/* ── Global debug panel: where event + assignment data lives ── */}
+      {showDebug && (
+        <div className="rounded-2xl border border-amber-300 bg-amber-50 p-4 text-[11px] leading-relaxed font-mono text-amber-900 space-y-2 overflow-x-auto">
+          <p className="font-bold flex items-center gap-1.5"><Bug size={12} /> DEBUG — data sources</p>
+          <div>
+            <span className="font-bold">events[] source:</span>{' '}
+            {localEvents.length > 0
+              ? `Firestore (localEvents=${localEvents.length})`
+              : `live Google fetch (googleEvents=${googleEvents.length})`}
+            {' · '}googleEvents={googleEvents.length} · localEvents={localEvents.length}
+          </div>
+          <div>
+            <span className="font-bold">report:</span>{' '}
+            {report
+              ? `generatedAt=${report.generatedAt} · items=${report.items?.length ?? 0} · eventAssignments=${report.eventAssignments?.length ?? 0}`
+              : '∅ (no report yet)'}
+            {' · '}lastRun={lastRun.current ? new Date(lastRun.current).toLocaleTimeString() : '∅'}
+          </div>
+          <div>
+            <span className="font-bold">Assignment memories ({allAssignmentMemories.length}):</span>
+            {allAssignmentMemories.length === 0 ? (
+              <span> ∅ none stored</span>
+            ) : (
+              <ul className="mt-1 space-y-1">
+                {allAssignmentMemories.map((m) => (
+                  <li key={m.id} className="pl-2 border-l-2 border-amber-300">
+                    {m.text}{' '}
+                    <span className="text-amber-600">
+                      (id={m.id.slice(0, 6)}… · subjects=[{(m.subjectEmails ?? []).join(', ') || '∅'}] · noted {m.createdAt})
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Pending briefing banner — appears when a background run finishes.
           Content stays frozen until the user explicitly taps to apply it. */}
@@ -1585,6 +1747,7 @@ export function CommandCenter() {
                             onSaveTaskItem={(title, reason) => saveItemAsTask(title, reason)}
                             onAddContextItem={addContextForItem}
                             onAssignItem={(item, f, r) => assignItem(item, f, r)}
+                            debugFor={showDebug ? debugProvenance : undefined}
                           />
                         )
                       }
@@ -1618,6 +1781,7 @@ export function CommandCenter() {
                           onSaveTask={() => saveItemAsTask(item.title, item.reason)}
                           onAssign={(f, r) => assignItem(item, f, r)}
                           onAddContext={(context) => addContextForItem(item.title, context)}
+                          debug={showDebug ? debugProvenance(item) : null}
                         />
                       )
                     })}
@@ -1996,7 +2160,7 @@ type ResolvedItemForGroup = {
 
 function GroupedAttentionCard({
   groupTitle, resolvedItems, accent, allMembers,
-  onCompleteItem, onDismissItem, onSaveTaskItem, onAddContextItem, onAssignItem,
+  onCompleteItem, onDismissItem, onSaveTaskItem, onAddContextItem, onAssignItem, debugFor,
 }: {
   groupTitle: string
   resolvedItems: ResolvedItemForGroup[]
@@ -2007,6 +2171,7 @@ function GroupedAttentionCard({
   onSaveTaskItem: (title: string, reason: string) => void
   onAddContextItem: (title: string, context: string) => void
   onAssignItem: (item: AttentionItem, forIds: string[], responsibleId?: string) => void
+  debugFor?: (item: AttentionItem) => ItemDebug | null
 }) {
   const [expanded, setExpanded] = useState(false)
 
@@ -2086,6 +2251,7 @@ function GroupedAttentionCard({
               onSaveTask={() => onSaveTaskItem(item.title, item.reason)}
               onAddContext={(ctx) => onAddContextItem(item.title, ctx)}
               onAssign={(f, r) => onAssignItem(item, f, r)}
+              debug={debugFor ? debugFor(item) : null}
             />
           ))}
         </div>
@@ -2139,7 +2305,7 @@ function CompactItemRow({
 // ── Individual attention card ────────────────────────────────
 
 function AttentionCard({
-  item, accent, allMembers, responsible, forMembers, emailSubject, backedByRealItem, onComplete, onDismiss, onSaveTask, onAddContext, onAssign,
+  item, accent, allMembers, responsible, forMembers, emailSubject, backedByRealItem, onComplete, onDismiss, onSaveTask, onAddContext, onAssign, debug,
 }: {
   item: AttentionItem
   accent: string
@@ -2153,6 +2319,7 @@ function AttentionCard({
   onSaveTask: () => void
   onAddContext: (context: string) => void
   onAssign: (forIds: string[], responsibleId?: string) => void
+  debug?: ItemDebug | null
 }) {
   const [done, setDone] = useState(false)
   const [saved, setSaved] = useState(false)
@@ -2328,6 +2495,37 @@ function AttentionCard({
             >
               Save
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* ── Per-item debug provenance ── */}
+      {debug && (
+        <div className="mx-4 mb-4 rounded-lg border border-amber-300 bg-amber-50 p-3 text-[10px] leading-relaxed font-mono text-amber-900 space-y-1 overflow-x-auto">
+          <p className="font-bold flex items-center gap-1"><Bug size={10} /> item provenance</p>
+          <div><span className="font-bold">sourceType:</span> {debug.sourceType} · <span className="font-bold">sourceId:</span> {debug.sourceId}</div>
+          <div><span className="font-bold">assignment shown from:</span> {debug.shownFrom}</div>
+          <div><span className="font-bold">AI fields:</span> forEmails=[{debug.aiForEmails}] · assigneeEmail={debug.aiAssigneeEmail}</div>
+          <div><span className="font-bold">in-memory override:</span> {debug.override}</div>
+          <div className={debug.memoryExact ? 'text-amber-900' : 'text-amber-500'}>
+            <span className="font-bold">memory (exact title):</span> {debug.memoryExact ?? '∅ none'}
+          </div>
+          {debug.memoryFuzzy.length > 0 && (
+            <div className="text-rose-700">
+              <span className="font-bold">⚠ memory (fuzzy/title drift):</span>
+              <ul className="pl-2">
+                {debug.memoryFuzzy.map((t, i) => <li key={i} className="border-l-2 border-rose-300 pl-1">{t}</li>)}
+              </ul>
+            </div>
+          )}
+          <div className={debug.eventMatch ? 'text-amber-900' : 'text-amber-500'}>
+            <span className="font-bold">calendar event:</span> {debug.eventMatch ?? '∅ no match'}
+          </div>
+          <div className={debug.taskMatch ? 'text-amber-900' : 'text-amber-500'}>
+            <span className="font-bold">task:</span> {debug.taskMatch ?? '∅ no match'}
+          </div>
+          <div className={debug.reminderMatch ? 'text-amber-900' : 'text-amber-500'}>
+            <span className="font-bold">reminder:</span> {debug.reminderMatch ?? '∅ no match'}
           </div>
         </div>
       )}
