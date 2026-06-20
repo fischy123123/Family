@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
 import type { FamilyMemory } from '@/lib/types'
+import { logUsage } from '@/lib/ai'
 
 const MODEL = 'claude-sonnet-4-6'
 
@@ -102,6 +103,7 @@ Durability rules (IMPORTANT — memories must stay true over time):
       return Array.from(ids)
     }
 
+    logUsage('consolidate-memory', MODEL, response.usage)
     const text = response.content[0].type === 'text' ? response.content[0].text : ''
     const match = text.match(/\{[\s\S]*\}/)
     if (!match) {

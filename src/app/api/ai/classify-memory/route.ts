@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
+import { logUsage } from '@/lib/ai'
 
 const MODEL = 'claude-sonnet-4-6'
 
@@ -54,6 +55,7 @@ Rules:
       ],
     })
 
+    logUsage('classify-memory', MODEL, response.usage)
     const responseText = response.content[0].type === 'text' ? response.content[0].text : ''
     const match = responseText.match(/\{[\s\S]*\}/)
     if (!match) return NextResponse.json({ subjectIdentifiers: [] })

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
 import type { CalendarEvent, FamilyMember } from '@/lib/types'
+import { logUsage } from '@/lib/ai'
 
 interface EventSuggestion {
   eventId: string
@@ -107,6 +108,7 @@ Aim for at least 50% of events having suggestions. If all events already have th
       ],
     })
 
+    logUsage('enhance-events', 'claude-sonnet-4-6', message.usage)
     rawText = message.content[0]?.type === 'text' ? message.content[0].text : ''
     console.log(`[enhance-events] stop_reason=${message.stop_reason} raw_length=${rawText.length} preview=${rawText.slice(0, 200)}`)
     if (message.stop_reason === 'max_tokens') {

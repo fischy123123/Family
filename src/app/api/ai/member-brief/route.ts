@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
 import type { FamilyMember, Task, Chore, FamilyMemory, FamilyProfile, CalendarEvent } from '@/lib/types'
+import { logUsage } from '@/lib/ai'
 import { memoryConcernsMember } from '@/lib/types'
 
 const MODEL = 'claude-sonnet-4-6'
@@ -224,6 +225,7 @@ Return this exact JSON (no markdown):
       messages: [{ role: 'user', content: userPrompt }],
     })
 
+    logUsage('member-brief', MODEL, response.usage)
     const text = response.content[0].type === 'text' ? response.content[0].text : ''
     const jsonMatch = text.match(/\{[\s\S]*\}/)
     if (!jsonMatch) throw new Error('No JSON in response')
