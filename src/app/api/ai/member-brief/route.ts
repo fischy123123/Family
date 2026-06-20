@@ -71,20 +71,26 @@ function buildMemberContext(req: MemberBriefRequest): string {
     memberMemories.slice(0, 8).forEach((m) => lines.push(`  - ${m.text}`))
   }
 
-  // Strict: only tasks explicitly assigned to this member by id or email
+  // Strict: only tasks where member is responsible OR the task is for/about them
   const nowMs = new Date(now).getTime()
-  const memberTasks = tasks.filter(
-    (t) => !t.isCompleted && matchesMember(member, t.assigneeId, t.assigneeEmail)
-  )
+  const memberTasks = tasks.filter((t) => {
+    if (t.isCompleted) return false
+    if (matchesMember(member, t.assigneeId, t.assigneeEmail)) return true
+    if (member.id && t.forIds?.includes(member.id)) return true
+    return false
+  })
   if (memberTasks.length) {
     lines.push('Open tasks:')
     memberTasks.forEach((t) => {
+      const isFor = member.id && t.forIds?.includes(member.id)
+      const isResponsible = matchesMember(member, t.assigneeId, t.assigneeEmail)
+      const role = isFor && isResponsible ? '' : isFor ? ' (task is for/about them)' : ''
       // Flag tasks that were due in the past so the AI doesn't surface them as current
       const pastDue = t.dueDate && new Date(t.dueDate).getTime() < nowMs
         ? ' [PAST DUE — may already be resolved]'
         : ''
-      const due = t.dueDate ? ` (due ${fmtDate(t.dueDate)}${pastDue ? '' : ''})` : ''
-      lines.push(`  - [${t.priority}] ${t.title}${due}${pastDue}`)
+      const due = t.dueDate ? ` (due ${fmtDate(t.dueDate)})` : ''
+      lines.push(`  - [${t.priority}] ${t.title}${due}${role}${pastDue}`)
     })
   }
 
@@ -98,13 +104,16 @@ function buildMemberContext(req: MemberBriefRequest): string {
     })
   }
 
-  // Upcoming events for this member: owned by them, or title mentions their name.
+  // Upcoming events for this member: owned by them, event is for/about them,
+  // they are responsible for it, or their name appears in the title.
   const horizon = nowMs + 14 * 24 * 60 * 60 * 1000
   const nameLower = member.name.toLowerCase()
   const memberEvents = (events ?? []).filter((e) => {
     const start = new Date(e.start).getTime()
     if (start < nowMs - 30 * 60 * 1000 || start > horizon) return false
     if (member.email && e.ownerEmail?.toLowerCase() === member.email.toLowerCase()) return true
+    if (member.id && e.forIds?.includes(member.id)) return true
+    if (member.id && e.assigneeId === member.id) return true
     if (e.title?.toLowerCase().includes(nameLower)) return true
     return false
   }).sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime())
@@ -113,7 +122,13 @@ function buildMemberContext(req: MemberBriefRequest): string {
     lines.push('Upcoming calendar events (next 14 days):')
     memberEvents.forEach((e) => {
       const start = new Date(e.start).toLocaleString('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
-      lines.push(`  - ${e.title} — ${start}${e.location ? ` @ ${e.location}` : ''}`)
+      const isFor = member.id && e.forIds?.includes(member.id)
+      const isResponsible = member.id && e.assigneeId === member.id
+      let role = ''
+      if (isFor && isResponsible) role = ' (for them + they are responsible)'
+      else if (isFor) role = ' (event is for/about them)'
+      else if (isResponsible) role = ' (they are responsible for this)'
+      lines.push(`  - ${e.title} — ${start}${e.location ? ` @ ${e.location}` : ''}${role}`)
     })
   }
 
