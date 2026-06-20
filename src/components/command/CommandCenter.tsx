@@ -2097,11 +2097,15 @@ function CardChat({
   const [loading, setLoading] = useState(false)
   const [pendingActions, setPendingActions] = useState<PendingAction[]>([])
   const inputRef = useRef<HTMLInputElement>(null)
-  const endRef = useRef<HTMLDivElement>(null)
+  const scrollRef = useRef<HTMLDivElement>(null)
   const router = useRouter()
 
   useEffect(() => { setTimeout(() => inputRef.current?.focus(), 50) }, [])
-  useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [msgs, loading])
+  // Scroll ONLY inside the message container, never the whole page.
+  useEffect(() => {
+    const el = scrollRef.current
+    if (el) el.scrollTop = el.scrollHeight
+  }, [msgs, loading])
 
   async function send(text?: string) {
     const content = (text ?? input).trim()
@@ -2219,7 +2223,7 @@ function CardChat({
 
       {/* Message thread */}
       {msgs.length > 0 && (
-        <div className="space-y-2 max-h-64 overflow-y-auto pr-0.5">
+        <div ref={scrollRef} className="space-y-2 max-h-64 overflow-y-auto pr-0.5">
           {msgs.map((m, i) =>
             m.role === 'user' ? (
               <div key={i} className="flex justify-end">
@@ -2279,7 +2283,6 @@ function CardChat({
               </button>
             </div>
           )}
-          <div ref={endRef} />
         </div>
       )}
 
