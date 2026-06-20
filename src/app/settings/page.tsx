@@ -46,7 +46,7 @@ export default function SettingsPage() {
   const { user, signOut } = useAuth()
   const { familyId, inviteCode, resetFamily, deleteFamily } = useFamily()
   const { data: memories, create, update, remove } = useFirestore<FamilyMemory>('memories')
-  const { data: members } = useFirestore<FamilyMember>('members')
+  const { data: members, update: updateMember } = useFirestore<FamilyMember>('members')
 
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [deleting, setDeleting] = useState(false)
@@ -413,126 +413,222 @@ export default function SettingsPage() {
             )}
           </div>
 
-          {/* Browse all memories */}
-          {memories.length > 0 && (
-            <div>
-              <button
-                onClick={() => setShowMemories((v) => !v)}
-                className="w-full flex items-center justify-between px-5 py-4 text-sm text-slate-600 hover:bg-slate-50 transition-colors"
-              >
-                <span className="font-medium">Browse all memories</span>
-                <ChevronDown
-                  size={16}
-                  className="text-slate-400 transition-transform duration-200"
-                  style={{ transform: showMemories ? 'rotate(180deg)' : 'rotate(0deg)' }}
-                />
-              </button>
+          {/* Browse all AI knowledge */}
+          {(() => {
+            // Count everything the AI can see
+            const profileItemCount = members.reduce((n, m) =>
+              n + (m.memories?.length ?? 0) + (m.routines?.length ?? 0) +
+              (m.preferences?.length ?? 0) + (m.importantInfo?.length ?? 0), 0)
+            const totalCount = memories.length + profileItemCount
+            if (totalCount === 0) return null
 
-              {showMemories && (() => {
-                // Resolve an identifier (email, id, or legacy name) to a member.
-                function memberFor(ident: string): FamilyMember | undefined {
-                  const v = ident.toLowerCase()
-                  return members.find(
-                    (mem) =>
-                      mem.email?.toLowerCase() === v ||
-                      mem.id.toLowerCase() === v ||
-                      mem.name.toLowerCase() === v
+            return (
+              <div>
+                <button
+                  onClick={() => setShowMemories((v) => !v)}
+                  className="w-full flex items-center justify-between px-5 py-4 text-sm text-slate-600 hover:bg-slate-50 transition-colors"
+                >
+                  <span className="font-medium">
+                    Browse all AI knowledge
+                    <span className="ml-1.5 text-slate-300 font-normal text-xs">{totalCount} items</span>
+                  </span>
+                  <ChevronDown
+                    size={16}
+                    className="text-slate-400 transition-transform duration-200"
+                    style={{ transform: showMemories ? 'rotate(180deg)' : 'rotate(0deg)' }}
+                  />
+                </button>
+
+                {showMemories && (() => {
+                  // ── Helpers ────────────────────────────────────────────────
+                  function memberFor(ident: string): FamilyMember | undefined {
+                    const v = ident.toLowerCase()
+                    return members.find(
+                      (m) => m.email?.toLowerCase() === v || m.id.toLowerCase() === v || m.name.toLowerCase() === v
+                    )
+                  }
+
+                  type SourceTag = 'memory' | 'note' | 'routine' | 'preference' | 'info'
+                  type UnifiedItem = {
+                    id: string
+                    text: string
+                    tag: SourceTag
+                    tagLabel: string
+                    onDelete: () => void
+                    extraChips?: React.ReactNode
+                  }
+
+                  const SOURCE_COLORS: Record<SourceTag, string> = {
+                    memory: '#6366f1',   // indigo — family-wide memories
+                    note:   '#0ea5e9',   // sky — profile notes
+                    routine:'#10b981',   // emerald — routines
+                    preference: '#f59e0b', // amber — preferences
+                    info:   '#ef4444',   // red — important info
+                  }
+
+                  // ── Build per-person groups ────────────────────────────────
+                  type PersonGroup = {
+                    memberId: string
+                    name: string
+                    color: string
+                    emoji: string
+                    items: UnifiedItem[]
+                  }
+                  const personGroups: PersonGroup[] = []
+
+                  // 1. Family-wide memories (no subject)
+                  const byDate = [...memories].sort(
+                    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
                   )
-                }
+                  const familyWideItems: UnifiedItem[] = []
+                  const memberMemoriesMap = new Map<string, UnifiedItem[]>()
 
-                // Build a group per person. A memory with multiple subjects
-                // appears under each person it concerns. No subjects → Family-wide.
-                type Group = { name: string; color: string; sortKey: string; items: FamilyMemory[] }
-                const groups = new Map<string, Group>()
-                const ensure = (key: string, name: string, color: string, sortKey: string) => {
-                  if (!groups.has(key)) groups.set(key, { name, color, sortKey, items: [] })
-                  return groups.get(key)!
-                }
+                  for (const m of byDate) {
+                    const subjects = memorySubjects(m)
+                    // Multi-subject chip labels
+                    const chips = subjects.length > 1 ? (
+                      <div className="flex flex-wrap gap-1 mt-1">
+                        {subjects.map((s) => {
+                          const mem = memberFor(s)
+                          return (
+                            <span key={s} className="text-[10px] font-medium px-1.5 py-0.5 rounded-full"
+                              style={{ backgroundColor: (mem?.colorHex ?? '#6B7280') + '20', color: mem?.colorHex ?? '#6B7280' }}>
+                              {mem?.name ?? s}
+                            </span>
+                          )
+                        })}
+                      </div>
+                    ) : null
 
-                const byDate = [...memories].sort(
-                  (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-                )
-                for (const m of byDate) {
-                  const subjects = memorySubjects(m)
-                  if (subjects.length === 0) {
-                    ensure('__family__', 'Family-wide', '#6B7280', '￿').items.push(m)
-                    continue
-                  }
-                  for (const s of subjects) {
-                    const mem = memberFor(s)
-                    if (mem) ensure(mem.id, mem.name, mem.colorHex, mem.name.toLowerCase()).items.push(m)
-                    else ensure(`unknown:${s}`, 'Unknown', '#6B7280', '￾').items.push(m)
-                  }
-                }
+                    const item: UnifiedItem = {
+                      id: m.id, text: m.text,
+                      tag: 'memory', tagLabel: 'memory',
+                      onDelete: () => remove(m.id),
+                      extraChips: chips,
+                    }
 
-                const orderedGroups = Array.from(groups.values()).sort((a, b) =>
-                  a.sortKey.localeCompare(b.sortKey)
-                )
-
-                // Chips showing every member a memory concerns
-                function chips(m: FamilyMemory) {
-                  const subjects = memorySubjects(m)
-                  if (subjects.length <= 1) return null
-                  return (
-                    <div className="flex flex-wrap gap-1 mt-1">
-                      {subjects.map((s) => {
+                    if (subjects.length === 0) {
+                      familyWideItems.push(item)
+                    } else {
+                      for (const s of subjects) {
                         const mem = memberFor(s)
-                        return (
-                          <span
-                            key={s}
-                            className="text-[10px] font-medium px-1.5 py-0.5 rounded-full"
-                            style={{
-                              backgroundColor: (mem?.colorHex ?? '#6B7280') + '20',
-                              color: mem?.colorHex ?? '#6B7280',
-                            }}
-                          >
-                            {mem?.name ?? s}
-                          </span>
-                        )
-                      })}
+                        const key = mem?.id ?? `unknown:${s}`
+                        if (!memberMemoriesMap.has(key)) memberMemoriesMap.set(key, [])
+                        memberMemoriesMap.get(key)!.push(item)
+                      }
+                    }
+                  }
+
+                  // 2. Per-member profile data
+                  const sortedMembers = [...members].sort((a, b) => a.name.localeCompare(b.name))
+                  for (const m of sortedMembers) {
+                    const items: UnifiedItem[] = []
+
+                    // Tagged family memories
+                    for (const fi of memberMemoriesMap.get(m.id) ?? []) items.push(fi)
+
+                    // Profile notes
+                    for (const n of m.memories ?? []) {
+                      items.push({
+                        id: `note-${n.id}`, text: n.text,
+                        tag: 'note', tagLabel: 'profile note',
+                        onDelete: () => updateMember({ ...m, memories: (m.memories ?? []).filter((x) => x.id !== n.id) }),
+                      })
+                    }
+
+                    // Routines
+                    for (const r of m.routines ?? []) {
+                      items.push({
+                        id: `routine-${r.id}`, text: `${r.title}: ${r.schedule}${r.notes ? ` — ${r.notes}` : ''}`,
+                        tag: 'routine', tagLabel: 'routine',
+                        onDelete: () => updateMember({ ...m, routines: (m.routines ?? []).filter((x) => x.id !== r.id) }),
+                      })
+                    }
+
+                    // Preferences
+                    for (const p of m.preferences ?? []) {
+                      items.push({
+                        id: `pref-${p.id}`, text: `[${p.category}] ${p.text}`,
+                        tag: 'preference', tagLabel: 'preference',
+                        onDelete: () => updateMember({ ...m, preferences: (m.preferences ?? []).filter((x) => x.id !== p.id) }),
+                      })
+                    }
+
+                    // Important info
+                    for (const i of m.importantInfo ?? []) {
+                      items.push({
+                        id: `info-${i.id}`, text: `${i.label}: ${i.value}`,
+                        tag: 'info', tagLabel: i.category,
+                        onDelete: () => updateMember({ ...m, importantInfo: (m.importantInfo ?? []).filter((x) => x.id !== i.id) }),
+                      })
+                    }
+
+                    if (items.length > 0) {
+                      personGroups.push({ memberId: m.id, name: m.name, color: m.colorHex, emoji: m.emoji, items })
+                    }
+                  }
+
+                  // ── Render ──────────────────────────────────────────────────
+                  function KnowledgeRow({ item }: { item: UnifiedItem }) {
+                    return (
+                      <div className="group flex items-start gap-2 pl-4 pr-2 py-2 rounded-xl bg-slate-50 border border-slate-100">
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-1.5 mb-0.5">
+                            <span
+                              className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full shrink-0"
+                              style={{ backgroundColor: SOURCE_COLORS[item.tag] + '18', color: SOURCE_COLORS[item.tag] }}
+                            >
+                              {item.tagLabel}
+                            </span>
+                          </div>
+                          <p className="text-sm text-slate-700 leading-relaxed">{item.text}</p>
+                          {item.extraChips}
+                        </div>
+                        <button
+                          onClick={item.onDelete}
+                          className="shrink-0 p-1 rounded-lg text-slate-300 hover:text-red-500 hover:bg-white transition-colors opacity-0 group-hover:opacity-100"
+                          title="Delete"
+                        >
+                          <Trash2 size={13} />
+                        </button>
+                      </div>
+                    )
+                  }
+
+                  return (
+                    <div className="px-5 pb-5 space-y-5">
+                      {/* Family-wide memories */}
+                      {familyWideItems.length > 0 && (
+                        <div>
+                          <div className="flex items-center gap-2 mb-2">
+                            <span className="inline-block w-2.5 h-2.5 rounded-full shrink-0 bg-slate-400" />
+                            <p className="text-xs font-semibold text-slate-500">Family-wide</p>
+                            <span className="text-xs text-slate-300">{familyWideItems.length}</span>
+                          </div>
+                          <div className="space-y-1.5">
+                            {familyWideItems.map((item) => <KnowledgeRow key={item.id} item={item} />)}
+                          </div>
+                        </div>
+                      )}
+                      {/* Per-person groups */}
+                      {personGroups.map((g) => (
+                        <div key={g.memberId}>
+                          <div className="flex items-center gap-2 mb-2">
+                            <span className="inline-block w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: g.color }} />
+                            <p className="text-xs font-semibold text-slate-500">{g.emoji} {g.name}</p>
+                            <span className="text-xs text-slate-300">{g.items.length}</span>
+                          </div>
+                          <div className="space-y-1.5">
+                            {g.items.map((item) => <KnowledgeRow key={item.id} item={item} />)}
+                          </div>
+                        </div>
+                      ))}
                     </div>
                   )
-                }
-
-                return (
-                  <div className="px-5 pb-5 space-y-5">
-                    {orderedGroups.map((g) => (
-                      <div key={g.name + g.sortKey}>
-                        <div className="flex items-center gap-2 mb-2">
-                          <span
-                            className="inline-block w-2.5 h-2.5 rounded-full shrink-0"
-                            style={{ backgroundColor: g.color }}
-                          />
-                          <p className="text-xs font-semibold text-slate-500">{g.name}</p>
-                          <span className="text-xs text-slate-300">{g.items.length}</span>
-                        </div>
-                        <div className="space-y-1.5">
-                          {g.items.map((m) => (
-                            <div
-                              key={m.id}
-                              className="group flex items-start gap-2 pl-4 pr-2 py-2 rounded-xl bg-slate-50 border border-slate-100"
-                            >
-                              <div className="flex-1 min-w-0">
-                                <p className="text-sm text-slate-700 leading-relaxed">{m.text}</p>
-                                {chips(m)}
-                              </div>
-                              <button
-                                onClick={() => remove(m.id)}
-                                className="shrink-0 p-1 rounded-lg text-slate-300 hover:text-red-500 hover:bg-white transition-colors opacity-0 group-hover:opacity-100"
-                                title="Delete"
-                              >
-                                <Trash2 size={13} />
-                              </button>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )
-              })()}
-            </div>
-          )}
+                })()}
+              </div>
+            )
+          })()}
         </section>
 
         {/* AI Diagnostics */}
