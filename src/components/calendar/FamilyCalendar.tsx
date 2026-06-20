@@ -415,16 +415,38 @@ export function FamilyCalendar() {
             setDetailEvent(null)
           }}
           onUpdateAssignment={async (updates) => {
-            // Normalize null → undefined so CalendarEvent stays consistent
-            const cleaned = {
-              ...updates,
-              assigneeId: updates.assigneeId ?? undefined,
+            const { forIds, assigneeId, applyResponsibleToAll } = updates
+            const normalizedAssignee = assigneeId ?? undefined
+
+            if (detailEvent.recurringEventId) {
+              const siblings = firestoreEvents.filter(
+                (e) => e.recurringEventId === detailEvent.recurringEventId
+              )
+              // forIds (who event is FOR) always fans out to every occurrence
+              if (forIds !== undefined) {
+                await Promise.all(siblings.map((e) => updateFirestore({ ...e, forIds })))
+              }
+              // assigneeId (who's RESPONSIBLE) — this occurrence only unless opted in
+              if ('assigneeId' in updates) {
+                if (applyResponsibleToAll) {
+                  await Promise.all(siblings.map((e) => updateFirestore({ ...e, assigneeId: normalizedAssignee })))
+                } else {
+                  await updateFirestore({ ...detailEvent, assigneeId: normalizedAssignee })
+                }
+              }
+            } else {
+              await updateFirestore({
+                ...detailEvent,
+                ...(forIds !== undefined ? { forIds } : {}),
+                ...('assigneeId' in updates ? { assigneeId: normalizedAssignee } : {}),
+              })
             }
-            const applyTo = detailEvent.recurringEventId
-              ? firestoreEvents.filter((e) => e.recurringEventId === detailEvent.recurringEventId)
-              : [detailEvent]
-            await Promise.all(applyTo.map((e) => updateFirestore({ ...e, ...cleaned })))
-            setDetailEvent({ ...detailEvent, ...cleaned })
+
+            setDetailEvent({
+              ...detailEvent,
+              ...(forIds !== undefined ? { forIds } : {}),
+              ...('assigneeId' in updates ? { assigneeId: normalizedAssignee } : {}),
+            })
           }}
         />
       )}

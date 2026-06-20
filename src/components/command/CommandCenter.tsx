@@ -868,12 +868,17 @@ export function CommandCenter() {
             ...(responsibleId ? { assigneeId: responsibleId } : { assigneeId: deleteField() }),
           }
           if (targetEvent.recurringEventId) {
+            // forIds (who the event is FOR) is stable across all occurrences — fan out.
+            // assigneeId (who's RESPONSIBLE this week) is per-occurrence — only this one.
             const siblingsSnap = await getDocs(
               query(eventsCol, where('recurringEventId', '==', targetEvent.recurringEventId))
             )
             const evBatch = writeBatch(db)
-            siblingsSnap.docs.forEach((d) => evBatch.update(d.ref, eventUpdate))
+            siblingsSnap.docs.forEach((d) => evBatch.update(d.ref, { forIds }))
             await evBatch.commit()
+            await updateDoc(doc(eventsCol, targetEvent.id), {
+              ...(responsibleId ? { assigneeId: responsibleId } : { assigneeId: deleteField() }),
+            })
           } else {
             await updateDoc(doc(eventsCol, targetEvent.id), eventUpdate)
           }
@@ -1150,16 +1155,23 @@ export function CommandCenter() {
     responsible?: FamilyMember
     forMembers: FamilyMember[]
     backedByRealItem: boolean
+    isRecurring: boolean
   }
   function resolveItem(item: AttentionItem): ResolvedItem {
     const ov = assignmentOverrides[item.title]
     const byId = (id?: string) => members.find((m) => m.id === id)
 
+    // Find the backing calendar event (if any) once, so we can derive both
+    // backedByRealItem and isRecurring from the same lookup.
+    const backedEvent = item.sourceType === 'event' && item.sourceId
+      ? localEvents.find((e) => e.id === item.sourceId)
+      : undefined
     const backedByRealItem = !!item.sourceId && (
-      item.sourceType === 'event'
-        ? localEvents.some((e) => e.id === item.sourceId)
-        : tasks.some((t) => t.id === item.sourceId) || reminders.some((r) => r.id === item.sourceId)
+      backedEvent !== undefined
+      || tasks.some((t) => t.id === item.sourceId)
+      || reminders.some((r) => r.id === item.sourceId)
     )
+    const isRecurring = !!backedEvent?.recurringEventId
 
     // Priority 1: optimistic override set immediately when the user assigns
     if (ov) {
@@ -1168,19 +1180,20 @@ export function CommandCenter() {
         responsible: byId(ov.responsibleId),
         forMembers: (ov.forIds ?? []).map(byId).filter(Boolean) as FamilyMember[],
         backedByRealItem,
+        isRecurring,
       }
     }
 
     // Priority 2: read from Firestore entity when sourceId links us to one
     if (item.sourceId) {
       if (item.sourceType === 'event') {
-        const event = localEvents.find((e) => e.id === item.sourceId)
-        if (event && ((event.forIds?.length ?? 0) > 0 || event.assigneeId)) {
+        if (backedEvent && ((backedEvent.forIds?.length ?? 0) > 0 || backedEvent.assigneeId)) {
           return {
             item,
-            responsible: byId(event.assigneeId),
-            forMembers: (event.forIds ?? []).map((id) => byId(id)).filter(Boolean) as FamilyMember[],
+            responsible: byId(backedEvent.assigneeId),
+            forMembers: (backedEvent.forIds ?? []).map((id) => byId(id)).filter(Boolean) as FamilyMember[],
             backedByRealItem: true,
+            isRecurring,
           }
         }
       } else {
@@ -1194,6 +1207,7 @@ export function CommandCenter() {
             responsible: entity.assigneeId ? byId(entity.assigneeId) : (resolveMemberRef(members, entity.assigneeEmail) ?? undefined),
             forMembers: (t?.forIds ?? []).map((id: string) => byId(id)).filter(Boolean) as FamilyMember[],
             backedByRealItem: true,
+            isRecurring,
           }
         }
       }
@@ -1205,6 +1219,7 @@ export function CommandCenter() {
       responsible: resolveMemberRef(members, item.assigneeEmail) ?? undefined,
       forMembers: (item.forEmails ?? []).map((ref) => resolveMemberRef(members, ref)).filter(Boolean) as FamilyMember[],
       backedByRealItem,
+      isRecurring,
     }
   }
 
@@ -1224,6 +1239,8 @@ export function CommandCenter() {
   const pendingAssignments = useMemo<EventAssignmentSuggestion[]>(() => {
     if (!report?.eventAssignments?.length) return []
     return report.eventAssignments.filter((s) => {
+      // Only show suggestions where the AI named a specific person
+      if (!s.forNames?.length) return false
       if (skippedAssignments.has(`${s.eventTitle}|${s.eventDate}`)) return false
       const event = events.find(
         (e) => e.title === s.eventTitle && e.start.startsWith(s.eventDate)
@@ -1276,7 +1293,7 @@ export function CommandCenter() {
       .map((name) => resolveMemberRef(members, name)?.id)
       .filter((id): id is string => Boolean(id))
     if (!resolvedIds.length) {
-      toast(`Couldn't match that name to a family member — tap "Not quite" to pick manually`, 'error')
+      toast(`Couldn't match that name to a family member — tap "Pick someone else" to choose manually`, 'error')
       return
     }
     // Optimistic: remove the card immediately without waiting for Firestore.
@@ -1617,7 +1634,7 @@ export function CommandCenter() {
                           />
                         )
                       }
-                      const { responsible, forMembers, backedByRealItem } = resolveItem(item)
+                      const { responsible, forMembers, backedByRealItem, isRecurring } = resolveItem(item)
                       return (
                         <AttentionCard
                           key={item.id}
@@ -1627,6 +1644,7 @@ export function CommandCenter() {
                           responsible={responsible}
                           forMembers={forMembers}
                           backedByRealItem={backedByRealItem}
+                          isRecurring={isRecurring}
                           onComplete={() => completeTaskFromItem(item)}
                           onDismiss={() => dismissItem(item.title)}
                           onSaveTask={() => saveItemAsTask(item.title, item.reason)}
@@ -1793,7 +1811,7 @@ export function CommandCenter() {
                           onClick={() => setCorrectingKey(key)}
                           className="text-xs text-slate-500 hover:text-slate-700 transition-colors"
                         >
-                          Not quite →
+                          Pick someone else →
                         </button>
                       </div>
                     )}
@@ -1991,6 +2009,7 @@ type ResolvedItemForGroup = {
   responsible?: FamilyMember
   forMembers: FamilyMember[]
   backedByRealItem: boolean
+  isRecurring: boolean
 }
 
 function GroupedAttentionCard({
@@ -2070,7 +2089,7 @@ function GroupedAttentionCard({
       {/* Expanded: full individual AttentionCards */}
       {expanded && (
         <div className="border-t border-slate-100 divide-y divide-slate-50">
-          {resolvedItems.map(({ item, responsible, forMembers, backedByRealItem }) => (
+          {resolvedItems.map(({ item, responsible, forMembers, backedByRealItem, isRecurring }) => (
             <AttentionCard
               key={item.id}
               item={item}
@@ -2079,6 +2098,7 @@ function GroupedAttentionCard({
               responsible={responsible}
               forMembers={forMembers}
               backedByRealItem={backedByRealItem}
+              isRecurring={isRecurring}
               onComplete={() => onCompleteItem(item)}
               onDismiss={() => onDismissItem(item.title)}
               onSaveTask={() => onSaveTaskItem(item.title, item.reason)}
@@ -2137,7 +2157,7 @@ function CompactItemRow({
 // ── Individual attention card ────────────────────────────────
 
 function AttentionCard({
-  item, accent, allMembers, responsible, forMembers, backedByRealItem, onComplete, onDismiss, onSaveTask, onAddContext, onAssign,
+  item, accent, allMembers, responsible, forMembers, backedByRealItem, isRecurring, onComplete, onDismiss, onSaveTask, onAddContext, onAssign,
 }: {
   item: AttentionItem
   accent: string
@@ -2145,6 +2165,7 @@ function AttentionCard({
   responsible?: FamilyMember
   forMembers: FamilyMember[]
   backedByRealItem: boolean
+  isRecurring?: boolean
   onComplete: () => void
   onDismiss: () => void
   onSaveTask: () => void
@@ -2289,6 +2310,7 @@ function AttentionCard({
             allMembers={allMembers}
             initialFor={forMembers.map((m) => m.id)}
             initialResponsible={responsible?.id}
+            isRecurring={isRecurring}
             onCancel={() => setAssigning(false)}
             onSave={(f, r) => { onAssign(f, r); setAssigning(false) }}
           />
@@ -2327,13 +2349,14 @@ function AttentionCard({
 // separate captures the real nuance: a kid's appointment is "for" the kid but a
 // parent does the driving.
 function AssignPanel({
-  allMembers, initialFor, initialResponsible, onCancel, onSave,
+  allMembers, initialFor, initialResponsible, isRecurring, onCancel, onSave,
 }: {
   allMembers: FamilyMember[]
-  initialFor: string[]                                  // member IDs
-  initialResponsible?: string                           // member ID
+  initialFor: string[]
+  initialResponsible?: string
+  isRecurring?: boolean
   onCancel: () => void
-  onSave: (forIds: string[], responsibleId?: string) => void  // member IDs
+  onSave: (forIds: string[], responsibleId?: string) => void
 }) {
   const [forIds, setForIds] = useState<string[]>(initialFor)
   const [responsible, setResponsible] = useState<string | undefined>(initialResponsible)
@@ -2371,7 +2394,10 @@ function AssignPanel({
         </div>
       </div>
       <div>
-        <p className="text-xs font-medium text-slate-600 mb-1.5">Who&apos;s responsible? <span className="text-slate-400 font-normal">(optional)</span></p>
+        <p className="text-xs font-medium text-slate-600 mb-1.5">
+          {isRecurring ? 'Who\'s handling this occurrence?' : 'Who\'s responsible?'}
+          {' '}<span className="text-slate-400 font-normal">{isRecurring ? '(this week only — "for" applies to all)' : '(optional)'}</span>
+        </p>
         <div className="flex flex-wrap gap-1.5">
           {allMembers
             .filter((m) => m.role !== 'pet')

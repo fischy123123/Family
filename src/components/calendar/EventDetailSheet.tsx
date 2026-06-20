@@ -7,7 +7,7 @@ import type { CalendarEvent, FamilyMember } from '@/lib/types'
 import { ForPicker, AssigneePicker } from '@/components/ui/AssigneePicker'
 import { memberById } from '@/lib/members'
 
-type AssignmentUpdate = { forIds?: string[]; assigneeId?: string | null }
+type AssignmentUpdate = { forIds?: string[]; assigneeId?: string | null; applyResponsibleToAll?: boolean }
 
 interface EventDetailSheetProps {
   event: CalendarEvent | null
@@ -38,6 +38,9 @@ export function EventDetailSheet({
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [editingAssignment, setEditingAssignment] = useState(false)
   const [saving, setSaving] = useState(false)
+  // For recurring events: whether the "responsible" choice applies to all
+  // occurrences or just this one. Defaults to false (this occurrence only).
+  const [applyResponsibleToAll, setApplyResponsibleToAll] = useState(false)
 
   if (!event) return null
 
@@ -53,8 +56,13 @@ export function EventDetailSheet({
   async function saveUpdate(updates: AssignmentUpdate) {
     if (!onUpdateAssignment) return
     setSaving(true)
-    try { await onUpdateAssignment(updates) }
-    finally { setSaving(false) }
+    try {
+      await onUpdateAssignment({
+        ...updates,
+        // Only pass the flag when it's relevant — forIds always fans out anyway.
+        applyResponsibleToAll: 'assigneeId' in updates ? applyResponsibleToAll : undefined,
+      })
+    } finally { setSaving(false) }
   }
 
   async function handleDelete() {
@@ -83,7 +91,7 @@ export function EventDetailSheet({
             {event.recurringEventId && (
               <span className="inline-flex items-center gap-1 mt-2 text-xs font-medium text-slate-500 bg-slate-100 rounded-full px-2.5 py-0.5">
                 <RefreshCw size={11} />
-                Recurring — changes apply to all occurrences
+                Recurring event · &quot;for&quot; applies to all
               </span>
             )}
           </div>
@@ -124,6 +132,29 @@ export function EventDetailSheet({
                       includePets={false}
                       label="Who is responsible?"
                     />
+                    {event.recurringEventId && (
+                      <div>
+                        <p className="text-[11px] font-semibold text-slate-500 mb-1.5 flex items-center gap-1">
+                          <RefreshCw size={10} /> Responsible applies to:
+                        </p>
+                        <div className="flex rounded-lg overflow-hidden border border-slate-200 text-xs font-semibold">
+                          <button
+                            type="button"
+                            onClick={() => setApplyResponsibleToAll(false)}
+                            className={`flex-1 py-1.5 transition-colors ${!applyResponsibleToAll ? 'bg-blue-600 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}
+                          >
+                            This week only
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setApplyResponsibleToAll(true)}
+                            className={`flex-1 py-1.5 transition-colors ${applyResponsibleToAll ? 'bg-blue-600 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}
+                          >
+                            All occurrences
+                          </button>
+                        </div>
+                      </div>
+                    )}
                     <button
                       onClick={() => setEditingAssignment(false)}
                       className="text-xs text-blue-600 font-medium hover:text-blue-800"
