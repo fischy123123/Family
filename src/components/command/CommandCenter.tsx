@@ -135,25 +135,6 @@ function extractPartialGreeting(raw: string): string | null {
 //
 // URL strategy: Gmail mobile web silently strips the #all/{id} hash fragment
 // during its mobile redirect, landing the user on inbox. Gmail search URLs
-// (#search/...) survive the redirect and work reliably on mobile — so we use
-// subject-based search when available, falling back to the message ID hash URL.
-function openGmailMessage(messageId: string, subject?: string) {
-  const url = subject
-    ? `https://mail.google.com/mail/u/0/#search/${encodeURIComponent(`subject:(${subject})`)}`
-    : `https://mail.google.com/mail/u/0/#all/${messageId}`
-  try {
-    const a = document.createElement('a')
-    a.href = url
-    a.target = '_blank'
-    a.rel = 'noopener noreferrer'
-    document.body.appendChild(a)
-    a.click()
-    document.body.removeChild(a)
-  } catch {
-    // Last resort if DOM manipulation is unavailable.
-    window.open(url, '_blank', 'noopener,noreferrer') || (window.location.href = url)
-  }
-}
 
 const CACHE_TTL_MS: Partial<Record<string, number>> = {
   // Gmail signals go stale after 6 hours — refresh so the engine doesn't
@@ -1067,10 +1048,6 @@ export function CommandCenter() {
     router.push('/copilot')
   }
 
-  function emailSubject(messageId: string): string | undefined {
-    return emailSuggestions.find((s) => s.messageId === messageId)?.sourceEmailSubject
-  }
-
   function dismissItem(title: string) {
     setDismissedTitles((prev) => {
       const next = new Set(prev).add(title)
@@ -1132,7 +1109,6 @@ export function CommandCenter() {
     responsible?: FamilyMember
     forMembers: FamilyMember[]
     backedByRealItem: boolean
-    emailSubjectStr?: string
   }
   function resolveItem(item: AttentionItem): ResolvedItem {
     const ov = assignmentOverrides[item.title]
@@ -1149,7 +1125,6 @@ export function CommandCenter() {
         tasks.some((t) => t.id === item.sourceId) ||
         reminders.some((r) => r.id === item.sourceId)
       ),
-      emailSubjectStr: item.sourceEmailId ? emailSubject(item.sourceEmailId) : undefined,
     }
   }
 
@@ -1562,7 +1537,7 @@ export function CommandCenter() {
                           />
                         )
                       }
-                      const { responsible, forMembers, backedByRealItem, emailSubjectStr } = resolveItem(item)
+                      const { responsible, forMembers, backedByRealItem } = resolveItem(item)
                       return (
                         <AttentionCard
                           key={item.id}
@@ -1571,7 +1546,6 @@ export function CommandCenter() {
                           allMembers={members}
                           responsible={responsible}
                           forMembers={forMembers}
-                          emailSubject={emailSubjectStr}
                           backedByRealItem={backedByRealItem}
                           onComplete={() => completeTaskFromItem(item)}
                           onDismiss={() => dismissItem(item.title)}
@@ -1609,7 +1583,6 @@ export function CommandCenter() {
                   <ProblemCard
                     key={p.id}
                     problem={p}
-                    emailSubject={p.sourceEmailId ? emailSubject(p.sourceEmailId) : undefined}
                     onSaveTask={() => saveItemAsTask(p.title, p.detail)}
                     onDismiss={() => dismissItem(p.title)}
                     onCopilot={(text) => openBriefingInCopilot(text)}
@@ -1818,14 +1791,12 @@ export function CommandCenter() {
 
 function ProblemCard({
   problem: p,
-  emailSubject,
   onSaveTask,
   onDismiss,
   onCopilot,
   onCapture,
 }: {
   problem: PotentialProblem
-  emailSubject?: string
   onSaveTask: () => void
   onDismiss: () => void
   onCopilot: (text: string) => void
@@ -1847,17 +1818,6 @@ function ProblemCard({
         <div className="flex-1 min-w-0">
           <p className="text-sm font-semibold text-slate-900">{p.title}</p>
           <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">{p.detail}</p>
-          {p.sourceEmailId && (
-            <button
-              onClick={() => openGmailMessage(p.sourceEmailId!, emailSubject)}
-              className="inline-flex items-center gap-1 mt-1 text-[11px] font-medium text-blue-600 hover:text-blue-800 hover:underline"
-            >
-              <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor" className="shrink-0">
-                <path d="M20 18h-2V9.25L12 13 6 9.25V18H4V6h1.2l6.8 4.25L18.8 6H20v12z"/>
-              </svg>
-              View email
-            </button>
-          )}
           {p.suggestedAction && (() => {
             // "capture" / "calendar" actions (e.g. "Add to calendar") open the
             // Capture dialog, which gives a real event view with a per-calendar
@@ -1951,7 +1911,6 @@ type ResolvedItemForGroup = {
   responsible?: FamilyMember
   forMembers: FamilyMember[]
   backedByRealItem: boolean
-  emailSubjectStr?: string
 }
 
 function GroupedAttentionCard({
@@ -2031,7 +1990,7 @@ function GroupedAttentionCard({
       {/* Expanded: full individual AttentionCards */}
       {expanded && (
         <div className="border-t border-slate-100 divide-y divide-slate-50">
-          {resolvedItems.map(({ item, responsible, forMembers, backedByRealItem, emailSubjectStr }) => (
+          {resolvedItems.map(({ item, responsible, forMembers, backedByRealItem }) => (
             <AttentionCard
               key={item.id}
               item={item}
@@ -2039,7 +1998,6 @@ function GroupedAttentionCard({
               allMembers={allMembers}
               responsible={responsible}
               forMembers={forMembers}
-              emailSubject={emailSubjectStr}
               backedByRealItem={backedByRealItem}
               onComplete={() => onCompleteItem(item)}
               onDismiss={() => onDismissItem(item.title)}
@@ -2099,14 +2057,13 @@ function CompactItemRow({
 // ── Individual attention card ────────────────────────────────
 
 function AttentionCard({
-  item, accent, allMembers, responsible, forMembers, emailSubject, backedByRealItem, onComplete, onDismiss, onSaveTask, onAddContext, onAssign,
+  item, accent, allMembers, responsible, forMembers, backedByRealItem, onComplete, onDismiss, onSaveTask, onAddContext, onAssign,
 }: {
   item: AttentionItem
   accent: string
   allMembers: FamilyMember[]
   responsible?: FamilyMember
   forMembers: FamilyMember[]
-  emailSubject?: string
   backedByRealItem: boolean
   onComplete: () => void
   onDismiss: () => void
@@ -2164,17 +2121,6 @@ function AttentionCard({
         <div className="flex-1 min-w-0">
           <p className="text-sm font-semibold text-slate-900">{item.title}</p>
           <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">{item.reason}</p>
-          {item.sourceEmailId && (
-            <button
-              onClick={() => openGmailMessage(item.sourceEmailId!, emailSubject)}
-              className="inline-flex items-center gap-1 mt-1 text-[11px] font-medium text-blue-600 hover:text-blue-800 hover:underline"
-            >
-              <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor" className="shrink-0">
-                <path d="M20 18h-2V9.25L12 13 6 9.25V18H4V6h1.2l6.8 4.25L18.8 6H20v12z"/>
-              </svg>
-              View email
-            </button>
-          )}
           <div className="flex items-center gap-2 mt-1.5 flex-wrap">
             {startStr && (
               <span className="inline-flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-full" style={{ background: `${accent}15`, color: accent }}>
