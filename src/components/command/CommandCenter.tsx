@@ -22,6 +22,7 @@ import { resolveMemberRef } from '@/lib/members'
 import { isAiDebugEnabled } from '@/lib/aiDebug'
 import { BUCKET_META } from '@/lib/types'
 import { Markdown } from '@/components/ui/Markdown'
+import type { PendingAction } from '@/components/copilot/ProposedActions'
 import type {
   FamilyMember, CalendarEvent, Task, Chore, Plan, SmartList,
   AttentionReport, AttentionItem, AttentionBucket, PotentialProblem,
@@ -2094,9 +2095,10 @@ function CardChat({
   const [msgs, setMsgs] = useState<ChatMsg[]>([])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
-  const [hasPending, setHasPending] = useState(false)
+  const [pendingActions, setPendingActions] = useState<PendingAction[]>([])
   const inputRef = useRef<HTMLInputElement>(null)
   const endRef = useRef<HTMLDivElement>(null)
+  const router = useRouter()
 
   useEffect(() => { setTimeout(() => inputRef.current?.focus(), 50) }, [])
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [msgs, loading])
@@ -2172,12 +2174,12 @@ function CardChat({
               })
             }
           } else if (ev.type === 'done') {
-            const hasPend = (ev.pendingActions?.length ?? 0) > 0
-            if (hasPend) setHasPending(true)
+            const queued = (ev.pendingActions ?? []) as PendingAction[]
+            if (queued.length) setPendingActions((prev) => [...prev, ...queued])
             setMsgs((prev) => {
               const a = [...prev]
               const last = a[a.length - 1]
-              const reply = ev.reply || (last?.isStreaming ? last.content : '') || (hasPend ? "I've queued some actions." : 'Done.')
+              const reply = ev.reply || (last?.isStreaming ? last.content : '') || (queued.length ? "I've queued some actions." : 'Done.')
               if (last?.role === 'assistant') return [...a.slice(0, -1), { ...last, isStreaming: false, content: reply }]
               return [...a, { role: 'assistant', content: reply }]
             })
@@ -2251,10 +2253,31 @@ function CardChat({
               </div>
             </div>
           )}
-          {hasPending && (
-            <p className="text-[11px] text-amber-600 pl-6">
-              Actions queued — open Copilot to review and confirm.
-            </p>
+          {pendingActions.length > 0 && (
+            <div className="pl-6 flex items-center gap-2">
+              <p className="text-[11px] text-amber-700">
+                {pendingActions.length} action{pendingActions.length > 1 ? 's' : ''} ready to apply.
+              </p>
+              <button
+                onClick={() => {
+                  // Serialize the conversation + pending actions into sessionStorage so
+                  // CopilotChat can restore them as a live message with a confirm card.
+                  try {
+                    const restore = {
+                      messages: msgs
+                        .filter((m) => !m.isStreaming)
+                        .map((m) => ({ role: m.role, content: m.content })),
+                      pendingActions,
+                    }
+                    sessionStorage.setItem('copilot-restore', JSON.stringify(restore))
+                  } catch { /* non-fatal */ }
+                  router.push('/copilot')
+                }}
+                className="text-[11px] font-semibold text-blue-600 hover:text-blue-800 underline underline-offset-2 shrink-0"
+              >
+                Review in Copilot →
+              </button>
+            </div>
           )}
           <div ref={endRef} />
         </div>

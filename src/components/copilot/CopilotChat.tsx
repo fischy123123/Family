@@ -242,8 +242,40 @@ export function CopilotChat() {
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   // Seed the conversation from another screen (e.g. tapping the Home briefing).
+  // Also restores a card-chat conversation that has queued pending actions so
+  // the user can confirm them here without re-asking.
   useEffect(() => {
     if (typeof window === 'undefined') return
+
+    // Restore a card-chat hand-off (messages + pending actions)
+    const restoreRaw = sessionStorage.getItem('copilot-restore')
+    if (restoreRaw) {
+      sessionStorage.removeItem('copilot-restore')
+      try {
+        const restore = JSON.parse(restoreRaw) as {
+          messages: Array<{ role: 'user' | 'assistant'; content: string }>
+          pendingActions: PendingAction[]
+        }
+        const restoredMsgs: Message[] = restore.messages.map((m) => ({ role: m.role, content: m.content }))
+        // Append or replace the last assistant message with the confirmed pending actions card
+        const hasPending = restore.pendingActions?.length > 0
+        if (hasPending) {
+          const lastAssistant = restoredMsgs.findLastIndex((m) => m.role === 'assistant')
+          const confirmMsg: Message = {
+            role: 'assistant',
+            content: restoredMsgs[lastAssistant]?.content || "Here's what I'll do — confirm to apply.",
+            pendingActions: restore.pendingActions,
+            actionStatus: 'pending',
+          }
+          if (lastAssistant >= 0) restoredMsgs[lastAssistant] = confirmMsg
+          else restoredMsgs.push(confirmMsg)
+        }
+        setMessages(restoredMsgs)
+        setTimeout(() => inputRef.current?.focus(), 80)
+        return
+      } catch { /* fall through to seed check */ }
+    }
+
     const seed = sessionStorage.getItem('copilot-seed')
     if (seed) {
       sessionStorage.removeItem('copilot-seed')
