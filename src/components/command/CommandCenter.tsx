@@ -3,7 +3,7 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import {
-  collection, doc, setDoc, updateDoc, writeBatch, getDocs, query, where,
+  collection, doc, setDoc, updateDoc, writeBatch, getDocs, query, where, deleteField,
 } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
 import {
@@ -562,16 +562,25 @@ export function CommandCenter() {
           writeCache(gcalKey, loadedEvents)
 
           // Sync into Firestore so all family members see this person's events.
-          // Replace the owner's existing Google-sourced events with the fresh batch.
+          // Replace the owner's existing Google-sourced events with the fresh batch,
+          // but preserve any manually-set forIds/assigneeId so assignments survive a refresh.
           try {
             const eventsCol = collection(db, 'families', familyId, 'events')
             const oldSnap = await getDocs(
               query(eventsCol, where('ownerEmail', '==', ownerEmail), where('source', '==', 'google'))
             )
+            const savedAssignments = new Map<string, { forIds?: string[]; assigneeId?: string }>()
+            oldSnap.docs.forEach((d) => {
+              const data = d.data()
+              if (data.forIds?.length || data.assigneeId) {
+                savedAssignments.set(d.id, { forIds: data.forIds, assigneeId: data.assigneeId })
+              }
+            })
             const batch = writeBatch(db)
             oldSnap.docs.forEach((d) => batch.delete(d.ref))
             loadedEvents.forEach((e) => {
-              batch.set(doc(eventsCol, e.id), { ...e, source: 'google' })
+              const preserved = savedAssignments.get(e.id) ?? {}
+              batch.set(doc(eventsCol, e.id), { ...e, source: 'google', ...preserved })
             })
             await batch.commit()
           } catch { /* sync failure is non-fatal */ }
@@ -935,10 +944,34 @@ export function CommandCenter() {
     const forNames = forMembers.map((m) => m.name).join(', ')
     const respName = responsible?.name ?? ''
 
-    // 2. Update underlying task/reminder assignee, if this item maps to one.
-    //    Write the canonical id (works for emailless members) plus email for
-    //    backward-compat.
-    if (responsible) {
+    // 2. Update the backing Firestore record based on sourceType.
+    if (item.sourceType === 'event' && familyId) {
+      // Write forIds + assigneeId directly to the calendar event doc and fan out
+      // to all occurrences of a recurring event so the calendar list stays in sync.
+      try {
+        const eventsCol = collection(db, 'families', familyId, 'events')
+        const targetEvent = item.sourceId
+          ? localEvents.find((e) => e.id === item.sourceId)
+          : localEvents.find((e) => e.title.toLowerCase() === item.title.toLowerCase())
+        if (targetEvent) {
+          const eventUpdate = {
+            forIds,
+            ...(responsibleId ? { assigneeId: responsibleId } : { assigneeId: deleteField() }),
+          }
+          if (targetEvent.recurringEventId) {
+            const siblingsSnap = await getDocs(
+              query(eventsCol, where('recurringEventId', '==', targetEvent.recurringEventId))
+            )
+            const evBatch = writeBatch(db)
+            siblingsSnap.docs.forEach((d) => evBatch.update(d.ref, eventUpdate))
+            await evBatch.commit()
+          } else {
+            await updateDoc(doc(eventsCol, targetEvent.id), eventUpdate)
+          }
+        }
+      } catch { /* non-fatal */ }
+    } else if (responsible) {
+      // For tasks/reminders, update the assignee field on the backing doc.
       const af = { assigneeId: responsible.id, assigneeEmail: responsible.email || undefined }
       const t = item.sourceId
         ? tasks.find((x) => x.id === item.sourceId)
