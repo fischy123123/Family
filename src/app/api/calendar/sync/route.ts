@@ -75,19 +75,32 @@ export async function POST(request: NextRequest) {
       const eventsCol = db.collection('families').doc(familyId).collection('events')
       const BATCH_LIMIT = 490
 
+      // Map of event id → preserved assignment fields (forIds, assigneeId).
+      // Populated during the full-sync delete phase so we can re-apply them on insert.
+      const savedAssignments = new Map<string, { forIds?: string[]; assigneeId?: string }>()
+
       if (!isIncremental) {
-        // First sync: wipe old google-sourced events for this owner, then insert all
+        // Full sync: read existing docs to capture any manual assignment fields,
+        // then delete only events that are no longer in the new batch.
         const oldSnap = await eventsCol
           .where('ownerEmail', '==', email)
           .where('source', '==', 'google')
           .get()
-        for (let i = 0; i < oldSnap.docs.length; i += BATCH_LIMIT) {
+        const freshIds = new Set(delta.upserted.map((e) => e.id))
+        oldSnap.docs.forEach((d) => {
+          const data = d.data()
+          if (data.forIds?.length || data.assigneeId) {
+            savedAssignments.set(d.id, { forIds: data.forIds, assigneeId: data.assigneeId })
+          }
+        })
+        const toDelete = oldSnap.docs.filter((d) => !freshIds.has(d.id))
+        for (let i = 0; i < toDelete.length; i += BATCH_LIMIT) {
           const batch = db.batch()
-          oldSnap.docs.slice(i, i + BATCH_LIMIT).forEach((d) => batch.delete(d.ref))
+          toDelete.slice(i, i + BATCH_LIMIT).forEach((d) => batch.delete(d.ref))
           await batch.commit()
         }
       } else {
-        // Incremental: only delete the events Google told us were removed
+        // Incremental: only delete the events Google told us were cancelled
         for (let i = 0; i < delta.deletedIds.length; i += BATCH_LIMIT) {
           const batch = db.batch()
           delta.deletedIds.slice(i, i + BATCH_LIMIT).forEach((id) => batch.delete(eventsCol.doc(id)))
@@ -95,7 +108,11 @@ export async function POST(request: NextRequest) {
         }
       }
 
-      // Upsert new/modified events
+      // Upsert new/modified events.
+      // For incremental syncs, use merge:true so Firestore only overwrites the
+      // fields present in the Google response — forIds/assigneeId are not in that
+      // response and will be left untouched on existing docs.
+      // For full syncs, re-apply any assignment fields we saved above.
       const upserted: CalendarEvent[] = delta.upserted.map((e) => ({
         ...e,
         ownerEmail: e.ownerEmail || email,
@@ -103,7 +120,13 @@ export async function POST(request: NextRequest) {
       for (let i = 0; i < upserted.length; i += BATCH_LIMIT) {
         const batch = db.batch()
         upserted.slice(i, i + BATCH_LIMIT).forEach((e) => {
-          batch.set(eventsCol.doc(e.id), { ...e, source: 'google' })
+          const data = { ...e, source: 'google' }
+          if (isIncremental) {
+            batch.set(eventsCol.doc(e.id), data, { merge: true })
+          } else {
+            const preserved = savedAssignments.get(e.id) ?? {}
+            batch.set(eventsCol.doc(e.id), { ...data, ...preserved })
+          }
         })
         await batch.commit()
       }
