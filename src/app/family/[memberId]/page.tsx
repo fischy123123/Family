@@ -112,6 +112,8 @@ export default function MemberProfilePage() {
     const start = new Date(e.start)
     if (start < now || start > in14Days) return false
     if (e.ownerEmail && member?.email && e.ownerEmail.toLowerCase() === member.email.toLowerCase()) return true
+    if (member?.id && e.forIds?.includes(member.id)) return true
+    if (member?.id && e.assigneeId === member.id) return true
     if (member?.name && e.title.toLowerCase().includes(member.name.toLowerCase())) return true
     return false
   }).sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime())

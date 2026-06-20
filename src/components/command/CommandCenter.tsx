@@ -26,15 +26,6 @@ import type {
   FamilyMemory, FamilyProfile, FamilyReminder, EventAssignmentSuggestion,
 } from '@/lib/types'
 
-type CalendarClarification = {
-  id: string
-  eventId: string
-  eventTitle: string
-  eventDate: string
-  question: string
-  hint: string
-}
-
 type EventContext = {
   id: string // == event id
   eventTitle: string
@@ -82,7 +73,6 @@ function groupItems(items: AttentionItem[]): ItemGroup[] {
 // Everything that gates the page is cached per-family so returning visits
 // render instantly and only update in the background.
 const ATTN_PREFIX = 'fam-attn-'
-const CLAR_PREFIX = 'fam-clar-'
 const GMAIL_PREFIX = 'fam-gmail-'
 const LAST_RUN_PREFIX = 'fam-lastrun-'
 const CTX_SIG_PREFIX = 'fam-ctxsig-'
@@ -234,7 +224,6 @@ export function CommandCenter() {
   const profile = profiles[0] ?? null
 
   const attnKey = familyId ? ATTN_PREFIX + familyId : null
-  const clarKey = familyId ? CLAR_PREFIX + familyId : null
   const gmailKey = familyId ? GMAIL_PREFIX + familyId : null
   const lastRunKey = familyId ? LAST_RUN_PREFIX + familyId : null
   const ctxSigKey = familyId ? CTX_SIG_PREFIX + familyId : null
@@ -274,12 +263,8 @@ export function CommandCenter() {
   const reportRef = useRef<AttentionReport | null>(null)
   useEffect(() => { engineErrorRef.current = engineError }, [engineError])
   useEffect(() => { reportRef.current = report }, [report])
-  const [clarifications, setClarifications] = useState<CalendarClarification[]>([])
-  const [clarificationAnswers, setClarificationAnswers] = useState<Record<string, string>>({})
-  const [clarificationsDismissed, setClarificationsDismissed] = useState(false)
   const [savingItemId, setSavingItemId] = useState<string | null>(null)
   const [selfLinkDismissed, setSelfLinkDismissed] = useState(false)
-  const clarificationsFetched = useRef(false)
   const [emailSuggestions, setEmailSuggestions] = useState<EmailSuggestion[]>([])
   const emailFetched = useRef(false)
   // Incrementing this forces the Google Calendar fetch effect to re-run, even
@@ -300,9 +285,6 @@ export function CommandCenter() {
   const [skippedAssignments, setSkippedAssignments] = useState<Set<string>>(new Set())
   // When a user dismisses something, offer to teach the assistant once.
   const [teachPrompt, setTeachPrompt] = useState<{ title: string; reason: string } | null>(null)
-  // After saving calendar context, show a brief inline confirmation telling the
-  // user what was saved and how the assistant will use it.
-  const [contextSaved, setContextSaved] = useState<{ eventTitle: string; context: string } | null>(null)
   // Optimistic assignment overrides keyed by item title, so the "for" / responsible
   // chips update instantly on assign without waiting for the engine to re-run.
   // Keyed by member ID (not email) because kids/pets often have no email — emails
@@ -318,7 +300,7 @@ export function CommandCenter() {
     if (!familyId) return
     // Include the dismissed-items list so "Reset cached data" also brings back
     // any cards the user dismissed (e.g. an accidental tap on the X).
-    const prefixes = [ATTN_PREFIX, CLAR_PREFIX, GMAIL_PREFIX, LAST_RUN_PREFIX, CTX_SIG_PREFIX, LAST_RUN_SIG_PREFIX, DISMISS_PREFIX, COMPLETED_PREFIX, SKIP_EA_PREFIX]
+    const prefixes = [ATTN_PREFIX, GMAIL_PREFIX, LAST_RUN_PREFIX, CTX_SIG_PREFIX, LAST_RUN_SIG_PREFIX, DISMISS_PREFIX, COMPLETED_PREFIX, SKIP_EA_PREFIX]
     prefixes.forEach((p) => {
       try { localStorage.removeItem(p + familyId) } catch { /* ignore */ }
     })
@@ -352,8 +334,6 @@ export function CommandCenter() {
       setReport(r)
       if (reportAge > REPORT_TTL_MS) forceDirectRef.current = true
     }
-    const c = readCache<CalendarClarification[]>(clarKey)
-    if (c?.length) setClarifications(c)
     const em = readCache<EmailSuggestion[]>(gmailKey)
     if (em?.length) setEmailSuggestions(em)
     const dism = readCache<string[]>(dismissKey)
@@ -369,7 +349,7 @@ export function CommandCenter() {
     const savedRunSig = readCache<string>(lastRunSigKey)
     if (savedRunSig) lastRunSig.current = savedRunSig
     setHydrated(true)
-  }, [familyId, attnKey, clarKey, gmailKey, dismissKey, lastRunKey, ctxSigKey, lastRunSigKey, skipEaKey])
+  }, [familyId, attnKey, gmailKey, dismissKey, lastRunKey, ctxSigKey, lastRunSigKey, skipEaKey])
 
   // Scan Gmail incrementally — only emails newer than the last scan.
   // Cache stores { signals, lastScanTs } so we never re-process seen emails.
@@ -483,37 +463,6 @@ export function CommandCenter() {
     return () => { cancelled = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [familyId, calSyncKey])
-
-  // Ask the AI which calendar events are ambiguous — once per session, skipping
-  // events the family has already explained. Cached so it doesn't pop in again.
-  useEffect(() => {
-    const eventsForContext = localEvents
-    if (eventsForContext.length === 0 || clarificationsFetched.current) return
-    clarificationsFetched.current = true
-    let cancelled = false
-    ;(async () => {
-      try {
-        const res = await fetch('/api/ai/calendar-context', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            events: eventsForContext,
-            members,
-            now: new Date().toISOString(),
-            knownEventIds: eventContexts.map((e) => e.id),
-            timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-          }),
-        })
-        const data = await res.json()
-        if (!cancelled && res.ok && data.clarifications?.length > 0) {
-          setClarifications(data.clarifications)
-          writeCache(clarKey, data.clarifications)
-        }
-      } catch { /* ignore */ }
-    })()
-    return () => { cancelled = true }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [localEvents.length, eventContexts.length])
 
   const events = localEvents
 
@@ -823,13 +772,6 @@ export function CommandCenter() {
     return () => document.removeEventListener('visibilitychange', handleVisible)
   }, [isConnected, runEngine])
 
-  // Auto-dismiss the "context saved" confirmation after a few seconds.
-  useEffect(() => {
-    if (!contextSaved) return
-    const t = setTimeout(() => setContextSaved(null), 6000)
-    return () => clearTimeout(t)
-  }, [contextSaved])
-
   // Assign an item to people. Two-sided: `forIds` is who it concerns (e.g. the
   // kids); `responsibleId` is who handles it (e.g. a parent). Keyed by member ID
   // because kids/pets often have no email. Persists in two ways:
@@ -1039,42 +981,6 @@ export function CommandCenter() {
     } as Task)
     toast(`Added "${title}" to your tasks`, 'success')
   }
-
-  // Save one clarification, then immediately re-run the engine with it included.
-  async function saveClarification(c: CalendarClarification) {
-    const answer = clarificationAnswers[c.id]?.trim()
-    if (!answer || !familyId) return
-    setSavingItemId(c.id)
-    try {
-      await createEventContext({
-        id: c.eventId,
-        eventTitle: c.eventTitle,
-        context: answer,
-        savedAt: new Date().toISOString(),
-      })
-      // Confirm to the user what was saved and what it means — both an inline
-      // card (where the question was) and a toast.
-      setContextSaved({ eventTitle: c.eventTitle, context: answer })
-      toast(`Got it — I'll use that to help with "${c.eventTitle}"`, 'success')
-      // Build the merged context so the just-saved answer is used right away,
-      // without waiting for the Firestore snapshot to round-trip. Run SILENTLY so
-      // the briefing stays on screen and updates in place (TopProgressBar shows
-      // the refresh is happening) rather than blanking out.
-      const merged = [
-        ...eventContexts
-          .filter((e) => e.id !== c.eventId)
-          .map((e) => ({ eventTitle: e.eventTitle, context: e.context })),
-        { eventTitle: c.eventTitle, context: answer },
-      ]
-      await runEngine(merged, true)
-    } finally {
-      setSavingItemId(null)
-    }
-  }
-
-  // Hide events the family has already explained (in this or a past session).
-  const answeredIds = new Set(eventContexts.map((e) => e.id))
-  const visibleClarifications = clarifications.filter((c) => !answeredIds.has(c.eventId))
 
   // If the signed-in user isn't linked to a family-member profile, the AI can't
   // tell which person "you" are. Offer a one-tap link.
@@ -1453,29 +1359,6 @@ export function CommandCenter() {
         </div>
       )}
 
-      {/* Context-saved confirmation — tells the user what the assistant learned
-          and that it's now factoring it in (the briefing refreshes in place). */}
-      {contextSaved && (
-        <div className="rounded-2xl p-4 bg-green-50 border border-green-200 flex items-start gap-3 animate-slide-up">
-          <Check size={16} className="text-green-600 mt-0.5 shrink-0" />
-          <div className="flex-1 min-w-0">
-            <p className="text-sm font-semibold text-green-800">Got it — I&apos;ll remember that</p>
-            <p className="text-xs text-green-700 mt-0.5 leading-relaxed">
-              For <span className="font-medium">{contextSaved.eventTitle}</span>: &ldquo;{contextSaved.context}&rdquo;.
-              I&apos;m using this to understand what it needs and surface the right prep at the right time —
-              updating your briefing now.
-            </p>
-          </div>
-          <button
-            onClick={() => setContextSaved(null)}
-            className="shrink-0 text-green-400 hover:text-green-600"
-            aria-label="Dismiss"
-          >
-            <X size={14} />
-          </button>
-        </div>
-      )}
-
       {/* Empty state — shown when the engine ran but found nothing for this person */}
       {report && !loading &&
         (report.items ?? []).filter((i) => !dismissedTitles.has(i.title) && !completedTitles.has(i.title)).length === 0 &&
@@ -1486,60 +1369,6 @@ export function CommandCenter() {
           <p className="text-sm font-semibold text-slate-700">All clear</p>
           <p className="text-xs text-slate-500 mt-1">Nothing urgent for you right now. Have a great day!</p>
         </div>
-      )}
-
-      {/* Calendar Intelligence — clarification requests (saved per item) */}
-      {visibleClarifications.length > 0 && !clarificationsDismissed && (
-        <section className="rounded-2xl p-5 bg-amber-50 border border-amber-200 animate-slide-up">
-          <div className="flex items-start gap-3 mb-4">
-            <div className="w-8 h-8 rounded-lg bg-amber-100 flex items-center justify-center shrink-0">
-              <HelpCircle size={16} className="text-amber-600" />
-            </div>
-            <div>
-              <h3 className="text-sm font-semibold text-amber-900">Help me understand your calendar</h3>
-              <p className="text-xs text-amber-700 mt-0.5">
-                Answer any that are useful — each is saved on its own and your assistant uses it right away.
-              </p>
-            </div>
-            <button
-              onClick={() => setClarificationsDismissed(true)}
-              className="ml-auto text-amber-400 hover:text-amber-600"
-              aria-label="Dismiss"
-            >
-              <X size={16} />
-            </button>
-          </div>
-          <div className="space-y-3">
-            {visibleClarifications.map((c) => {
-              const answer = clarificationAnswers[c.id] ?? ''
-              const saving = savingItemId === c.id
-              return (
-                <div key={c.id} className="bg-white rounded-xl p-3 border border-amber-100">
-                  <p className="text-xs font-medium text-slate-700 mb-1">
-                    📅 {c.eventTitle} · {new Date(c.eventDate).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}
-                  </p>
-                  <p className="text-xs text-slate-500 mb-2">{c.question}</p>
-                  <div className="flex items-center gap-2">
-                    <input
-                      placeholder={c.hint}
-                      value={answer}
-                      onChange={(e) => setClarificationAnswers((prev) => ({ ...prev, [c.id]: e.target.value }))}
-                      onKeyDown={(e) => { if (e.key === 'Enter') saveClarification(c) }}
-                      className="flex-1 text-xs rounded-lg px-3 py-2 border border-slate-200 focus:outline-none focus:border-blue-300 bg-slate-50"
-                    />
-                    <button
-                      onClick={() => saveClarification(c)}
-                      disabled={!answer.trim() || saving}
-                      className="shrink-0 px-3 py-2 rounded-lg text-xs font-semibold text-white bg-amber-500 hover:bg-amber-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                    >
-                      {saving ? 'Saving…' : 'Save'}
-                    </button>
-                  </div>
-                </div>
-              )
-            })}
-          </div>
-        </section>
       )}
 
       {/* Cold-start skeleton — only when we have nothing cached to show. Shaped
@@ -1587,7 +1416,6 @@ export function CommandCenter() {
                   context,
                   savedAt: new Date().toISOString(),
                 } as EventContext)
-                setContextSaved({ eventTitle: itemTitle, context })
                 toast(`Got it — I'll use that to help with "${itemTitle}"`, 'success')
                 runEngine(merged, true)
               }
