@@ -410,6 +410,10 @@ export function FamilyCalendar() {
             await handleDelete(detailEvent)
             setDetailEvent(null)
           }}
+          onUpdateForIds={async (forIds) => {
+            await updateFirestore({ ...detailEvent, forIds })
+            setDetailEvent({ ...detailEvent, forIds })
+          }}
         />
       )}
 
@@ -419,6 +423,7 @@ export function FamilyCalendar() {
         onClose={() => setModalOpen(false)}
         initialDate={selectedDate}
         event={selectedEvent}
+        members={members}
         onCreate={handleCreate}
         onUpdate={selectedEvent ? handleUpdate : undefined}
         onDelete={

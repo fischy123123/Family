@@ -2,8 +2,10 @@
 
 import { useState } from 'react'
 import { format, parseISO } from 'date-fns'
-import { X, MapPin, FileText, Calendar, RefreshCw } from 'lucide-react'
+import { X, MapPin, FileText, Calendar, RefreshCw, Users } from 'lucide-react'
 import type { CalendarEvent, FamilyMember } from '@/lib/types'
+import { ForPicker } from '@/components/ui/AssigneePicker'
+import { memberById } from '@/lib/members'
 
 interface EventDetailSheetProps {
   event: CalendarEvent | null
@@ -11,6 +13,7 @@ interface EventDetailSheetProps {
   onClose: () => void
   onEdit: () => void
   onDelete: () => Promise<void>
+  onUpdateForIds?: (forIds: string[]) => Promise<void>
 }
 
 function formatEventTime(event: CalendarEvent): string {
@@ -34,9 +37,11 @@ function formatEventTime(event: CalendarEvent): string {
   }
 }
 
-export function EventDetailSheet({ event, members, onClose, onEdit, onDelete }: EventDetailSheetProps) {
+export function EventDetailSheet({ event, members, onClose, onEdit, onDelete, onUpdateForIds }: EventDetailSheetProps) {
   const [deleting, setDeleting] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const [editingFor, setEditingFor] = useState(false)
+  const [savingFor, setSavingFor] = useState(false)
 
   if (!event) return null
 
@@ -134,6 +139,47 @@ export function EventDetailSheet({ event, members, onClose, onEdit, onDelete }: 
                 )}
               </div>
             </div>
+
+            {/* Who this event is for */}
+            {onUpdateForIds && (
+              <div className="flex items-start gap-3">
+                <Users size={16} className="mt-0.5 shrink-0 text-slate-400" />
+                <div className="flex-1 min-w-0">
+                  {editingFor ? (
+                    <div className="space-y-2">
+                      <ForPicker
+                        members={members}
+                        value={event.forIds ?? []}
+                        onChange={async (ids) => {
+                          setSavingFor(true)
+                          try { await onUpdateForIds(ids) } finally { setSavingFor(false) }
+                        }}
+                        label=""
+                      />
+                      <button
+                        onClick={() => setEditingFor(false)}
+                        className="text-xs text-slate-400 hover:text-slate-600"
+                      >
+                        {savingFor ? 'Saving…' : 'Done'}
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => setEditingFor(true)}
+                      className="text-sm text-slate-700 text-left hover:text-blue-600 transition-colors"
+                    >
+                      {(event.forIds ?? []).length > 0
+                        ? (event.forIds ?? []).map((id) => {
+                            const m = memberById(members, id)
+                            return m ? `${m.emoji} ${m.name}` : null
+                          }).filter(Boolean).join(', ')
+                        : <span className="text-slate-400">Who is this for? Tap to set</span>
+                      }
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
 
             {/* Location */}
             {event.location && (

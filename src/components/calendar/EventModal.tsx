@@ -5,19 +5,21 @@ import { Dialog } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
-import type { CalendarEvent } from '@/lib/types'
+import type { CalendarEvent, FamilyMember } from '@/lib/types'
+import { ForPicker } from '@/components/ui/AssigneePicker'
 
 interface EventModalProps {
   open: boolean
   onClose: () => void
   initialDate?: string
   event?: CalendarEvent
+  members?: FamilyMember[]
   onCreate: (event: Omit<CalendarEvent, 'id' | 'ownerEmail' | 'color'>) => Promise<void>
   onUpdate?: (updates: Partial<CalendarEvent>) => Promise<void>
   onDelete?: () => Promise<void>
 }
 
-export function EventModal({ open, onClose, initialDate, event, onCreate, onUpdate, onDelete }: EventModalProps) {
+export function EventModal({ open, onClose, initialDate, event, members, onCreate, onUpdate, onDelete }: EventModalProps) {
   const defaultDate = initialDate ?? new Date().toISOString().split('T')[0]
   const [title, setTitle] = useState(event?.title ?? '')
   const [date, setDate] = useState(event?.start.split('T')[0] ?? defaultDate)
@@ -26,6 +28,7 @@ export function EventModal({ open, onClose, initialDate, event, onCreate, onUpda
   const [isAllDay, setIsAllDay] = useState(event?.isAllDay ?? false)
   const [location, setLocation] = useState(event?.location ?? '')
   const [notes, setNotes] = useState(event?.notes ?? '')
+  const [forIds, setForIds] = useState<string[]>(event?.forIds ?? [])
   const [saving, setSaving] = useState(false)
 
   async function handleSubmit(e: React.FormEvent) {
@@ -38,9 +41,9 @@ export function EventModal({ open, onClose, initialDate, event, onCreate, onUpda
 
     try {
       if (event && onUpdate) {
-        await onUpdate({ title, start, end, isAllDay, location, notes })
+        await onUpdate({ title, start, end, isAllDay, location, notes, forIds })
       } else {
-        await onCreate({ title, start, end, isAllDay, location, notes, calendarId: 'primary' })
+        await onCreate({ title, start, end, isAllDay, location, notes, forIds, calendarId: 'primary' })
       }
       onClose()
     } finally {
@@ -92,6 +95,15 @@ export function EventModal({ open, onClose, initialDate, event, onCreate, onUpda
           onChange={(e) => setNotes(e.target.value)}
           rows={3}
         />
+
+        {members && members.length > 0 && (
+          <ForPicker
+            members={members}
+            value={forIds}
+            onChange={setForIds}
+            label="Who is this for?"
+          />
+        )}
 
         <div className="flex gap-2 pt-2">
           {event && onDelete && (
