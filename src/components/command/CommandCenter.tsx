@@ -8,7 +8,7 @@ import {
 import { db } from '@/lib/firebase'
 import {
   RefreshCw, AlertTriangle, Lightbulb, Clock,
-  Calendar as CalIcon, Sparkles, Check, HelpCircle, X, MessageCircle, Users, Bookmark, Plus, ChevronDown, Bug,
+  Calendar as CalIcon, Sparkles, Check, X, MessageCircle, Users, Bookmark, Plus, ChevronDown, Bug, Send,
 } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { useFirestore } from '@/hooks/useFirestore'
@@ -17,10 +17,11 @@ import { useCapture } from '@/contexts/CaptureContext'
 import { useFamily } from '@/contexts/FamilyContext'
 import { useToast } from '@/contexts/ToastContext'
 import { ConnectGooglePrompt } from '@/components/dashboard/ConnectGooglePrompt'
-import { generateId } from '@/lib/utils'
+import { generateId, cn } from '@/lib/utils'
 import { resolveMemberRef } from '@/lib/members'
 import { isAiDebugEnabled } from '@/lib/aiDebug'
 import { BUCKET_META } from '@/lib/types'
+import { Markdown } from '@/components/ui/Markdown'
 import type {
   FamilyMember, CalendarEvent, Task, Chore, Plan, SmartList,
   AttentionReport, AttentionItem, AttentionBucket, PotentialProblem,
@@ -1485,7 +1486,6 @@ export function CommandCenter() {
                             onCompleteItem={(item) => completeTaskFromItem(item)}
                             onDismissItem={(title) => dismissItem(title)}
                             onSaveTaskItem={(title, reason) => saveItemAsTask(title, reason)}
-                            onAddContextItem={addContextForItem}
                             onAssignItem={(item, f, r) => assignItem(item, f, r)}
                             debugMode={debugMode}
                             onTraceItem={traceItem}
@@ -1521,7 +1521,6 @@ export function CommandCenter() {
                           onDismiss={() => dismissItem(item.title)}
                           onSaveTask={() => saveItemAsTask(item.title, item.reason)}
                           onAssign={(f, r) => assignItem(item, f, r)}
-                          onAddContext={(context) => addContextForItem(item.title, context)}
                           debugMode={debugMode}
                           onTrace={() => traceItem(item)}
                         />
@@ -1783,6 +1782,13 @@ function ProblemCard({
   onTrace?: () => void
 }) {
   const [saved, setSaved] = useState(false)
+  const [chatOpen, setChatOpen] = useState(false)
+  const panelRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (chatOpen && panelRef.current) {
+      panelRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+    }
+  }, [chatOpen])
   const severityBg = p.severity === 'high' ? '#fee2e2' : p.severity === 'medium' ? '#ffedd5' : '#fef9c3'
   const severityColor = p.severity === 'high' ? '#dc2626' : p.severity === 'medium' ? '#ea580c' : '#a16207'
   const borderColor = p.severity === 'high' ? '#dc2626' : p.severity === 'medium' ? '#f97316' : '#eab308'
@@ -1836,6 +1842,16 @@ function ProblemCard({
             </button>
           )}
           <button
+            onClick={() => setChatOpen((v) => !v)}
+            className={cn(
+              'p-1.5 rounded-lg transition-colors',
+              chatOpen ? 'text-blue-600 bg-blue-50' : 'text-slate-300 hover:text-blue-500 hover:bg-blue-50',
+            )}
+            title="Ask AI"
+          >
+            <MessageCircle size={14} />
+          </button>
+          <button
             onClick={() => { setSaved(true); onSaveTask() }}
             disabled={saved}
             className="p-1.5 rounded-lg transition-colors"
@@ -1853,6 +1869,19 @@ function ProblemCard({
           </button>
         </div>
       </div>
+      {chatOpen && (
+        <div ref={panelRef}>
+          <CardChat
+            cardContext={[
+              `Flagged problem: "${p.title}"`,
+              `Detail: "${p.detail}"`,
+              `Severity: ${p.severity}`,
+              p.relatedDate ? `Related date: ${p.relatedDate}` : '',
+            ].filter(Boolean).join('\n')}
+            quickPrompts={['Why is this flagged?', 'How do I fix this?', 'Is this actually a problem?']}
+          />
+        </div>
+      )}
     </div>
   )
 }
@@ -1903,7 +1932,7 @@ type ResolvedItemForGroup = {
 
 function GroupedAttentionCard({
   groupTitle, resolvedItems, accent, allMembers,
-  onCompleteItem, onDismissItem, onSaveTaskItem, onAddContextItem, onAssignItem, debugMode, onTraceItem,
+  onCompleteItem, onDismissItem, onSaveTaskItem, onAssignItem, debugMode, onTraceItem,
 }: {
   groupTitle: string
   resolvedItems: ResolvedItemForGroup[]
@@ -1912,7 +1941,6 @@ function GroupedAttentionCard({
   onCompleteItem: (item: AttentionItem) => void
   onDismissItem: (title: string) => void
   onSaveTaskItem: (title: string, reason: string) => void
-  onAddContextItem: (title: string, context: string) => void
   onAssignItem: (item: AttentionItem, forIds: string[], responsibleId?: string) => void
   debugMode?: boolean
   onTraceItem?: (item: AttentionItem) => void
@@ -1993,7 +2021,6 @@ function GroupedAttentionCard({
               onComplete={() => onCompleteItem(item)}
               onDismiss={() => onDismissItem(item.title)}
               onSaveTask={() => onSaveTaskItem(item.title, item.reason)}
-              onAddContext={(ctx) => onAddContextItem(item.title, ctx)}
               onAssign={(f, r) => onAssignItem(item, f, r)}
               debugMode={debugMode}
               onTrace={onTraceItem ? () => onTraceItem(item) : undefined}
@@ -2047,10 +2074,221 @@ function CompactItemRow({
   )
 }
 
+// ── Inline card chat ─────────────────────────────────────────
+// A self-contained mini-Copilot that renders inside any card. It reads family
+// context from hooks directly so no prop-drilling is needed from CommandCenter.
+
+function CardChat({
+  cardContext,
+  quickPrompts,
+}: {
+  cardContext: string
+  quickPrompts: string[]
+}) {
+  const { user } = useAuth()
+  const { familyId } = useFamily()
+  const { data: members } = useFirestore<FamilyMember>('members')
+  const { getFreshTokens } = useGoogleTokens()
+
+  type ChatMsg = { role: 'user' | 'assistant'; content: string; isStreaming?: boolean }
+  const [msgs, setMsgs] = useState<ChatMsg[]>([])
+  const [input, setInput] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [hasPending, setHasPending] = useState(false)
+  const inputRef = useRef<HTMLInputElement>(null)
+  const endRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => { setTimeout(() => inputRef.current?.focus(), 50) }, [])
+  useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [msgs, loading])
+
+  async function send(text?: string) {
+    const content = (text ?? input).trim()
+    if (!content || loading || !familyId || !user?.email) return
+
+    const userMsg: ChatMsg = { role: 'user', content }
+    setMsgs((prev) => [...prev, userMsg])
+    setInput('')
+    setLoading(true)
+
+    try {
+      const freshTokens = await getFreshTokens()
+      const googleTokens = freshTokens
+        ? { accessToken: freshTokens.accessToken, refreshToken: freshTokens.refreshToken }
+        : null
+
+      // Prepend card context to only the first user message so the AI knows
+      // what card is being discussed, without repeating it on every follow-up.
+      const history = [...msgs, userMsg].map((m, i) =>
+        i === 0
+          ? { role: m.role, content: `[Card context]\n${cardContext}\n\n${m.content}` }
+          : { role: m.role, content: m.content }
+      )
+
+      const res = await fetch('/api/agent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          messages: history,
+          familyId,
+          userEmail: user.email,
+          googleTokens,
+          context: {
+            members,
+            today: new Date().toISOString(),
+            timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+          },
+        }),
+      })
+      if (!res.ok || !res.body) throw new Error('Request failed')
+
+      const reader = res.body.getReader()
+      const dec = new TextDecoder()
+      let buf = ''
+      let started = false
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buf += dec.decode(value, { stream: true })
+        const lines = buf.split('\n')
+        buf = lines.pop() ?? ''
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue
+          let ev: { type: string; token?: string; reply?: string; pendingActions?: unknown[] }
+          try { ev = JSON.parse(line.slice(6)) } catch { continue }
+
+          if (ev.type === 'token') {
+            if (!started) {
+              started = true
+              setLoading(false)
+              setMsgs((prev) => [...prev, { role: 'assistant', content: ev.token!, isStreaming: true }])
+            } else {
+              setMsgs((prev) => {
+                const a = [...prev]
+                const last = a[a.length - 1]
+                if (last?.isStreaming) a[a.length - 1] = { ...last, content: last.content + ev.token! }
+                return a
+              })
+            }
+          } else if (ev.type === 'done') {
+            const hasPend = (ev.pendingActions?.length ?? 0) > 0
+            if (hasPend) setHasPending(true)
+            setMsgs((prev) => {
+              const a = [...prev]
+              const last = a[a.length - 1]
+              const reply = ev.reply || (last?.isStreaming ? last.content : '') || (hasPend ? "I've queued some actions." : 'Done.')
+              if (last?.role === 'assistant') return [...a.slice(0, -1), { ...last, isStreaming: false, content: reply }]
+              return [...a, { role: 'assistant', content: reply }]
+            })
+          } else if (ev.type === 'error') {
+            throw new Error(String((ev as { error?: unknown }).error ?? 'Error'))
+          }
+        }
+      }
+    } catch {
+      setMsgs((prev) => {
+        const a = [...prev]
+        if (a[a.length - 1]?.isStreaming) a.pop()
+        return [...a, { role: 'assistant', content: 'Something went wrong. Try again.' }]
+      })
+    } finally {
+      setLoading(false)
+      setTimeout(() => inputRef.current?.focus(), 50)
+    }
+  }
+
+  return (
+    <div className="border-t border-slate-100 pt-3 pb-4 px-4 space-y-2.5">
+      {/* Quick-prompt chips — visible before any messages are sent */}
+      {msgs.length === 0 && !loading && (
+        <div className="flex flex-wrap gap-1.5">
+          {quickPrompts.map((p) => (
+            <button
+              key={p}
+              onClick={() => send(p)}
+              className="text-[11px] px-2.5 py-1 rounded-full bg-blue-50 text-blue-600 border border-blue-100 hover:bg-blue-100 active:scale-95 transition-all font-medium"
+            >
+              {p}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Message thread */}
+      {msgs.length > 0 && (
+        <div className="space-y-2 max-h-64 overflow-y-auto pr-0.5">
+          {msgs.map((m, i) =>
+            m.role === 'user' ? (
+              <div key={i} className="flex justify-end">
+                <span className="text-[13px] bg-blue-600 text-white rounded-2xl rounded-tr-sm px-3 py-1.5 max-w-[85%] leading-relaxed">
+                  {m.content}
+                </span>
+              </div>
+            ) : (
+              <div key={i} className="flex items-start gap-1.5">
+                <div className="w-5 h-5 rounded-full bg-gradient-to-br from-blue-600 to-purple-600 flex items-center justify-center shrink-0 mt-0.5">
+                  <Sparkles size={9} className="text-white" />
+                </div>
+                <div className="text-[13px] text-slate-700 leading-relaxed flex-1 min-w-0 pt-0.5">
+                  <Markdown content={m.content} />
+                  {m.isStreaming && (
+                    <span className="inline-block w-0.5 h-3 bg-blue-400 ml-0.5 animate-pulse align-middle" />
+                  )}
+                </div>
+              </div>
+            )
+          )}
+          {loading && !msgs.some((m) => m.isStreaming) && (
+            <div className="flex items-center gap-1.5">
+              <div className="w-5 h-5 rounded-full bg-gradient-to-br from-blue-600 to-purple-600 flex items-center justify-center shrink-0">
+                <Sparkles size={9} className="text-white" />
+              </div>
+              <div className="flex gap-1">
+                {[0, 150, 300].map((d) => (
+                  <span key={d} className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-bounce" style={{ animationDelay: `${d}ms` }} />
+                ))}
+              </div>
+            </div>
+          )}
+          {hasPending && (
+            <p className="text-[11px] text-amber-600 pl-6">
+              Actions queued — open Copilot to review and confirm.
+            </p>
+          )}
+          <div ref={endRef} />
+        </div>
+      )}
+
+      {/* Input row */}
+      <div className="flex items-center gap-2">
+        <input
+          ref={inputRef}
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); send() } }}
+          placeholder="Ask about this…"
+          disabled={loading}
+          className="flex-1 text-[13px] rounded-full border border-slate-200 bg-white px-3 py-1.5 focus:outline-none focus:border-blue-300 focus:ring-1 focus:ring-blue-100 disabled:opacity-50 transition-all"
+        />
+        {input.trim() && (
+          <button
+            onClick={() => send()}
+            disabled={loading}
+            className="shrink-0 w-7 h-7 rounded-full bg-blue-600 text-white flex items-center justify-center hover:bg-blue-700 disabled:opacity-40 active:scale-95 transition-all"
+          >
+            <Send size={12} />
+          </button>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // ── Individual attention card ────────────────────────────────
 
 function AttentionCard({
-  item, accent, allMembers, responsible, forMembers, backedByRealItem, isRecurring, onComplete, onDismiss, onSaveTask, onAddContext, onAssign, debugMode, onTrace,
+  item, accent, allMembers, responsible, forMembers, backedByRealItem, isRecurring, onComplete, onDismiss, onSaveTask, onAssign, debugMode, onTrace,
 }: {
   item: AttentionItem
   accent: string
@@ -2062,35 +2300,23 @@ function AttentionCard({
   onComplete: () => void
   onDismiss: () => void
   onSaveTask: () => void
-  onAddContext: (context: string) => void
   onAssign: (forIds: string[], responsibleId?: string) => void
   debugMode?: boolean
   onTrace?: () => void
 }) {
   const [done, setDone] = useState(false)
   const [saved, setSaved] = useState(false)
-  const [expanded, setExpanded] = useState(false)
+  const [chatOpen, setChatOpen] = useState(false)
   const [assigning, setAssigning] = useState(false)
-  const [contextDraft, setContextDraft] = useState('')
-  // When an inline panel opens, bring it into view so the user isn't left
-  // staring at the same spot while the response area appears off-screen.
   const panelRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
-    if ((expanded || assigning) && panelRef.current) {
-      panelRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    if ((chatOpen || assigning) && panelRef.current) {
+      panelRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
     }
-  }, [expanded, assigning])
+  }, [chatOpen, assigning])
   const startStr = item.startBy
     ? new Date(item.startBy).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
     : null
-
-  function submitContext() {
-    const v = contextDraft.trim()
-    if (!v) return
-    onAddContext(v)
-    setContextDraft('')
-    setExpanded(false)
-  }
 
   const hasAssignment = !!responsible || forMembers.length > 0
 
@@ -2183,11 +2409,16 @@ function AttentionCard({
             <Users size={14} />
           </button>
           <button
-            onClick={() => setExpanded((v) => !v)}
-            className="p-1.5 rounded-lg text-slate-300 hover:text-slate-500 hover:bg-slate-50 transition-colors"
-            title="Add context"
+            onClick={() => setChatOpen((v) => !v)}
+            className={cn(
+              'p-1.5 rounded-lg transition-colors',
+              chatOpen
+                ? 'text-blue-600 bg-blue-50'
+                : 'text-slate-300 hover:text-blue-500 hover:bg-blue-50',
+            )}
+            title="Ask AI"
           >
-            <HelpCircle size={14} />
+            <MessageCircle size={14} />
           </button>
           <button
             onClick={() => { setSaved(true); onSaveTask() }}
@@ -2221,26 +2452,19 @@ function AttentionCard({
         </div>
       )}
 
-      {expanded && (
-        <div ref={panelRef} className="px-4 pb-4 border-t border-slate-50 pt-3">
-          <p className="text-xs text-slate-500 mb-2">Add context so the assistant understands this better:</p>
-          <div className="flex gap-2">
-            <input
-              value={contextDraft}
-              onChange={(e) => setContextDraft(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') submitContext() }}
-              placeholder={`e.g. "This is a work thing, not family"`}
-              className="flex-1 text-xs rounded-lg px-3 py-2 border border-slate-200 focus:outline-none focus:border-blue-300 bg-slate-50"
-              autoFocus
-            />
-            <button
-              onClick={submitContext}
-              disabled={!contextDraft.trim()}
-              className="shrink-0 px-3 py-2 rounded-lg text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-40 transition-colors"
-            >
-              Save
-            </button>
-          </div>
+      {chatOpen && (
+        <div ref={panelRef}>
+          <CardChat
+            cardContext={[
+              `Title: "${item.title}"`,
+              `Reason: "${item.reason}"`,
+              `Source type: ${item.sourceType}`,
+              item.dueAt ? `Due/scheduled: ${item.dueAt}` : '',
+              item.startBy ? `Start by: ${item.startBy}` : '',
+              item.sourceId ? `Source id: ${item.sourceId}` : '',
+            ].filter(Boolean).join('\n')}
+            quickPrompts={['Why is this showing up?', 'What should I do?', 'Where does this come from?']}
+          />
         </div>
       )}
 
