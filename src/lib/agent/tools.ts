@@ -330,7 +330,7 @@ export const TOOLS: Anthropic.Tool[] = [
     input_schema: {
       type: 'object' as const,
       properties: {
-        text: { type: 'string', description: 'The fact to remember, phrased as a clear standalone statement (e.g. "Leo is allergic to peanuts")' },
+        text: { type: 'string', description: 'The fact to remember, phrased as a clear standalone statement (e.g. "Leo is allergic to peanuts"). When the fact includes a date, store it as YYYY-MM-DD rather than embedding a day name — day names become stale but dates stay accurate (e.g. "Maddie\'s grounding ends 2026-06-28" not "Maddie\'s grounding ends Sunday June 28").' },
         category: {
           type: 'string',
           enum: ['fact', 'preference', 'routine', 'health', 'logistics', 'relationship', 'other'],
@@ -493,6 +493,8 @@ DELETING EVENTS: Call get_google_events first to get the event_id and calendar_i
   return `You are Copilot, the family's AI chief of staff.
 Today is ${todayLabel}${timezone ? ` (user timezone: ${timezone})` : ''}.
 ${calendarRef}
+DATE VALIDATION RULE: Before quoting any date to the user — whether from memory, a reminder, or an event — look up the exact date in the DAY-DATE REFERENCE table above and use the day name from the table. Never trust a day name that was embedded in stored text; dates can outlive the day name that was written alongside them (e.g. a memory saying "Sunday, June 22" is wrong if the table shows June 22 is Monday). Always show the corrected day name.
+CONFLICT DETECTION RULE: If you notice two memories that directly contradict each other about the same fact (e.g., two different end dates for the same grounding, two different school schedules), do not pick one silently. Tell the user there are conflicting entries, show both, ask which is correct, then queue a forget for the old one and a remember for the confirmed fact.
 All times you display to the user should be in ${timezone ? `the user's timezone (${timezone})` : 'local time'}, not UTC.
 CRITICAL — when calling create_google_event or create_event, always use LOCAL datetime strings in the format YYYY-MM-DDTHH:mm:ss with NO "Z" suffix and NO timezone offset. "3pm" means ${timezone ?? 'local time'} 3pm, output as "YYYY-MM-DDTHH:15:00:00", not UTC.
 
@@ -523,7 +525,7 @@ How to operate:
 - When listing events or data, be brief — use bullet points, not paragraphs.
 - When asked open-ended questions like "what needs my attention?" or "what am I forgetting?", gather the relevant context with the read tools first, then give a focused, prioritized answer.
 - REMEMBER what matters. When the user shares a durable fact about the family (an allergy, a routine, a preference, a relationship, a standing logistic), quietly queue a remember action so it informs every future briefing. Don't remember one-off tasks or events. Lean on what you already know above before asking the user to repeat themselves.
-- CORRECT stale memory. When the user updates or contradicts something already in durable memory (e.g. "actually Maddie's grounding is extended to Sunday" when memory says it ends Friday), queue a forget action for the old [id:xxx] AND a remember action for the corrected fact in the same turn. Never leave two contradictory memories on file — that makes briefings wrong. Match memories about a person even when tagged to that person, not just family-wide ones.
+- CORRECT stale memory. When the user updates or contradicts something already in durable memory (e.g. "actually Maddie's grounding is extended to June 28" when memory says it ends June 22), queue a forget action for the old [id:xxx] AND a remember action for the corrected fact in the same turn. Never leave two contradictory memories on file — that makes briefings wrong. Match memories about a person even when tagged to that person, not just family-wide ones. When storing updated facts that include dates, store dates as YYYY-MM-DD without a day name (e.g. "Maddie's grounding ends 2026-06-28") so the fact stays accurate as time passes.
 
 Examples of what you can do:
 - "Add milk to shopping" → call list_shopping_lists to find the right list, then add_shopping_items (queued for confirmation)
