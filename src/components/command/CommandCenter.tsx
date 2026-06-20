@@ -100,6 +100,15 @@ const ENGINE_THROTTLE_MS = 15 * 60 * 1000
 // After this, re-run anyway so time-buckets (now/next/later) stay fresh.
 const ENGINE_DATA_UNCHANGED_TTL_MS = 45 * 60 * 1000
 
+// On a cold load the briefing's inputs arrive from several async sources a beat
+// apart — Firestore hydration first, then the server calendar sync, then the
+// Gmail scan. Each arrival used to kick a fresh 60-80s engine run, so one load
+// paid for three full generations. We instead wait for this quiet window after
+// the LAST trigger before running, so the whole burst collapses into one run
+// with the complete picture. Each new arrival resets the timer, so it adapts to
+// however long the sources take to settle.
+const ENGINE_COALESCE_MS = 3000
+
 // Pull the (possibly still-streaming) greeting out of the raw JSON the attention
 // engine is generating, so we can show it live before the full briefing lands.
 // Returns the greeting text decoded so far, or null if it hasn't started yet.
@@ -254,6 +263,8 @@ export function CommandCenter() {
   const forceDirectRef = useRef(false)
   const deepToken = useRef<number>(0)
   const engineAbortRef = useRef<AbortController | null>(null)
+  // Pending debounced engine run (see scheduleEngine + ENGINE_COALESCE_MS).
+  const engineDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   // Each runEngine call gets a monotonically-increasing token. The finally block
   // only clears loading state if it's still the current run — prevents an aborted
   // run's finally from clearing state owned by the newer run that aborted it.
@@ -692,6 +703,25 @@ export function CommandCenter() {
     }
   }, [buildEngineBody, eventContexts, attnKey, report])
 
+  // Debounced wrapper around runEngine. Multiple triggers firing within
+  // ENGINE_COALESCE_MS of each other (the cold-load cascade: hydration →
+  // calendar sync → inbox scan) collapse into a single run with the latest data.
+  // On a cold start (no report yet) we show the skeleton immediately so the quiet
+  // window isn't a blank screen, even though the actual run starts a beat later.
+  const scheduleEngine = useCallback((silent: boolean) => {
+    if (!silent) setLoading(true)
+    if (engineDebounceRef.current) clearTimeout(engineDebounceRef.current)
+    engineDebounceRef.current = setTimeout(() => {
+      engineDebounceRef.current = null
+      runEngine(undefined, silent)
+    }, ENGINE_COALESCE_MS)
+  }, [runEngine])
+
+  // Cancel any pending debounced run if the component unmounts.
+  useEffect(() => () => {
+    if (engineDebounceRef.current) clearTimeout(engineDebounceRef.current)
+  }, [])
+
   // Auto-run once the data we expect is loaded. Always silent when a report is
   // already on screen (cached or fresh) so content updates in place, never via a
   // skeleton flash. We always wait for Google Calendar to finish before firing so
@@ -713,7 +743,7 @@ export function CommandCenter() {
       lastRunSig.current === lastCtxSig.current &&
       timeSinceLastRun < ENGINE_DATA_UNCHANGED_TTL_MS
     ) return
-    runEngine(undefined, !!report)
+    scheduleEngine(!!report)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hydrated, googleLoaded, members.length, events.length, tasks.length, reminders.length])
 
@@ -750,7 +780,8 @@ export function CommandCenter() {
     const eventsJustArrived = prevEventCount === 0 && events.length > 0
     if (!inboxJustArrived && !eventsJustArrived && Date.now() - lastRun.current < 60_000) return
     // Silent if a report exists, cold-start otherwise (so the user sees the loader).
-    runEngine(undefined, !!report)
+    // Debounced so a burst of arrivals (events then inbox) coalesces into one run.
+    scheduleEngine(!!report)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ctxSignature, hydrated])
 
