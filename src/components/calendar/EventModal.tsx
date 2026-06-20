@@ -6,7 +6,7 @@ import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import type { CalendarEvent, FamilyMember } from '@/lib/types'
-import { ForPicker } from '@/components/ui/AssigneePicker'
+import { ForPicker, AssigneePicker } from '@/components/ui/AssigneePicker'
 
 interface EventModalProps {
   open: boolean
@@ -29,21 +29,20 @@ export function EventModal({ open, onClose, initialDate, event, members, onCreat
   const [location, setLocation] = useState(event?.location ?? '')
   const [notes, setNotes] = useState(event?.notes ?? '')
   const [forIds, setForIds] = useState<string[]>(event?.forIds ?? [])
+  const [assigneeId, setAssigneeId] = useState<string | undefined>(event?.assigneeId)
   const [saving, setSaving] = useState(false)
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     if (!title.trim()) return
     setSaving(true)
-
     const start = isAllDay ? date : `${date}T${startTime}:00`
     const end = isAllDay ? date : `${date}T${endTime}:00`
-
     try {
       if (event && onUpdate) {
-        await onUpdate({ title, start, end, isAllDay, location, notes, forIds })
+        await onUpdate({ title, start, end, isAllDay, location, notes, forIds, assigneeId })
       } else {
-        await onCreate({ title, start, end, isAllDay, location, notes, forIds, calendarId: 'primary' })
+        await onCreate({ title, start, end, isAllDay, location, notes, forIds, assigneeId, calendarId: 'primary' })
       }
       onClose()
     } finally {
@@ -63,13 +62,7 @@ export function EventModal({ open, onClose, initialDate, event, members, onCreat
         />
 
         <div className="flex items-center gap-2">
-          <input
-            type="checkbox"
-            id="allday"
-            checked={isAllDay}
-            onChange={(e) => setIsAllDay(e.target.checked)}
-            className="rounded"
-          />
+          <input type="checkbox" id="allday" checked={isAllDay} onChange={(e) => setIsAllDay(e.target.checked)} className="rounded" />
           <label htmlFor="allday" className="text-sm text-gray-700">All day</label>
         </div>
 
@@ -83,36 +76,31 @@ export function EventModal({ open, onClose, initialDate, event, members, onCreat
           </div>
         )}
 
-        <Input
-          placeholder="Location (optional)"
-          value={location}
-          onChange={(e) => setLocation(e.target.value)}
-        />
+        <Input placeholder="Location (optional)" value={location} onChange={(e) => setLocation(e.target.value)} />
 
-        <Textarea
-          placeholder="Notes (optional)"
-          value={notes}
-          onChange={(e) => setNotes(e.target.value)}
-          rows={3}
-        />
+        <Textarea placeholder="Notes (optional)" value={notes} onChange={(e) => setNotes(e.target.value)} rows={3} />
 
         {members && members.length > 0 && (
-          <ForPicker
-            members={members}
-            value={forIds}
-            onChange={setForIds}
-            label="Who is this for?"
-          />
+          <>
+            <ForPicker
+              members={members}
+              value={forIds}
+              onChange={setForIds}
+              label="Who is this for?"
+            />
+            <AssigneePicker
+              members={members}
+              value={assigneeId}
+              onChange={(id) => setAssigneeId(id)}
+              includePets={false}
+              label="Who is responsible?"
+            />
+          </>
         )}
 
         <div className="flex gap-2 pt-2">
           {event && onDelete && (
-            <Button
-              type="button"
-              variant="destructive"
-              size="sm"
-              onClick={async () => { await onDelete(); onClose() }}
-            >
+            <Button type="button" variant="destructive" size="sm" onClick={async () => { await onDelete(); onClose() }}>
               Delete
             </Button>
           )}

@@ -414,9 +414,17 @@ export function FamilyCalendar() {
             await handleDelete(detailEvent)
             setDetailEvent(null)
           }}
-          onUpdateForIds={async (forIds) => {
-            await updateFirestore({ ...detailEvent, forIds })
-            setDetailEvent({ ...detailEvent, forIds })
+          onUpdateAssignment={async (updates) => {
+            // Normalize null → undefined so CalendarEvent stays consistent
+            const cleaned = {
+              ...updates,
+              assigneeId: updates.assigneeId ?? undefined,
+            }
+            const applyTo = detailEvent.recurringEventId
+              ? firestoreEvents.filter((e) => e.recurringEventId === detailEvent.recurringEventId)
+              : [detailEvent]
+            await Promise.all(applyTo.map((e) => updateFirestore({ ...e, ...cleaned })))
+            setDetailEvent({ ...detailEvent, ...cleaned })
           }}
         />
       )}
@@ -530,9 +538,10 @@ function AgendaView({
                 const forMembers = (e.forIds ?? [])
                   .map((id) => memberByIdMap.get(id))
                   .filter((m): m is FamilyMember => Boolean(m))
-                // Show forIds members if set, otherwise fall back to the calendar owner
-                const displayMembers = forMembers.length > 0 ? forMembers : ownerMember ? [ownerMember] : []
-                const isAssigned = forMembers.length > 0
+                const assigneeMember = e.assigneeId ? memberByIdMap.get(e.assigneeId) : undefined
+                // Assignee shown separately only if different from the for-members
+                const showAssignee = assigneeMember && !forMembers.some((m) => m.id === assigneeMember.id)
+                const hasAssignment = forMembers.length > 0 || assigneeMember
                 return (
                   <button
                     key={e.id}
@@ -543,42 +552,43 @@ function AgendaView({
                     <div className="flex items-center gap-3 px-3.5 py-3 flex-1 min-w-0">
                       <div className="w-14 shrink-0 text-center">
                         {e.isAllDay ? (
-                          <span className="text-[10px] text-slate-400 font-medium uppercase">
-                            All day
-                          </span>
+                          <span className="text-[10px] text-slate-400 font-medium uppercase">All day</span>
                         ) : (
                           <p className="text-sm font-semibold text-slate-700 leading-none">
                             {format(new Date(e.start), 'h:mm')}
-                            <span className="text-[10px] font-normal ml-0.5 text-slate-400">
-                              {format(new Date(e.start), 'a')}
-                            </span>
+                            <span className="text-[10px] font-normal ml-0.5 text-slate-400">{format(new Date(e.start), 'a')}</span>
                           </p>
                         )}
                       </div>
                       <div className="flex-1 min-w-0">
                         <p className="text-sm font-semibold text-slate-900 truncate">{e.title}</p>
-                        {/* Who the event is for — names when assigned, location otherwise */}
-                        {isAssigned ? (
-                          <p className="text-xs truncate mt-0.5" style={{ color }}>
-                            {forMembers.map((m) => `${m.emoji} ${m.name}`).join(' · ')}
+                        {hasAssignment ? (
+                          <p className="text-xs truncate mt-0.5">
+                            {forMembers.length > 0 && (
+                              <span style={{ color }}>{forMembers.map((m) => `${m.emoji} ${m.name}`).join(' · ')}</span>
+                            )}
+                            {showAssignee && (
+                              <span className="text-slate-400">
+                                {forMembers.length > 0 ? ' · ' : ''}
+                                {assigneeMember!.emoji} {assigneeMember!.name} resp.
+                              </span>
+                            )}
                           </p>
                         ) : e.location ? (
                           <p className="text-xs text-slate-400 truncate mt-0.5">{e.location}</p>
                         ) : null}
                       </div>
                       <div className="flex items-center gap-1.5 shrink-0">
-                        {displayMembers.map((m) => (
-                          <span
-                            key={m.id}
-                            className="text-base leading-none"
-                            title={isAssigned ? `For: ${m.name}` : m.name}
-                          >
-                            {m.emoji}
-                          </span>
+                        {forMembers.map((m) => (
+                          <span key={m.id} className="text-base leading-none" title={`For: ${m.name}`}>{m.emoji}</span>
                         ))}
-                        {e.recurringEventId && (
-                          <RefreshCw size={11} className="text-slate-300" />
+                        {showAssignee && (
+                          <span className="text-base leading-none opacity-60" title={`Responsible: ${assigneeMember!.name}`}>{assigneeMember!.emoji}</span>
                         )}
+                        {forMembers.length === 0 && !assigneeMember && ownerMember && (
+                          <span className="text-base leading-none" title={ownerMember.name}>{ownerMember.emoji}</span>
+                        )}
+                        {e.recurringEventId && <RefreshCw size={11} className="text-slate-300" />}
                         <ChevronRight size={14} className="text-slate-300" />
                       </div>
                     </div>

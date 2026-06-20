@@ -426,7 +426,8 @@ export interface CalendarEvent {
   ownerEmail: string
   color: string
   recurringEventId?: string
-  forIds?: string[]    // family member ids this event is for/about (user-confirmed or AI-suggested)
+  forIds?: string[]      // who this event is for/about (multi-select)
+  assigneeId?: string    // who is responsible for making it happen (single)
 }
 
 export interface RecurrenceRule {
