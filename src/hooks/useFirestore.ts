@@ -6,6 +6,7 @@ import {
   onSnapshot,
   addDoc,
   setDoc,
+  updateDoc,
   deleteDoc,
   doc,
   query,
@@ -51,7 +52,7 @@ export function useFirestore<T extends { id: string }>(collectionName: string) {
   async function update(item: T): Promise<void> {
     if (!familyId) return
     const { id, ...rest } = item
-    await setDoc(doc(db, 'families', familyId, collectionName, id), stripUndefined(rest as Record<string, unknown>))
+    await updateDoc(doc(db, 'families', familyId, collectionName, id), stripUndefined(rest as Record<string, unknown>))
   }
 
   async function remove(id: string): Promise<void> {
