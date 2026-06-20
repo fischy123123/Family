@@ -12,7 +12,7 @@ import {
   type PendingAction,
 } from '@/lib/agent/tools'
 import type { FamilyMember, FamilyMemory, FamilyProfile } from '@/lib/types'
-import { logUsage } from '@/lib/ai'
+import { logUsage, estimateCost } from '@/lib/ai'
 
 const AI_MODEL = 'claude-sonnet-4-6'
 
@@ -134,6 +134,9 @@ export async function POST(request: NextRequest) {
       const pendingActions: PendingAction[] = []
       let availableCalendars: Array<{ id: string; name: string; primary: boolean }> = []
       let reply = ''
+      // Accumulate token counts across all loop iterations for a single summary line.
+      const totalUsage = { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 }
+      let iterations = 0
 
       // Tool-use loop — up to 5 iterations.
       // anthropic.messages.stream() is used for every call so text tokens are
@@ -154,6 +157,12 @@ export async function POST(request: NextRequest) {
 
         const response = await streamObj.finalMessage()
         logUsage(`agent#${i}`, AI_MODEL, response.usage)
+        iterations++
+        const ru = response.usage as unknown as Record<string, number>
+        totalUsage.input_tokens += ru.input_tokens ?? 0
+        totalUsage.output_tokens += ru.output_tokens ?? 0
+        totalUsage.cache_creation_input_tokens += ru.cache_creation_input_tokens ?? 0
+        totalUsage.cache_read_input_tokens += ru.cache_read_input_tokens ?? 0
 
         if (response.stop_reason === 'end_turn') {
           const textBlock = response.content.find((b) => b.type === 'text')
@@ -217,6 +226,12 @@ export async function POST(request: NextRequest) {
             finalStream.on('text', (token) => send({ type: 'token', token }))
             const finalResponse = await finalStream.finalMessage()
             logUsage('agent#final', AI_MODEL, finalResponse.usage)
+            iterations++
+            const fru = finalResponse.usage as unknown as Record<string, number>
+            totalUsage.input_tokens += fru.input_tokens ?? 0
+            totalUsage.output_tokens += fru.output_tokens ?? 0
+            totalUsage.cache_creation_input_tokens += fru.cache_creation_input_tokens ?? 0
+            totalUsage.cache_read_input_tokens += fru.cache_read_input_tokens ?? 0
             const textBlock = finalResponse.content.find((b) => b.type === 'text')
             reply = textBlock?.type === 'text' ? textBlock.text : 'Done.'
           }
@@ -229,6 +244,12 @@ export async function POST(request: NextRequest) {
         break
       }
 
+      console.log(
+        `[agent] turns=${iterations} model=${AI_MODEL}` +
+        ` in=${totalUsage.input_tokens} cw=${totalUsage.cache_creation_input_tokens}` +
+        ` cr=${totalUsage.cache_read_input_tokens} out=${totalUsage.output_tokens}` +
+        ` cost=${estimateCost(AI_MODEL, totalUsage)}`
+      )
       send({ type: 'done', reply, pendingActions, actions, availableCalendars })
     } catch (e: unknown) {
       console.error('[agent] error:', e)

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
 import { buildFamilyContextParts, type FamilyContextInput } from '@/lib/familyContext'
-import { logUsage } from '@/lib/ai'
+import { logUsage, estimateCost } from '@/lib/ai'
 
 // Single-model attention engine. Sonnet is fast, capable, and cost-effective
 // for a family briefing. The previous Opus deep-pass was removed because it
@@ -227,13 +227,18 @@ For each problem, include an optional "actionType" field: "copilot" for conversa
 
         const finalMsg = await ai.finalMessage()
         const u = finalMsg.usage
-        const cacheRead = (u as unknown as Record<string, number>).cache_read_input_tokens ?? 0
-        const cacheWrite = (u as unknown as Record<string, number>).cache_creation_input_tokens ?? 0
+        const uMap = u as unknown as Record<string, number>
+        const cacheRead = uMap.cache_read_input_tokens ?? 0
+        const cacheWrite = uMap.cache_creation_input_tokens ?? 0
+        // Log model + tokens + cost in the final perf line so it's always the
+        // visible preview in Vercel's log viewer (last log wins as row preview).
         logUsage('attention', MODEL, finalMsg.usage)
         console.log(
           `[perf/attention] total=${Date.now() - aiStart}ms wall=${Date.now() - reqStart}ms` +
+          ` model=${MODEL}` +
           ` cache=${cacheRead > 0 ? 'HIT' : cacheWrite > 0 ? 'WRITE' : 'MISS'}` +
-          ` cr=${cacheRead} cw=${cacheWrite} in=${u.input_tokens ?? 0} out=${u.output_tokens ?? 0}`
+          ` cr=${cacheRead} cw=${cacheWrite} in=${u.input_tokens ?? 0} out=${u.output_tokens ?? 0}` +
+          ` cost=${estimateCost(MODEL, uMap)}`
         )
 
         // A truncated JSON isn't useful and shouldn't overwrite the client's

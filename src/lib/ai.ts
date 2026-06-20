@@ -25,7 +25,7 @@ const MODEL_PRICING: Record<string, [number, number, number, number]> = {
   'claude-haiku-4-5':          [1.00, 1.25, 0.10,  5.00],
 }
 
-function estimateCost(model: string, u: Record<string, number>): string {
+export function estimateCost(model: string, u: Record<string, number>): string {
   const pricing = MODEL_PRICING[model]
   if (!pricing) return '?'
   const [pIn, pCw, pCr, pOut] = pricing
