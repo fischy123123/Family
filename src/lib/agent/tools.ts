@@ -97,7 +97,7 @@ export const TOOLS: Anthropic.Tool[] = [
         },
         end_datetime: {
           type: 'string',
-          description: 'End datetime as ISO 8601 string or date only',
+          description: 'End datetime as ISO 8601 string or date only. CRITICAL FOR ALL-DAY EVENTS — end date is EXCLUSIVE (not included). Set end to the day AFTER the last day: a Mon–Fri event needs end = Saturday, not Friday.',
         },
         is_all_day: { type: 'boolean', description: 'Whether the event is all-day' },
         location: { type: 'string', description: 'Optional location' },
@@ -277,7 +277,7 @@ export const TOOLS: Anthropic.Tool[] = [
         },
         end_datetime: {
           type: 'string',
-          description: 'End datetime in LOCAL time as YYYY-MM-DDTHH:mm:ss (no Z suffix). For all-day use YYYY-MM-DD.',
+          description: 'End datetime in LOCAL time as YYYY-MM-DDTHH:mm:ss (no Z suffix). For all-day use YYYY-MM-DD.\n\nCRITICAL FOR ALL-DAY EVENTS — Google Calendar end dates are EXCLUSIVE (the end date is NOT included in the event). You must set end_datetime to the day AFTER the last day you want the event to cover:\n- Event on Monday only → end = Tuesday\n- Event Monday through Friday → end = Saturday (NOT Friday)\n- Event June 1–5 → end = June 6\nIf you set end = Friday for a Mon–Fri event, Google will show it as Mon–Thu. Always add 1 day to the last intended day.',
         },
         is_all_day: { type: 'boolean', description: 'Whether the event is all-day' },
         location: { type: 'string', description: 'Optional location' },
@@ -573,6 +573,7 @@ INFERENCE RULE (critical): A fact must be explicitly stated in a single source t
 LINKING RULE: When you create a reminder or a memory that is clearly FOR or ABOUT a specific calendar event (e.g. "buy flowers for Maddie's recital" → the recital event, or a note explaining what an event is), record that connection: look up the event id first, then pass related_event_id when you create_reminder or remember. This is how the family's data stays connected so future briefings don't have to guess what relates to what. CRITICAL: only set a link when the connection is an explicit fact from the conversation or the data — NEVER guess a link from coincidence (same day, same person is not enough). A wrong link is worse than no link. If the user later tells you a link is wrong ("that reminder is for the other recital", "that note isn't about the dentist"), use the relate tool to fix or remove it — you can always redo connections as the real story becomes clear.
 All times you display to the user should be in ${timezone ? `the user's timezone (${timezone})` : 'local time'}, not UTC.
 CRITICAL — when calling create_google_event or create_event, always use LOCAL datetime strings in the format YYYY-MM-DDTHH:mm:ss with NO "Z" suffix and NO timezone offset. "3pm" means ${timezone ?? 'local time'} 3pm, output as "YYYY-MM-DDTHH:15:00:00", not UTC.
+ALL-DAY EVENT END DATES ARE EXCLUSIVE: For any all-day or date-only event, Google Calendar does NOT include the end date in the event display. A Mon–Fri event must have end_datetime = Saturday (the day after Friday). Single-day event on Tuesday must have end_datetime = Wednesday. Always add 1 calendar day to whatever the user says is the last day.
 
 Your job is to reduce the family's mental load. You are not a passive task bot — you are a proactive partner who keeps track of everyone's schedules, lists, and plans, and who tells the family what actually needs their attention. Think like a great executive assistant for a busy household.
 
