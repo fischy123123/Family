@@ -188,10 +188,10 @@ For each problem, include an optional "actionType" field: "copilot" for conversa
           {
             model: MODEL,
             // A comprehensive briefing (greeting + 10 items, each with 8 fields,
-            // plus problems and recommendations) can reach 3000-3500 output tokens.
-            // 4096 is a firm ceiling above any realistic briefing so the JSON is
-            // never truncated — a truncated response drops every status card.
-            max_tokens: 4096,
+            // plus problems, recommendations, and eventAssignments) can exceed
+            // 4096 output tokens when the context is rich (many events, inbox
+            // signals, memories). 8192 gives real headroom without being wasteful.
+            max_tokens: 8192,
             // System prompt: static → cache it (saves ~1800 tokens per cache hit).
             // 1-hour TTL (not the 5-min default): briefings run ~15 min apart per
             // the client throttle, and multiple family members load within the
