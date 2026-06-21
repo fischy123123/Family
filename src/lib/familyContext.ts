@@ -174,15 +174,31 @@ export function buildFamilyContextParts(input: FamilyContextInput): {
   const nowDate = new Date(now)
   const horizon = new Date(nowDate.getTime() + 14 * 24 * 60 * 60 * 1000)
 
-  const upcomingEvents = (events ?? [])
+  const eventsInWindow = (events ?? [])
     .filter((e) => {
       const s = new Date(e.start)
       return s >= new Date(nowDate.getTime() - 12 * 60 * 60 * 1000) && s <= horizon
     })
     .sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime())
-    .slice(0, 40)
+  const upcomingEvents = eventsInWindow.slice(0, 40)
 
-  const openTasks = (tasks ?? []).filter((t) => !t.isCompleted).slice(0, 40)
+  const openTasksAll = (tasks ?? []).filter((t) => !t.isCompleted)
+  const openTasks = openTasksAll.slice(0, 40)
+
+  // Composition breakdown so we can see what the model ACTUALLY receives vs what
+  // the client shipped. The raw counts (events/tasks) include items the filters
+  // below discard — past-window events and completed tasks — plus anything over
+  // the 40-cap that gets silently dropped. If "dropped" is ever > 0, real items
+  // are being cut from the briefing and the cap needs raising.
+  console.log(
+    `[ctx/breakdown]` +
+    ` events: raw=${events?.length ?? 0} in14d=${eventsInWindow.length} sent=${upcomingEvents.length}` +
+    ` dropped=${Math.max(0, eventsInWindow.length - upcomingEvents.length)}` +
+    ` | tasks: raw=${tasks?.length ?? 0} open=${openTasksAll.length} sent=${openTasks.length}` +
+    ` dropped=${Math.max(0, openTasksAll.length - openTasks.length)}` +
+    ` completed=${(tasks?.length ?? 0) - openTasksAll.length}` +
+    ` | members=${members?.length ?? 0} memories=${memories?.length ?? 0} inbox=${inbox?.length ?? 0}`
+  )
 
   // ── Time header (dynamic — changes every run, excluded from cache) ────────
   const nowFormatted = fmtDatetime(now, tz)
