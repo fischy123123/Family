@@ -57,6 +57,15 @@ type ItemGroup = {
   bucket: AttentionBucket    // most-urgent bucket across items
 }
 
+// Turn a lowercase-hyphenated groupKey slug into a readable title, as a fallback
+// for older/cached reports generated before the model emitted a groupTitle.
+function prettifyGroupKey(slug: string): string {
+  return slug
+    .replace(/[-_]+/g, ' ')
+    .trim()
+    .replace(/\b\w/g, (c) => c.toUpperCase())
+}
+
 function groupItems(items: AttentionItem[]): ItemGroup[] {
   const byKey = new Map<string, AttentionItem[]>()
   for (const item of items) {
@@ -68,7 +77,13 @@ function groupItems(items: AttentionItem[]): ItemGroup[] {
       BUCKET_PRIORITY[i.bucket] < BUCKET_PRIORITY[best] ? i.bucket : best
     ), groupedItems[0].bucket)
     const isRealGroup = !!groupedItems[0].groupKey && groupedItems.length > 1
-    return { key, groupTitle: isRealGroup ? groupedItems[0].groupKey! : null, items: groupedItems, bucket }
+    // Prefer the model's human-readable groupTitle; fall back to prettifying the
+    // slug so a raw key like "maddie-therapy-tue" never leaks into the UI.
+    const titled = groupedItems.find((i) => i.groupTitle?.trim())?.groupTitle?.trim()
+    const groupTitle = isRealGroup
+      ? (titled || prettifyGroupKey(groupedItems[0].groupKey!))
+      : null
+    return { key, groupTitle, items: groupedItems, bucket }
   })
 }
 

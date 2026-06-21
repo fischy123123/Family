@@ -54,7 +54,8 @@ Given the family context, produce a JSON report with this exact shape:
       "sourceId": "for event/task/reminder sourceType: the raw id from [id:xxx] in the events or tasks list (omit the 'id:' prefix). Omit for other types.",
       "sourceEmailId": "if this item derives from an inbox signal with a [msgid:ID] label, copy that ID here verbatim (omit otherwise)",
       "priority": 0-100,
-      "groupKey": "optional — set the SAME short phrase on 2+ items ONLY when they are about the SAME underlying event, appointment, outing, or logistical thread (e.g. a child's recital + the task to buy flowers for it + the email confirming arrival time = ONE topic). Items sharing a groupKey collapse into one card. NEVER group items just because they fall on the same day, weekend, or time window — closeness in time is NOT a shared topic. When unsure, OMIT groupKey and leave them as separate cards."
+      "groupKey": "optional INTERNAL join key (never shown to the user) — set the SAME lowercase-hyphenated slug on 2+ items ONLY when they are about the SAME underlying event, appointment, outing, or logistical thread (e.g. a child's recital + the task to buy flowers for it + the email confirming arrival time = ONE topic). Items sharing a groupKey collapse into one card. NEVER group items just because they fall on the same day, weekend, or time window — closeness in time is NOT a shared topic. When unsure, OMIT groupKey and leave them as separate cards.",
+      "groupTitle": "REQUIRED whenever groupKey is set — the human-readable card header shown to the user, in natural Title Case (e.g. 'Maddie's therapy', 'Wednesday at Rivendell'). NEVER a slug. Set the SAME groupTitle on every item that shares a groupKey. Omit when groupKey is omitted."
     }
   ],
   "problems": [
