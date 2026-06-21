@@ -193,10 +193,11 @@ For each problem, include an optional "actionType" field: "copilot" for conversa
           {
             model: MODEL,
             // A full briefing (greeting + 10 items + problems + recommendations +
-            // eventAssignments) is ~1200-1800 output tokens. 3000 gives real
-            // headroom while forcing the model to be concise — which is a feature,
-            // not a limitation. 8192 was wasteful and slower on cache misses.
-            max_tokens: 3000,
+            // eventAssignments) runs 1500-3500 output tokens on a busy day.
+            // 6000 gives real headroom on the richest days without approaching the
+            // old 8192 ceiling. At Haiku's ~500 tok/s this is ~12s max generation
+            // vs Sonnet's ~40s — still a dramatic improvement.
+            max_tokens: 6000,
             // System prompt: static → cache it (saves ~1800 tokens per cache hit).
             // 1-hour TTL (not the 5-min default): briefings run ~15 min apart per
             // the client throttle, and multiple family members load within the
@@ -264,7 +265,7 @@ For each problem, include an optional "actionType" field: "copilot" for conversa
         console.log(
           `[perf/attention] SUMMARY wall=${aiDone - reqStart}ms ai=${totalAi}ms` +
           ` model=${MODEL} cache=${cacheStatus}` +
-          ` in=${inTokens} cr=${cacheRead} cw=${cacheWrite} out=${outTokens} max=3000` +
+          ` in=${inTokens} cr=${cacheRead} cw=${cacheWrite} out=${outTokens} max=6000` +
           ` cost=${estimateCost(MODEL, uMap)}`
         )
 
