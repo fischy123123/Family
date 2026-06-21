@@ -63,6 +63,9 @@ export interface FamilyMemory {
   subjectEmails?: string[]            // who this is about — emails or member ids; empty/absent = family-wide
   source?: 'manual' | 'ai' | 'capture' | 'onboarding'
   pinned?: boolean                    // always include in context, never auto-trim
+  // ── Provenance links (factual, set at creation time — never inferred) ──
+  relatedEventId?: string             // the calendar event this memory annotates
+  relatedTaskId?: string              // the task this memory annotates
   createdAt: string
 }
 
@@ -279,6 +282,9 @@ export interface Task {
   recurrence?: RecurrenceRule
   planId?: string               // if part of a Plan
   source?: 'manual' | 'capture' | 'ai' | 'email'
+  // ── Provenance links (factual, set at creation time — never inferred) ──
+  relatedEventId?: string       // the calendar event this task prepares for / is about
+  sourceEmailId?: string        // Gmail message ID this task was created from
   createdAt: string
 }
 
@@ -428,6 +434,8 @@ export interface CalendarEvent {
   recurringEventId?: string
   forIds?: string[]      // who this event is for/about (multi-select)
   assigneeId?: string    // who is responsible for making it happen (single)
+  // ── Provenance links (factual, set at creation time — never inferred) ──
+  sourceEmailId?: string // Gmail message ID this event was created from
 }
 
 export interface RecurrenceRule {
