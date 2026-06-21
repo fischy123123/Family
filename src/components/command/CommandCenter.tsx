@@ -1334,6 +1334,115 @@ export function CommandCenter() {
     }
   }
 
+  // Render a single ItemGroup as either a GroupedAttentionCard or a solo AttentionCard/TeachPrompt.
+  function renderGroup(group: ItemGroup, color: string) {
+    if (group.groupTitle) {
+      const resolvedItems = group.items.map(resolveItem)
+      return (
+        <GroupedAttentionCard
+          key={group.key}
+          groupTitle={group.groupTitle}
+          resolvedItems={resolvedItems}
+          accent={color}
+          allMembers={members}
+          onCompleteItem={(item) => completeTaskFromItem(item)}
+          onDismissItem={(title) => dismissItem(title)}
+          onSaveTaskItem={(title, reason) => saveItemAsTask(title, reason)}
+          onAssignItem={(item, f, r) => assignItem(item, f, r)}
+          debugMode={debugMode}
+          onTraceItem={traceItem}
+          currentGreeting={report?.greeting ?? ''}
+          allGroupItems={group.items}
+          cardMembers={members}
+          onPatch={patchReport}
+        />
+      )
+    }
+    const item = group.items[0]
+    if (teachPrompt?.title === item.title) {
+      return (
+        <TeachPrompt
+          key={item.id}
+          title={item.title}
+          onTeach={(feedback) => teachAssistant(item.title, feedback)}
+          onDismiss={() => setTeachPrompt(null)}
+          onUndo={() => undoDismiss(item.title)}
+        />
+      )
+    }
+    const { responsible, forMembers, backedByRealItem, isRecurring } = resolveItem(item)
+    return (
+      <AttentionCard
+        key={item.id}
+        item={item}
+        accent={color}
+        allMembers={members}
+        responsible={responsible}
+        forMembers={forMembers}
+        backedByRealItem={backedByRealItem}
+        isRecurring={isRecurring}
+        onComplete={() => completeTaskFromItem(item)}
+        onDismiss={() => dismissItem(item.title)}
+        onSaveTask={() => saveItemAsTask(item.title, item.reason)}
+        onAssign={(f, r) => assignItem(item, f, r)}
+        debugMode={debugMode}
+        onTrace={() => traceItem(item)}
+        currentGreeting={report?.greeting ?? ''}
+        cardMembers={members}
+        onPatch={patchReport}
+      />
+    )
+  }
+
+  // Render the Family section with a "Needs Attention" / "Logistics" split when both kinds exist.
+  function renderFamilySectionContent(groups: ItemGroup[], color: string) {
+    const actionGroups = groups.filter((g) => g.items.some((i) => i.kind === 'action'))
+    const logisticsGroups = groups.filter((g) => g.items.every((i) => i.kind !== 'action'))
+    const hasBothKinds = actionGroups.length > 0 && logisticsGroups.length > 0
+
+    function renderBucketedGroups(grps: ItemGroup[]) {
+      return BUCKET_ORDER.map((bucket) => {
+        const filtered = grps.filter((g) => g.bucket === bucket)
+        if (!filtered.length) return null
+        const meta = BUCKET_META[bucket]
+        return (
+          <div key={bucket}>
+            <div className="flex items-center gap-2 mb-2">
+              <span className="w-2 h-2 rounded-full" style={{ background: meta.color }} />
+              <span className="text-xs font-semibold uppercase tracking-wider" style={{ color: meta.color }}>
+                {meta.label}
+              </span>
+            </div>
+            <div className="space-y-2 stagger-children">
+              {filtered.map((g) => renderGroup(g, color))}
+            </div>
+          </div>
+        )
+      })
+    }
+
+    return (
+      <>
+        {actionGroups.length > 0 && (
+          <div className="space-y-4">
+            {hasBothKinds && (
+              <p className="text-[11px] font-semibold text-slate-600 uppercase tracking-wider">Needs Attention</p>
+            )}
+            {renderBucketedGroups(actionGroups)}
+          </div>
+        )}
+        {logisticsGroups.length > 0 && (
+          <div className={`space-y-4 ${hasBothKinds ? 'mt-5' : ''}`}>
+            {hasBothKinds && (
+              <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">Logistics</p>
+            )}
+            {renderBucketedGroups(logisticsGroups)}
+          </div>
+        )}
+      </>
+    )
+  }
+
   // Visible items partitioned into person-first sections, each section internally grouped by groupKey.
   const sections = useMemo(() => {
     const visible = (report?.items ?? []).filter((i) => showInList(i.title))
@@ -1639,83 +1748,27 @@ export function CommandCenter() {
 
                 {!collapsed && (
                   <div className="space-y-4">
-                    {BUCKET_ORDER.map((bucket) => {
-                      const groups = section.groups.filter((g) => g.bucket === bucket)
-                      if (groups.length === 0) return null
-                      const meta = BUCKET_META[bucket]
-
-                      return (
-                        <div key={bucket}>
-                          <div className="flex items-center gap-2 mb-2">
-                            <span className="w-2 h-2 rounded-full" style={{ background: meta.color }} />
-                            <span className="text-xs font-semibold uppercase tracking-wider" style={{ color: meta.color }}>
-                              {meta.label}
-                            </span>
-                          </div>
-                          <div className="space-y-2 stagger-children">
-                            {groups.map((group) => {
-                              if (group.groupTitle) {
-                                const resolvedItems = group.items.map(resolveItem)
-                                return (
-                                  <GroupedAttentionCard
-                                    key={group.key}
-                                    groupTitle={group.groupTitle}
-                                    resolvedItems={resolvedItems}
-                                    accent={color}
-                                    allMembers={members}
-                                    onCompleteItem={(item) => completeTaskFromItem(item)}
-                                    onDismissItem={(title) => dismissItem(title)}
-                                    onSaveTaskItem={(title, reason) => saveItemAsTask(title, reason)}
-                                    onAssignItem={(item, f, r) => assignItem(item, f, r)}
-                                    debugMode={debugMode}
-                                    onTraceItem={traceItem}
-                                    currentGreeting={report?.greeting ?? ''}
-                                    allGroupItems={group.items}
-                                    cardMembers={members}
-                                    onPatch={patchReport}
-                                  />
-                                )
-                              }
-
-                              const item = group.items[0]
-                              if (teachPrompt?.title === item.title) {
-                                return (
-                                  <TeachPrompt
-                                    key={item.id}
-                                    title={item.title}
-                                    onTeach={(feedback) => teachAssistant(item.title, feedback)}
-                                    onDismiss={() => setTeachPrompt(null)}
-                                    onUndo={() => undoDismiss(item.title)}
-                                  />
-                                )
-                              }
-                              const { responsible, forMembers, backedByRealItem, isRecurring } = resolveItem(item)
-                              return (
-                                <AttentionCard
-                                  key={item.id}
-                                  item={item}
-                                  accent={color}
-                                  allMembers={members}
-                                  responsible={responsible}
-                                  forMembers={forMembers}
-                                  backedByRealItem={backedByRealItem}
-                                  isRecurring={isRecurring}
-                                  onComplete={() => completeTaskFromItem(item)}
-                                  onDismiss={() => dismissItem(item.title)}
-                                  onSaveTask={() => saveItemAsTask(item.title, item.reason)}
-                                  onAssign={(f, r) => assignItem(item, f, r)}
-                                  debugMode={debugMode}
-                                  onTrace={() => traceItem(item)}
-                                  currentGreeting={report?.greeting ?? ''}
-                                  cardMembers={members}
-                                  onPatch={patchReport}
-                                />
-                              )
-                            })}
-                          </div>
-                        </div>
-                      )
-                    })}
+                    {section.key === 'Family'
+                      ? renderFamilySectionContent(section.groups, color)
+                      : BUCKET_ORDER.map((bucket) => {
+                          const groups = section.groups.filter((g) => g.bucket === bucket)
+                          if (groups.length === 0) return null
+                          const meta = BUCKET_META[bucket]
+                          return (
+                            <div key={bucket}>
+                              <div className="flex items-center gap-2 mb-2">
+                                <span className="w-2 h-2 rounded-full" style={{ background: meta.color }} />
+                                <span className="text-xs font-semibold uppercase tracking-wider" style={{ color: meta.color }}>
+                                  {meta.label}
+                                </span>
+                              </div>
+                              <div className="space-y-2 stagger-children">
+                                {groups.map((group) => renderGroup(group, color))}
+                              </div>
+                            </div>
+                          )
+                        })
+                    }
                   </div>
                 )}
               </section>
@@ -2569,6 +2622,7 @@ function AttentionCard({
   const [saved, setSaved] = useState(false)
   const [chatOpen, setChatOpen] = useState(false)
   const [assigning, setAssigning] = useState(false)
+  const [detailExpanded, setDetailExpanded] = useState(false)
   const panelRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     if ((chatOpen || assigning) && panelRef.current) {
@@ -2605,7 +2659,17 @@ function AttentionCard({
           <p className="text-sm font-semibold text-slate-900">{item.title}</p>
           <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">{item.reason}</p>
           {item.detail && (
-            <p className="text-xs text-slate-400 mt-1 leading-relaxed">{item.detail}</p>
+            <div className="mt-1">
+              {detailExpanded && (
+                <p className="text-xs text-slate-400 leading-relaxed mb-0.5">{item.detail}</p>
+              )}
+              <button
+                onClick={(e) => { e.stopPropagation(); setDetailExpanded((v) => !v) }}
+                className="text-[11px] font-medium text-blue-500 hover:text-blue-700"
+              >
+                {detailExpanded ? '− less' : '+ details'}
+              </button>
+            </div>
           )}
           <div className="flex items-center gap-2 mt-1.5 flex-wrap">
             {startStr && (
