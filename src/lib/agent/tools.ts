@@ -382,6 +382,42 @@ export const TOOLS: Anthropic.Tool[] = [
       required: ['query'],
     },
   },
+  {
+    name: 'add_briefing_rule',
+    description: "Add a hard behavioral rule to the family's briefing rules. Use this when the user tells you to ALWAYS or NEVER do something about how the briefing is presented — e.g. 'always put swim lessons under each child, not Family', 'never suggest creating reminders for things already in my task list', 'group Liam's therapy under Liam, not Family'. These rules are injected into every future briefing as authoritative hard constraints that override all other AI guidance. Use this sparingly — only for genuine, durable presentation preferences the user wants enforced every time, not for one-off requests.",
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        rule: {
+          type: 'string',
+          description: "The rule as a complete, standalone instruction. Write it as a direct behavioral command that will make sense on its own in future briefings — e.g. 'When Rowan and Faylen share an activity (like swim lessons), create one card per child, each under their own section. Never collapse shared sibling activities into the Family section.' Be specific: name the people, activity, or pattern involved so the rule is unambiguous."
+        },
+      },
+      required: ['rule'],
+    },
+  },
+  {
+    name: 'remove_briefing_rule',
+    description: "Remove a hard behavioral rule from the family's briefing rules. Use this when the user says a rule is no longer needed, is wrong, or they want to change how something is presented. First call list_briefing_rules to see the exact text of the rule to remove.",
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        rule: {
+          type: 'string',
+          description: 'The exact text of the rule to remove (must match exactly what was stored — use list_briefing_rules to get the exact text first).',
+        },
+      },
+      required: ['rule'],
+    },
+  },
+  {
+    name: 'list_briefing_rules',
+    description: "List all hard behavioral rules the family has set for how the briefing should be presented. Check this before adding a new rule (to avoid duplicates) or before removing one (to get the exact text).",
+    input_schema: {
+      type: 'object' as const,
+      properties: {},
+    },
+  },
 ]
 
 // Tools that mutate data — these require explicit user confirmation before
@@ -404,6 +440,8 @@ export const WRITE_TOOLS = new Set<string>([
   'remember',
   'forget',
   'relate',
+  'add_briefing_rule',
+  'remove_briefing_rule',
 ])
 
 // ---------------------------------------------------------------------------
@@ -558,7 +596,15 @@ Examples of what you can do:
 - "Remind Eric to pay rent on the 1st" → create_reminder with assignee "Eric" (queued for confirmation)
 - "What chores are due?" → list_chores
 
-If the user asks to add something to shopping and no list exists yet, create one first with create_shopping_list, then add items with add_shopping_items — use the temporary id returned by create_shopping_list as the list_id for add_shopping_items.`
+If the user asks to add something to shopping and no list exists yet, create one first with create_shopping_list, then add items with add_shopping_items — use the temporary id returned by create_shopping_list as the list_id for add_shopping_items.
+
+BRIEFING RULES (hard behavioral rules for the briefing engine):
+The family can set rules that control exactly how the daily briefing is presented — which section a person's card appears under, whether to group certain events together, what to never surface, etc. These rules are injected into every future briefing as authoritative hard constraints that override the briefing engine's defaults. You can read, add, and remove these rules.
+- list_briefing_rules: see what rules are currently set
+- add_briefing_rule: add a new rule when the user says "always do X" or "never do Y" about how the briefing is presented. Check for duplicates first.
+- remove_briefing_rule: remove a rule when the user says a rule is wrong or no longer applies. Get the exact text with list_briefing_rules first.
+When to add a rule: the user explicitly says they want the AI to ALWAYS or NEVER do something in the briefing (not a one-off request). Examples: "whenever Rowan and Faylen share swim lessons, put each under their own section", "don't recommend creating reminders for things already in my task list". Queue an add_briefing_rule action and explain to the user what rule you're adding.
+When NOT to add a rule: one-off requests ("move this item to the top today"), corrections to specific data ("that event is Maddie's not Liam's" — use remember for that), or requests about tasks/events themselves (use the appropriate create/complete tools).`
 }
 
 // ---------------------------------------------------------------------------
@@ -1032,6 +1078,48 @@ export async function executeTool(
       const scopeLabel = scope === 'all' ? ' (all occurrences)' : ''
       actions.push(`Updated Google Calendar event: ${updated.title}${scopeLabel}`)
       return { success: true, event: updated, scope }
+    }
+
+    case 'list_briefing_rules': {
+      if (!db) return { error: 'Firestore not configured.' }
+      const famRef = db.collection('families').doc(familyId)
+      const profSnap = await famRef.collection('profile').get()
+      const profDoc = profSnap.docs[0]
+      const rules: string[] = (profDoc?.data()?.briefingRules as string[]) ?? []
+      return { rules }
+    }
+
+    case 'add_briefing_rule': {
+      if (!db) return { error: 'Firestore not configured.' }
+      const rule = (input.rule as string).trim()
+      if (!rule) return { error: 'Rule text is empty.' }
+      const famRef = db.collection('families').doc(familyId)
+      const profSnap = await famRef.collection('profile').get()
+      const profDoc = profSnap.docs[0]
+      if (profDoc) {
+        const existing: string[] = (profDoc.data()?.briefingRules as string[]) ?? []
+        if (existing.includes(rule)) return { success: true, rule, note: 'Rule already exists.' }
+        await profDoc.ref.update({ briefingRules: [...existing, rule] })
+      } else {
+        await famRef.collection('profile').add({ briefingRules: [rule] })
+      }
+      actions.push(`Added briefing rule: ${rule}`)
+      return { success: true, rule }
+    }
+
+    case 'remove_briefing_rule': {
+      if (!db) return { error: 'Firestore not configured.' }
+      const ruleToRemove = (input.rule as string).trim()
+      const famRef = db.collection('families').doc(familyId)
+      const profSnap = await famRef.collection('profile').get()
+      const profDoc = profSnap.docs[0]
+      if (!profDoc) return { error: 'No profile found — no rules to remove.' }
+      const existing: string[] = (profDoc.data()?.briefingRules as string[]) ?? []
+      const filtered = existing.filter((r) => r !== ruleToRemove)
+      if (filtered.length === existing.length) return { error: `Rule not found: "${ruleToRemove}". Use list_briefing_rules to see exact text.` }
+      await profDoc.ref.update({ briefingRules: filtered })
+      actions.push(`Removed briefing rule: ${ruleToRemove}`)
+      return { success: true }
     }
 
     case 'search_web': {

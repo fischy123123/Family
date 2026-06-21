@@ -314,6 +314,12 @@ export function buildFamilyContextParts(input: FamilyContextInput): {
       : 'unknown'
   dataSections.push(`SIGNED-IN USER (the person you are talking to right now — address them as "you"): ${selfDescriptor}`)
 
+  if (profile?.briefingRules?.length) {
+    dataSections.push(
+      `FAMILY RULES (AUTHORITATIVE HARD CONSTRAINTS — the family wrote these rules to control exactly how you behave. Read every rule before generating any output. Each rule overrides any other guidance in this prompt or the context. Do not paraphrase, interpret, or override these rules — follow them exactly as written):\n${profile.briefingRules.map((r, i) => `${i + 1}. ${r}`).join('\n')}`
+    )
+  }
+
   // Split memories: family-wide vs personal to the current user.
   // Privacy only matters between ADULTS who each have their own login — one
   // parent's private notes shouldn't leak into the other parent's briefing.

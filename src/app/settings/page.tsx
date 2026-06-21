@@ -6,7 +6,8 @@ import { useState, useCallback, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import {
   LogOut, Trash2, UserMinus, ArrowLeft, ShieldAlert, RefreshCw,
-  Loader2, RotateCcw, Sparkles, Brain, ChevronDown, Bug,
+  Loader2, RotateCcw, Sparkles, Brain, ChevronDown, Bug, BookMarked,
+  Plus, X,
 } from 'lucide-react'
 import { isAiDebugEnabled, setAiDebugEnabled } from '@/lib/aiDebug'
 import { useAuth } from '@/contexts/AuthContext'
@@ -15,7 +16,7 @@ import { useFirestore } from '@/hooks/useFirestore'
 import { auth } from '@/lib/firebase'
 import { isAdminEmail } from '@/lib/admin'
 import { generateId } from '@/lib/utils'
-import type { FamilyMemory, FamilyMember } from '@/lib/types'
+import type { FamilyMemory, FamilyMember, FamilyProfile } from '@/lib/types'
 import { memorySubjects } from '@/lib/types'
 
 // All localStorage key prefixes used by CommandCenter — must stay in sync with
@@ -47,6 +48,8 @@ export default function SettingsPage() {
   const { familyId, inviteCode, resetFamily, deleteFamily } = useFamily()
   const { data: memories, create, update, remove } = useFirestore<FamilyMemory>('memories')
   const { data: members, update: updateMember } = useFirestore<FamilyMember>('members')
+  const { data: profileDocs, update: updateProfile, create: createProfile } = useFirestore<FamilyProfile>('profile')
+  const profile = profileDocs[0] ?? null
 
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [deleting, setDeleting] = useState(false)
@@ -59,6 +62,8 @@ export default function SettingsPage() {
   const [cleanResult, setCleanResult] = useState<string | null>(null)
   const [showMemories, setShowMemories] = useState(false)
   const [debugMode, setDebugMode] = useState(false)
+  const [newRule, setNewRule] = useState('')
+  const [addingRule, setAddingRule] = useState(false)
   const [retrofitting, setRetrofitting] = useState(false)
   const [retrofitResult, setRetrofitResult] = useState<{
     summary: string
@@ -87,6 +92,30 @@ export default function SettingsPage() {
     const next = !debugMode
     setDebugMode(next)
     setAiDebugEnabled(next)
+  }
+
+  // ── Briefing rules ────────────────────────────────────────────
+  async function addBriefingRule() {
+    const rule = newRule.trim()
+    if (!rule) return
+    setAddingRule(true)
+    try {
+      const existing = profile?.briefingRules ?? []
+      if (existing.includes(rule)) { setNewRule(''); return }
+      if (profile) {
+        await updateProfile({ ...profile, briefingRules: [...existing, rule] })
+      } else {
+        await createProfile({ id: 'household', briefingRules: [rule] } as FamilyProfile)
+      }
+      setNewRule('')
+    } finally {
+      setAddingRule(false)
+    }
+  }
+
+  async function removeBriefingRule(rule: string) {
+    if (!profile) return
+    await updateProfile({ ...profile, briefingRules: (profile.briefingRules ?? []).filter((r) => r !== rule) })
   }
 
   // Connect existing reminders/tasks to the events they prepare for, but only
@@ -670,6 +699,65 @@ export default function SettingsPage() {
               </div>
             )
           })()}
+        </section>
+
+        {/* Briefing Rules */}
+        <section className="bg-white rounded-2xl border border-slate-200 divide-y divide-slate-100 mb-4">
+          <div className="px-5 py-4 flex items-center gap-2">
+            <BookMarked size={15} className="text-slate-400" />
+            <p className="text-xs font-semibold text-slate-400 uppercase tracking-widest">
+              Briefing Rules
+              {profile?.briefingRules?.length ? (
+                <span className="normal-case font-normal text-slate-300 ml-1.5">· {profile.briefingRules.length}</span>
+              ) : null}
+            </p>
+          </div>
+          <div className="px-5 py-4">
+            <p className="text-xs text-slate-400 leading-relaxed mb-4">
+              Hard rules that control exactly how the daily briefing is presented — which section a person&apos;s items appear under, what to never group together, what to skip. These override all other AI guidance and apply to every future briefing. You can also tell Copilot &ldquo;always do X&rdquo; or &ldquo;never do Y&rdquo; and it will add a rule automatically.
+            </p>
+
+            {/* Current rules */}
+            {profile?.briefingRules?.length ? (
+              <div className="space-y-2 mb-4">
+                {profile.briefingRules.map((rule, i) => (
+                  <div key={i} className="group flex items-start gap-2 px-3 py-2.5 rounded-xl bg-slate-50 border border-slate-100">
+                    <span className="text-[11px] font-bold text-slate-300 mt-0.5 shrink-0 w-4">{i + 1}.</span>
+                    <p className="text-sm text-slate-700 leading-relaxed flex-1">{rule}</p>
+                    <button
+                      onClick={() => removeBriefingRule(rule)}
+                      className="shrink-0 p-1 rounded-lg text-slate-300 hover:text-red-500 hover:bg-white transition-colors opacity-0 group-hover:opacity-100"
+                      title="Remove rule"
+                    >
+                      <X size={13} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-xs text-slate-400 italic mb-4">No rules yet. Add one below or tell Copilot &ldquo;always&rdquo; or &ldquo;never&rdquo; to do something.</p>
+            )}
+
+            {/* Add new rule */}
+            <div className="flex gap-2">
+              <textarea
+                value={newRule}
+                onChange={(e) => setNewRule(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); addBriefingRule() } }}
+                placeholder="e.g. Always put swim lessons under each child's own section, never under Family"
+                rows={2}
+                className="flex-1 text-sm text-slate-700 placeholder:text-slate-300 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 resize-none focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              />
+              <button
+                onClick={addBriefingRule}
+                disabled={!newRule.trim() || addingRule}
+                className="shrink-0 flex items-center gap-1.5 px-3 py-2 rounded-xl text-sm font-semibold text-blue-700 bg-blue-50 hover:bg-blue-100 border border-blue-200 disabled:opacity-40 transition-all self-end"
+              >
+                {addingRule ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
+                Add
+              </button>
+            </div>
+          </div>
         </section>
 
         {/* AI Diagnostics */}

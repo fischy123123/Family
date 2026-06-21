@@ -47,6 +47,7 @@ export interface FamilyProfile {
   concerns?: string[]                 // stressors to watch ("money", "medical", "being late")
   communicationStyle?: 'brief' | 'balanced' | 'detailed'
   quietHours?: string                 // when not to surface non-urgent things
+  briefingRules?: string[]            // hard behavioral rules injected as authoritative instructions — e.g. "never group swim lessons under Family; each child gets their own card"
   updatedAt?: string
 }
 
