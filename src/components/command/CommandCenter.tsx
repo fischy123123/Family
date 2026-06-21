@@ -87,6 +87,58 @@ function groupItems(items: AttentionItem[]): ItemGroup[] {
   })
 }
 
+type BriefingSection = {
+  key: string               // section name ("Maddie", "Eric", "Family")
+  member: FamilyMember | null
+  groups: ItemGroup[]
+}
+
+const ROLE_ORDER: Record<FamilyMember['role'], number> = { parent: 0, other: 1, child: 2, pet: 3 }
+
+function buildSections(
+  items: AttentionItem[],
+  members: FamilyMember[],
+  currentUserEmail: string | null | undefined,
+): BriefingSection[] {
+  function itemSection(item: AttentionItem): string {
+    if (item.section) return item.section
+    const ref = item.forEmails?.[0]
+    if (ref) {
+      const m = resolveMemberRef(members, ref)
+      if (m) return m.name
+    }
+    return 'Family'
+  }
+
+  const bySection = new Map<string, AttentionItem[]>()
+  for (const item of items) {
+    const s = itemSection(item)
+    bySection.set(s, [...(bySection.get(s) ?? []), item])
+  }
+
+  const list: BriefingSection[] = Array.from(bySection.entries()).map(([key, sItems]) => ({
+    key,
+    member: key === 'Family' ? null : (members.find((m) => m.name === key) ?? null),
+    groups: groupItems(sItems),
+  }))
+
+  const selfMember = currentUserEmail
+    ? members.find((m) => m.email?.toLowerCase() === currentUserEmail.toLowerCase())
+    : null
+
+  list.sort((a, b) => {
+    if (a.key === 'Family') return 1
+    if (b.key === 'Family') return -1
+    if (selfMember) {
+      if (a.key === selfMember.name) return -1
+      if (b.key === selfMember.name) return 1
+    }
+    return (ROLE_ORDER[a.member?.role ?? 'other'] ?? 1) - (ROLE_ORDER[b.member?.role ?? 'other'] ?? 1)
+  })
+
+  return list
+}
+
 // ── Local cache (stale-while-revalidate) ────────────────────
 // Everything that gates the page is cached per-family so returning visits
 // render instantly and only update in the background.
@@ -301,6 +353,8 @@ export function CommandCenter() {
   // Event assignment suggestions the user has skipped. Key = "title|YYYY-MM-DD".
   const skipEaKey = familyId ? SKIP_EA_PREFIX + familyId : null
   const [skippedAssignments, setSkippedAssignments] = useState<Set<string>>(new Set())
+  // Person sections that the user has collapsed — stored by section key (person name or "Family").
+  const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set())
   // When a user dismisses something, offer to teach the assistant once.
   const [teachPrompt, setTeachPrompt] = useState<{ title: string; reason: string } | null>(null)
   // Optimistic assignment overrides keyed by item title, so the "for" / responsible
@@ -1280,12 +1334,12 @@ export function CommandCenter() {
     }
   }
 
-  // All visible items grouped by groupKey, then sorted into bucket sections.
-  const allGroups = useMemo(() => {
+  // Visible items partitioned into person-first sections, each section internally grouped by groupKey.
+  const sections = useMemo(() => {
     const visible = (report?.items ?? []).filter((i) => showInList(i.title))
-    return groupItems(visible)
+    return buildSections(visible, members, user?.email)
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [report?.items, dismissedTitles, completedTitles])
+  }, [report?.items, dismissedTitles, completedTitles, members, user?.email])
 
   const busy = loading || refreshing
 
@@ -1546,107 +1600,128 @@ export function CommandCenter() {
         </div>
       )}
 
-      {/* NEXT UP */}
-      {report && allGroups.length > 0 && (
-        <section>
-          <SectionLabel icon={Clock} color="#0f172a">Next Up</SectionLabel>
-          <div className="space-y-4">
-            {BUCKET_ORDER.map((bucket) => {
-              const groups = allGroups.filter((g) => g.bucket === bucket)
-              if (groups.length === 0) return null
-              const meta = BUCKET_META[bucket]
+      {/* PERSON SECTIONS — one per family member + shared Family section */}
+      {report && sections.length > 0 && (
+        <div className="space-y-6">
+          {sections.map((section) => {
+            const collapsed = collapsedSections.has(section.key)
+            const color = section.member?.colorHex ?? '#64748B'
+            const totalItems = section.groups.reduce((n, g) => n + g.items.length, 0)
 
-              function addContextForItem(itemTitle: string, context: string) {
-                const merged = [
-                  ...eventContexts.map((e) => ({ eventTitle: e.eventTitle, context: e.context })),
-                  { eventTitle: itemTitle, context },
-                ]
-                createEventContext({
-                  id: generateId(),
-                  eventTitle: itemTitle,
-                  context,
-                  savedAt: new Date().toISOString(),
-                } as EventContext)
-                toast(`Got it — I'll use that to help with "${itemTitle}"`, 'success')
-                runEngine(merged, true)
-              }
-
-              return (
-                <div key={bucket}>
-                  <div className="flex items-center gap-2 mb-2">
-                    <span className="w-2 h-2 rounded-full" style={{ background: meta.color }} />
-                    <span className="text-xs font-semibold uppercase tracking-wider" style={{ color: meta.color }}>
-                      {meta.label}
-                    </span>
+            return (
+              <section key={section.key}>
+                {/* Section header — tap to collapse/expand */}
+                <button
+                  onClick={() =>
+                    setCollapsedSections((prev) => {
+                      const next = new Set(prev)
+                      if (next.has(section.key)) next.delete(section.key)
+                      else next.add(section.key)
+                      return next
+                    })
+                  }
+                  className="w-full flex items-center gap-3 mb-3"
+                >
+                  <div
+                    className="w-8 h-8 rounded-xl flex items-center justify-center text-base shrink-0"
+                    style={{ background: `${color}20` }}
+                  >
+                    {section.member?.emoji ?? '👨‍👩‍👧'}
                   </div>
-                  <div className="space-y-2 stagger-children">
-                    {groups.map((group) => {
-                      if (group.groupTitle) {
-                        // Multi-item group — render as collapsible grouped card
-                        const resolvedItems = group.items.map(resolveItem)
-                        return (
-                          <GroupedAttentionCard
-                            key={group.key}
-                            groupTitle={group.groupTitle}
-                            resolvedItems={resolvedItems}
-                            accent={meta.color}
-                            allMembers={members}
-                            onCompleteItem={(item) => completeTaskFromItem(item)}
-                            onDismissItem={(title) => dismissItem(title)}
-                            onSaveTaskItem={(title, reason) => saveItemAsTask(title, reason)}
-                            onAssignItem={(item, f, r) => assignItem(item, f, r)}
-                            debugMode={debugMode}
-                            onTraceItem={traceItem}
-                            currentGreeting={report?.greeting ?? ''}
-                            allGroupItems={group.items}
-                            cardMembers={members}
-                            onPatch={patchReport}
-                          />
-                        )
-                      }
+                  <h2 className="flex-1 text-base font-bold text-slate-900 text-left">{section.key}</h2>
+                  <span className="text-[11px] font-medium text-slate-400 shrink-0 mr-0.5">{totalItems}</span>
+                  <ChevronDown
+                    size={15}
+                    className="text-slate-400 shrink-0 transition-transform duration-200"
+                    style={{ transform: collapsed ? 'rotate(-90deg)' : 'rotate(0deg)' }}
+                  />
+                </button>
 
-                      // Solo item — existing card rendering
-                      const item = group.items[0]
-                      if (teachPrompt?.title === item.title) {
-                        return (
-                          <TeachPrompt
-                            key={item.id}
-                            title={item.title}
-                            onTeach={(feedback) => teachAssistant(item.title, feedback)}
-                            onDismiss={() => setTeachPrompt(null)}
-                            onUndo={() => undoDismiss(item.title)}
-                          />
-                        )
-                      }
-                      const { responsible, forMembers, backedByRealItem, isRecurring } = resolveItem(item)
+                {!collapsed && (
+                  <div className="space-y-4">
+                    {BUCKET_ORDER.map((bucket) => {
+                      const groups = section.groups.filter((g) => g.bucket === bucket)
+                      if (groups.length === 0) return null
+                      const meta = BUCKET_META[bucket]
+
                       return (
-                        <AttentionCard
-                          key={item.id}
-                          item={item}
-                          accent={meta.color}
-                          allMembers={members}
-                          responsible={responsible}
-                          forMembers={forMembers}
-                          backedByRealItem={backedByRealItem}
-                          isRecurring={isRecurring}
-                          onComplete={() => completeTaskFromItem(item)}
-                          onDismiss={() => dismissItem(item.title)}
-                          onSaveTask={() => saveItemAsTask(item.title, item.reason)}
-                          onAssign={(f, r) => assignItem(item, f, r)}
-                          debugMode={debugMode}
-                          onTrace={() => traceItem(item)}
-                          currentGreeting={report?.greeting ?? ''}
-                          cardMembers={members}
-                          onPatch={patchReport}
-                        />
+                        <div key={bucket}>
+                          <div className="flex items-center gap-2 mb-2">
+                            <span className="w-2 h-2 rounded-full" style={{ background: meta.color }} />
+                            <span className="text-xs font-semibold uppercase tracking-wider" style={{ color: meta.color }}>
+                              {meta.label}
+                            </span>
+                          </div>
+                          <div className="space-y-2 stagger-children">
+                            {groups.map((group) => {
+                              if (group.groupTitle) {
+                                const resolvedItems = group.items.map(resolveItem)
+                                return (
+                                  <GroupedAttentionCard
+                                    key={group.key}
+                                    groupTitle={group.groupTitle}
+                                    resolvedItems={resolvedItems}
+                                    accent={color}
+                                    allMembers={members}
+                                    onCompleteItem={(item) => completeTaskFromItem(item)}
+                                    onDismissItem={(title) => dismissItem(title)}
+                                    onSaveTaskItem={(title, reason) => saveItemAsTask(title, reason)}
+                                    onAssignItem={(item, f, r) => assignItem(item, f, r)}
+                                    debugMode={debugMode}
+                                    onTraceItem={traceItem}
+                                    currentGreeting={report?.greeting ?? ''}
+                                    allGroupItems={group.items}
+                                    cardMembers={members}
+                                    onPatch={patchReport}
+                                  />
+                                )
+                              }
+
+                              const item = group.items[0]
+                              if (teachPrompt?.title === item.title) {
+                                return (
+                                  <TeachPrompt
+                                    key={item.id}
+                                    title={item.title}
+                                    onTeach={(feedback) => teachAssistant(item.title, feedback)}
+                                    onDismiss={() => setTeachPrompt(null)}
+                                    onUndo={() => undoDismiss(item.title)}
+                                  />
+                                )
+                              }
+                              const { responsible, forMembers, backedByRealItem, isRecurring } = resolveItem(item)
+                              return (
+                                <AttentionCard
+                                  key={item.id}
+                                  item={item}
+                                  accent={color}
+                                  allMembers={members}
+                                  responsible={responsible}
+                                  forMembers={forMembers}
+                                  backedByRealItem={backedByRealItem}
+                                  isRecurring={isRecurring}
+                                  onComplete={() => completeTaskFromItem(item)}
+                                  onDismiss={() => dismissItem(item.title)}
+                                  onSaveTask={() => saveItemAsTask(item.title, item.reason)}
+                                  onAssign={(f, r) => assignItem(item, f, r)}
+                                  debugMode={debugMode}
+                                  onTrace={() => traceItem(item)}
+                                  currentGreeting={report?.greeting ?? ''}
+                                  cardMembers={members}
+                                  onPatch={patchReport}
+                                />
+                              )
+                            })}
+                          </div>
+                        </div>
                       )
                     })}
                   </div>
-                </div>
-              )
-            })}
-          </div>
-        </section>
+                )}
+              </section>
+            )
+          })}
+        </div>
       )}
 
       {/* POTENTIAL PROBLEMS */}
@@ -2529,6 +2604,9 @@ function AttentionCard({
         <div className="flex-1 min-w-0">
           <p className="text-sm font-semibold text-slate-900">{item.title}</p>
           <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">{item.reason}</p>
+          {item.detail && (
+            <p className="text-xs text-slate-400 mt-1 leading-relaxed">{item.detail}</p>
+          )}
           <div className="flex items-center gap-2 mt-1.5 flex-wrap">
             {startStr && (
               <span className="inline-flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-full" style={{ background: `${accent}15`, color: accent }}>

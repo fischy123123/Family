@@ -223,6 +223,8 @@ export interface AttentionItem {
   priority: number              // 0-100, higher = more urgent
   groupKey?: string             // internal join key — same value on items about one topic; they collapse into one card
   groupTitle?: string           // human-readable header shown for the grouped card (e.g. "Maddie's therapy")
+  section?: string              // person's first name exactly, or "Family" for shared items
+  detail?: string               // optional 1-2 sentence expanded context, shown below reason
 }
 
 export interface PotentialProblem {
