@@ -59,6 +59,8 @@ export default function SettingsPage() {
   const [cleanResult, setCleanResult] = useState<string | null>(null)
   const [showMemories, setShowMemories] = useState(false)
   const [debugMode, setDebugMode] = useState(false)
+  const [retrofitting, setRetrofitting] = useState(false)
+  const [retrofitResult, setRetrofitResult] = useState<string | null>(null)
 
   // Hydrate the AI-debug toggle from localStorage on mount.
   useEffect(() => {
@@ -69,6 +71,29 @@ export default function SettingsPage() {
     const next = !debugMode
     setDebugMode(next)
     setAiDebugEnabled(next)
+  }
+
+  // Connect existing reminders/tasks to the events they prepare for, but only
+  // where the match is certain (same day + shared keyword + compatible person).
+  // Ambiguous cases are left for Copilot to sort out in conversation.
+  async function runLinkRetrofit() {
+    if (!familyId) return
+    setRetrofitting(true)
+    setRetrofitResult(null)
+    try {
+      const res = await fetch('/api/maintenance/link-retrofit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ familyId }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error ?? 'Failed')
+      setRetrofitResult(data.summary as string)
+    } catch (e) {
+      setRetrofitResult(e instanceof Error ? `Couldn't connect items: ${e.message}` : 'Something went wrong.')
+    } finally {
+      setRetrofitting(false)
+    }
   }
 
   // --- Admin panel state ---
@@ -668,6 +693,29 @@ export default function SettingsPage() {
               <p className="text-xs text-blue-600 mt-3 flex items-center gap-1.5">
                 <Bug size={12} /> Debugging mode is on — Copilot will cite its sources.
               </p>
+            )}
+          </div>
+          <div className="px-5 py-4">
+            <div className="flex items-start justify-between gap-4">
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-slate-700 mb-1">Connect related items</p>
+                <p className="text-xs text-slate-400 leading-relaxed">
+                  A one-time cleanup that links your existing reminders and tasks to the calendar events they
+                  prepare for — but only where the match is certain (same day, shared wording, same person). Anything
+                  uncertain is left alone so nothing gets connected wrongly. Safe to run more than once. For
+                  trickier connections, just tell Copilot the real story.
+                </p>
+              </div>
+              <button
+                onClick={runLinkRetrofit}
+                disabled={retrofitting || !familyId}
+                className="shrink-0 text-xs font-medium px-3 py-2 rounded-lg bg-slate-100 text-slate-700 hover:bg-slate-200 disabled:opacity-50 transition-colors"
+              >
+                {retrofitting ? 'Connecting…' : 'Run cleanup'}
+              </button>
+            </div>
+            {retrofitResult && (
+              <p className="text-xs text-emerald-600 mt-3">{retrofitResult}</p>
             )}
           </div>
         </section>
