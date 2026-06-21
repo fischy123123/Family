@@ -340,18 +340,30 @@ export function buildFamilyContextParts(input: FamilyContextInput): {
   }
   const concernsViewer = (m: FamilyMemory) =>
     memoryConcernsMember(m, currentUserEmail, viewerMember?.id)
-  const familyMemories = (memories ?? []).filter(
+
+  // Drop time-bound facts whose expiry has passed (e.g. "grounded until 6/28")
+  // BEFORE anything else, so a lapsed fact never reaches the model and nobody
+  // has to manually forget it. A malformed date is treated as non-expiring.
+  const activeMemories = (memories ?? []).filter((m) => {
+    if (!m.expiresAt) return true
+    const exp = new Date(m.expiresAt).getTime()
+    return Number.isNaN(exp) || exp >= nowDate.getTime()
+  })
+  const expiredCount = (memories?.length ?? 0) - activeMemories.length
+
+  const familyMemories = activeMemories.filter(
     (m) => !isPrivateToOtherAdult(m) && !concernsViewer(m)
   )
-  const personalMemories = (memories ?? []).filter((m) => concernsViewer(m))
+  const personalMemories = activeMemories.filter((m) => concernsViewer(m))
 
   // ── STAGE 3: MEMORY FILTERING ────────────────────────────────────────────
   // Memories split three ways: family-wide (everyone sees), personal (only the
   // viewer, folded into their lens), and private-to-another-adult (hidden from
   // this viewer entirely). Each visible bucket is then capped.
-  const hiddenPrivate = (memories ?? []).filter(isPrivateToOtherAdult).length
+  const hiddenPrivate = activeMemories.filter(isPrivateToOtherAdult).length
   console.log(
     `[ctx/memories] raw=${memories?.length ?? 0}` +
+    ` → expired=${expiredCount}` +
     ` → hidden_private_to_other_adult=${hiddenPrivate}` +
     ` | family: have=${familyMemories.length} sent=${Math.min(familyMemories.length, FAMILY_MEMORY_CAP)}` +
     ` dropped_over_cap=${Math.max(0, familyMemories.length - FAMILY_MEMORY_CAP)} (cap=${FAMILY_MEMORY_CAP})` +
@@ -389,7 +401,7 @@ export function buildFamilyContextParts(input: FamilyContextInput): {
       }).slice(0, PERSONAL_MEMORY_CAP)
       lensLines.push(
         `What I have learned about this person:\n${sorted
-          .map((m) => `  - ${m.category ? `[${m.category}] ` : ''}${m.text} (noted ${notedOn(m.createdAt, tz)})`)
+          .map((m) => `  - ${m.category ? `[${m.category}] ` : ''}${m.text}${m.expiresAt ? ` (until ${fmtDate(m.expiresAt, tz)})` : ''} (noted ${notedOn(m.createdAt, tz)})`)
           .join('\n')}`
       )
     }
@@ -431,7 +443,8 @@ export function buildFamilyContextParts(input: FamilyContextInput): {
           const le = m.relatedEventId ? eventTitleById.get(m.relatedEventId) : undefined
           const lt = m.relatedTaskId ? taskTitleById.get(m.relatedTaskId) : undefined
           const linkStr = le ? ` [about event: "${le}"]` : lt ? ` [about task: "${lt}"]` : ''
-          return `- ${cat}${m.text}${who}${linkStr} (noted ${notedOn(m.createdAt, tz)})`
+          const expStr = m.expiresAt ? ` (until ${fmtDate(m.expiresAt, tz)})` : ''
+          return `- ${cat}${m.text}${who}${expStr}${linkStr} (noted ${notedOn(m.createdAt, tz)})`
         })
         .join('\n')}`
     )

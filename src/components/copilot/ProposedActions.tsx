@@ -224,11 +224,13 @@ function describe(action: PendingAction, members: FamilyMember[]): ActionView {
       const who = nameFor(input.subject_email, members)
       if (who) details.push({ label: 'About', value: who })
       if (input.category) details.push({ label: 'Type', value: String(input.category) })
+      if (input.expires_at) details.push({ label: 'Until', value: String(input.expires_at) })
+      const isUpdate = !!input.replaces
       return {
         icon: Brain,
         accent: 'text-amber-600',
         bg: 'bg-amber-50',
-        label: 'Remember this',
+        label: isUpdate ? 'Update memory' : 'Remember this',
         title: input.text ?? 'New fact',
         details,
       }

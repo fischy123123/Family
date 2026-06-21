@@ -63,6 +63,10 @@ export interface FamilyMemory {
   subjectEmails?: string[]            // who this is about — emails or member ids; empty/absent = family-wide
   source?: 'manual' | 'ai' | 'capture' | 'onboarding'
   pinned?: boolean                    // always include in context, never auto-trim
+  // Time-bound facts (e.g. "grounded until 6/28", "has a cold this week") carry
+  // an expiry date (YYYY-MM-DD). Once past, they're filtered out before reaching
+  // the model so stale facts stop polluting briefings — no manual forget needed.
+  expiresAt?: string
   // ── Provenance links (factual, set at creation time — never inferred) ──
   relatedEventId?: string             // the calendar event this memory annotates
   relatedTaskId?: string              // the task this memory annotates

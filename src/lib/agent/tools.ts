@@ -327,7 +327,7 @@ export const TOOLS: Anthropic.Tool[] = [
   },
   {
     name: 'remember',
-    description: "Store a durable fact about the family so it informs future briefings and answers. Use this whenever the user tells you something worth remembering long-term — an allergy, a routine, a preference, a relationship, a recurring logistic. Do NOT use it for one-off tasks or events (use create_reminder/create_event for those).",
+    description: "Store or UPDATE a durable fact about the family so it informs future briefings and answers. Use this whenever the user tells you something worth remembering long-term — an allergy, a routine, a preference, a relationship, a recurring logistic. Do NOT use it for one-off tasks or events (use create_reminder/create_event for those).\n\nTO UPDATE A FACT YOU ALREADY KNOW: pass the existing memory's id in `replaces`. This overwrites it in place — do NOT call forget first, and do NOT create a second memory. Each memory in your context is labelled with [id:xxx]; use that id. Updating (not duplicating) is critical — two contradictory facts about the same thing make every future briefing wrong.",
     input_schema: {
       type: 'object' as const,
       properties: {
@@ -338,6 +338,8 @@ export const TOOLS: Anthropic.Tool[] = [
           description: 'Best-fit category for the fact',
         },
         subject_email: { type: 'string', description: "Email of the family member this fact is about, if it's about a specific person" },
+        replaces: { type: 'string', description: 'Optional. The id of an existing memory this fact UPDATES or CORRECTS (from the [id:xxx] label in your context). When set, that memory is overwritten in place instead of a new one being created. Use this whenever a fact changes (a grounding extended, a routine altered, a preference flipped) so you never leave a stale, contradictory copy behind.' },
+        expires_at: { type: 'string', description: 'Optional. For TIME-BOUND facts only, the date (YYYY-MM-DD) after which this fact is no longer true and should stop influencing briefings — e.g. a grounding end date, a temporary illness, a visiting relative\'s departure. After this date the memory is automatically dropped. OMIT for permanent facts (allergies, relationships, standing routines).' },
         related_event_id: { type: 'string', description: 'Optional. If this fact is specifically ABOUT a calendar event you already looked up (e.g. a note clarifying what an event is), pass that event\'s id to link them. ONLY when it\'s an explicit fact — never guess.' },
         related_task_id: { type: 'string', description: 'Optional. If this fact is specifically ABOUT a reminder/task you already looked up, pass that task/reminder id to link them. ONLY when it\'s an explicit fact — never guess.' },
       },
@@ -360,7 +362,7 @@ export const TOOLS: Anthropic.Tool[] = [
   },
   {
     name: 'forget',
-    description: "Delete a durable memory that is no longer true. Use this whenever the user corrects or updates a fact you already remember (e.g. a grounding gets extended, a routine changes, a preference flips) — forget the stale memory by its id, then call remember with the corrected fact. Each memory in your context is labelled with [id:xxx]; pass that id here. Keeping contradictory memories around makes future briefings wrong.",
+    description: "Permanently delete a durable memory that should no longer exist at all (e.g. it was wrong, or is irrelevant going forward). NOTE: if you're UPDATING a fact rather than removing it (a grounding gets extended, a routine changes, a preference flips), do NOT forget-then-remember — instead call remember with `replaces` set to the old memory's id, which overwrites it in one step. Use forget only for genuine deletions. Each memory in your context is labelled with [id:xxx]; pass that id here.",
     input_schema: {
       type: 'object' as const,
       properties: {
@@ -512,7 +514,8 @@ DELETING EVENTS: Call get_google_events first to get the event_id and calendar_i
 Today is ${todayLabel}${timezone ? ` (user timezone: ${timezone})` : ''}.
 ${calendarRef}
 DATE VALIDATION RULE: Before quoting any date to the user — whether from memory, a reminder, or an event — look up the exact date in the DAY-DATE REFERENCE table above and use the day name from the table. Never trust a day name that was embedded in stored text; dates can outlive the day name that was written alongside them (e.g. a memory saying "Sunday, June 22" is wrong if the table shows June 22 is Monday). Always show the corrected day name.
-CONFLICT DETECTION RULE: If you notice two memories that directly contradict each other about the same fact (e.g., two different end dates for the same grounding, two different school schedules), do not pick one silently. Tell the user there are conflicting entries, show both, ask which is correct, then queue a forget for the old one and a remember for the confirmed fact.
+CONFLICT DETECTION RULE: If you notice two memories that directly contradict each other about the same fact (e.g., two different end dates for the same grounding, two different school schedules), do not pick one silently. Tell the user there are conflicting entries, show both, ask which is correct, then call remember with the "replaces" field set to the stale memory's id to overwrite it with the confirmed fact in one step (do NOT forget-then-remember, which risks leaving a duplicate behind).
+MEMORY UPDATE RULE: When a fact you already remember changes (a grounding extended, a routine moved, a preference flipped), UPDATE it in place — call remember with "replaces" set to that memory's [id:xxx]. Never create a second memory for a fact you already hold; duplicates make briefings contradict themselves. For genuinely TIME-BOUND facts (a grounding end date, a temporary illness, a visiting relative), set "expires_at" to the date it stops being true so it drops out of briefings automatically once it lapses — leave it off for permanent facts like allergies or relationships.
 INFERENCE RULE (critical): A fact must be explicitly stated in a single source to be reported as true. Never combine two separate memories, events, or data points to infer a new fact that neither one states on its own. Common mistakes to avoid: (1) a memory gives a time but no day — do NOT borrow the day from a nearby memory about the same person; the day is unknown unless explicitly stated. (2) a memory mentions a place — do NOT assume other events involving that person also happen at that place. (3) two events happening at similar times — do NOT conclude they are the same event. If a piece of information is missing (e.g. day of week for a recurring appointment), say it is not in the data and ask the user rather than guessing. When you catch yourself about to combine two pieces of information, stop — state each piece separately and flag what is unknown.
 LINKING RULE: When you create a reminder or a memory that is clearly FOR or ABOUT a specific calendar event (e.g. "buy flowers for Maddie's recital" → the recital event, or a note explaining what an event is), record that connection: look up the event id first, then pass related_event_id when you create_reminder or remember. This is how the family's data stays connected so future briefings don't have to guess what relates to what. CRITICAL: only set a link when the connection is an explicit fact from the conversation or the data — NEVER guess a link from coincidence (same day, same person is not enough). A wrong link is worse than no link. If the user later tells you a link is wrong ("that reminder is for the other recital", "that note isn't about the dentist"), use the relate tool to fix or remove it — you can always redo connections as the real story becomes clear.
 All times you display to the user should be in ${timezone ? `the user's timezone (${timezone})` : 'local time'}, not UTC.
@@ -740,19 +743,35 @@ export async function executeTool(
 
     case 'remember': {
       if (!db) return { error: 'Firestore admin not configured. Cannot save memory.' }
-      const id = generateId()
+      // When `replaces` is set we upsert in place (an update/correction) so we
+      // never leave a stale, contradictory copy behind. Otherwise create fresh.
+      const replacesId = (input.replaces as string) || ''
+      let id = replacesId || generateId()
+      let isUpdate = false
+      let priorPinned = false
+      if (replacesId) {
+        const existing = await col('memories').doc(replacesId).get()
+        if (existing.exists) {
+          isUpdate = true
+          priorPinned = existing.data()?.pinned === true // carry a user's pin across an update
+        } else {
+          id = generateId() // stale id from the model — fall back to creating new
+        }
+      }
       const memory: Record<string, unknown> = {
         text: input.text as string,
         source: 'ai',
         createdAt: new Date().toISOString(),
       }
+      if (priorPinned) memory.pinned = true
       if (input.category) memory.category = input.category
       if (input.subject_email) memory.subjectEmail = input.subject_email
+      if (input.expires_at) memory.expiresAt = input.expires_at as string
       if (input.related_event_id) memory.relatedEventId = input.related_event_id as string
       if (input.related_task_id) memory.relatedTaskId = input.related_task_id as string
       await col('memories').doc(id).set(memory)
-      actions.push(`Remembered: ${memory.text as string}`)
-      return { success: true, id, memory }
+      actions.push(`${isUpdate ? 'Updated memory' : 'Remembered'}: ${memory.text as string}`)
+      return { success: true, id, memory, updated: isUpdate }
     }
 
     case 'relate': {
