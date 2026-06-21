@@ -512,6 +512,21 @@ export function CommandCenter() {
       (e) => new Date(e.end ?? e.start).getTime() >= relevantCutoff
     )
 
+    // ── CLIENT-STAGE FILTERING (browser console) ─────────────────────────────
+    // What the client ships to /api/ai/attention, and what it dropped/merged
+    // first. The server then applies its own horizon + cap filters (see the
+    // [ctx/*] logs in the Vercel function logs). Together these two log groups
+    // give a complete picture of the pipeline from Firestore → model prompt.
+    const dedupedReminders = reminderAsTask.filter((r) => !tasks.some((t) => t.id === r.id))
+    console.log(
+      `[client/engine] tier=${tier}` +
+      ` | events: firestore=${events.length} dropped_ended=${events.length - upcomingEvents.length} shipped=${upcomingEvents.length}` +
+      ` | tasks: firestore=${tasks.length} reminders=${reminders.length} merged_in=${dedupedReminders.length} shipped=${allTasks.length}` +
+      ` | members=${members.length} memories=${memories.length} inbox=${inbox.length}` +
+      ` chores=${chores.length} plans=${plans.length} lists=${lists.length}` +
+      ` eventContext=${eventContext.length} suppressed=${dismissedTitles.size + completedTitles.size}`
+    )
+
     return {
       members, events: upcomingEvents, tasks: allTasks, chores, plans, lists, eventContext,
       profile, memories, inbox, tier,
@@ -556,12 +571,16 @@ export function CommandCenter() {
       const eventContext = overrideContext ??
         eventContexts.map((e) => ({ eventTitle: e.eventTitle, context: e.context }))
 
+      const body = JSON.stringify(buildEngineBody(eventContext, 'fast'))
+      console.log(`[perf:engine] request payload=${(body.length / 1024).toFixed(1)}KB`)
+      const fetchStart = performance.now()
       const res = await fetch('/api/ai/attention', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(buildEngineBody(eventContext, 'fast')),
+        body,
         signal: controller.signal,
       })
+      console.log(`[perf:engine] response headers in ${Math.round(performance.now() - fetchStart)}ms (network + server start)`)
 
       // Pre-stream failures (bad request, missing key) still come back as JSON.
       if (!res.ok || !res.body) {
@@ -597,7 +616,7 @@ export function CommandCenter() {
           if (evt.t === 'delta') {
             if (engineTTFT === -1 && evt.d) {
               engineTTFT = Math.round(performance.now() - engineStart)
-              console.log(`[perf:engine] ttft=${engineTTFT}ms`)
+              console.log(`[perf:engine] ttft=${engineTTFT}ms (first token reached the browser)`)
             }
             if (progressive && evt.d) {
               rawText += evt.d
@@ -605,7 +624,12 @@ export function CommandCenter() {
               if (g) setStreamingGreeting(g)
             }
           } else if (evt.t === 'final') {
-            console.log(`[perf:engine] total=${Math.round(performance.now() - engineStart)}ms ttft=${engineTTFT}ms`)
+            const total = Math.round(performance.now() - engineStart)
+            const stream = engineTTFT > 0 ? total - engineTTFT : total
+            console.log(
+              `[perf:engine] END-TO-END total=${total}ms` +
+              ` (ttft=${engineTTFT}ms + stream=${stream}ms) — perceived load time from tap to full briefing`
+            )
             finalReport = evt as AttentionReport
           } else if (evt.t === 'error') {
             streamError = evt.error ?? 'Something went wrong. Tap refresh to try again.'

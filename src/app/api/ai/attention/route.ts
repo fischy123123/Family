@@ -184,6 +184,8 @@ For each problem, include an optional "actionType" field: "copilot" for conversa
       try {
         const aiStart = Date.now()
         let ttft = -1
+        let chunkCount = 0
+        let streamedChars = 0
         const ai = anthropic.messages.stream(
           {
             model: MODEL,
@@ -220,24 +222,46 @@ For each problem, include an optional "actionType" field: "copilot" for conversa
         ai.on('text', (delta) => {
           if (ttft === -1) {
             ttft = Date.now() - aiStart
-            console.log(`[perf/attention] ttft=${ttft}ms`)
+            console.log(`[perf/attention] ttft=${ttft}ms (time to first token — when the greeting starts streaming)`)
           }
+          chunkCount++
+          streamedChars += delta.length
           send({ t: 'delta', d: delta })
         })
 
         const finalMsg = await ai.finalMessage()
+        const aiDone = Date.now()
         const u = finalMsg.usage
         const uMap = u as unknown as Record<string, number>
         const cacheRead = uMap.cache_read_input_tokens ?? 0
         const cacheWrite = uMap.cache_creation_input_tokens ?? 0
-        // Log model + tokens + cost in the final perf line so it's always the
-        // visible preview in Vercel's log viewer (last log wins as row preview).
+        const inTokens = u.input_tokens ?? 0
+        const outTokens = u.output_tokens ?? 0
+
+        // ── PERF: generation throughput ──────────────────────────────────────
+        // Total AI time splits into: ttft (model reading prompt + first token)
+        // and streaming time (generating the rest). Throughput = output tokens
+        // per second of streaming — the lever that determines how long a long
+        // briefing takes. A low ttft with high total means generation-bound
+        // (more output = slower); a high ttft means prompt-bound (big input or
+        // cold cache). cache=MISS/WRITE inflates ttft because the model must
+        // read the full uncached prompt.
+        const totalAi = aiDone - aiStart
+        const streamMs = ttft > 0 ? totalAi - ttft : totalAi
+        const tokPerSec = streamMs > 0 ? Math.round((outTokens / streamMs) * 1000) : 0
+        const cacheStatus = cacheRead > 0 ? 'HIT' : cacheWrite > 0 ? 'WRITE' : 'MISS'
+
         logUsage('attention', MODEL, finalMsg.usage)
         console.log(
-          `[perf/attention] total=${Date.now() - aiStart}ms wall=${Date.now() - reqStart}ms` +
-          ` model=${MODEL}` +
-          ` cache=${cacheRead > 0 ? 'HIT' : cacheWrite > 0 ? 'WRITE' : 'MISS'}` +
-          ` cr=${cacheRead} cw=${cacheWrite} in=${u.input_tokens ?? 0} out=${u.output_tokens ?? 0}` +
+          `[perf/attention] ai_total=${totalAi}ms (ttft=${ttft}ms + stream=${streamMs}ms)` +
+          ` throughput=${tokPerSec}tok/s chunks=${chunkCount} streamed_chars=${streamedChars}` +
+          ` stop=${finalMsg.stop_reason}`
+        )
+        // Final summary line — kept last so it's the row preview in Vercel logs.
+        console.log(
+          `[perf/attention] SUMMARY wall=${aiDone - reqStart}ms ai=${totalAi}ms` +
+          ` model=${MODEL} cache=${cacheStatus}` +
+          ` in=${inTokens} cr=${cacheRead} cw=${cacheWrite} out=${outTokens} max=8192` +
           ` cost=${estimateCost(MODEL, uMap)}`
         )
 
@@ -249,6 +273,7 @@ For each problem, include an optional "actionType" field: "copilot" for conversa
           return
         }
 
+        const parseStart = Date.now()
         const text = finalMsg.content[0]?.type === 'text' ? finalMsg.content[0].text : '{}'
         const match = text.match(/\{[\s\S]*\}/)
         let parsed: {
@@ -258,10 +283,12 @@ For each problem, include an optional "actionType" field: "copilot" for conversa
           recommendations?: Record<string, unknown>[]
           eventAssignments?: Record<string, unknown>[]
         } = {}
+        let parseOk = true
         if (match) {
           try {
             parsed = JSON.parse(match[0])
           } catch {
+            parseOk = false
             // Unexpected parse failure (not a token limit issue — already checked).
             // Salvage the greeting so something appears rather than a blank screen.
             const greetingMatch = match[0].match(/"greeting"\s*:\s*"((?:[^"\\]|\\[\s\S])*)"/)
@@ -274,6 +301,14 @@ For each problem, include an optional "actionType" field: "copilot" for conversa
         const problems = (parsed.problems ?? []).map((p, i) => ({ id: `prob-${i}`, ...p }))
         const recommendations = (parsed.recommendations ?? []).map((r, i) => ({ id: `rec-${i}`, ...r }))
         const eventAssignments = (parsed.eventAssignments ?? []).map((a, i) => ({ id: `ea-${i}`, ...a }))
+
+        // ── PERF/OUTPUT: what the model produced and how long parsing took ───
+        console.log(
+          `[perf/attention] parse=${Date.now() - parseStart}ms parse_ok=${parseOk}` +
+          ` → items=${items.length} problems=${problems.length}` +
+          ` recommendations=${recommendations.length} eventAssignments=${eventAssignments.length}` +
+          ` greeting_chars=${(parsed.greeting ?? '').length}`
+        )
 
         send({
           t: 'final',

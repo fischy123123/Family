@@ -154,6 +154,26 @@ function fmtProfile(p: FamilyProfile): string {
   return parts.join('\n')
 }
 
+// ── Tunable context limits ────────────────────────────────────────────────
+// These govern how much of the family's data reaches the model. Raising them
+// gives richer context (more lookahead, more history) at the cost of more input
+// tokens → higher per-call cost, slower processing, and a bigger cache-write on
+// cold starts. The [ctx/breakdown] log (especially the horizon histogram) shows
+// exactly what each increment would add before you change anything.
+const HORIZON_DAYS = 14          // how far into the future events are included
+const PAST_WINDOW_HOURS = 12     // how far back events are kept (catch ongoing/just-passed)
+const EVENT_CAP = 40             // max events sent to the model
+const TASK_CAP = 40              // max open tasks sent to the model
+const FAMILY_MEMORY_CAP = 60     // max shared memories sent
+const PERSONAL_MEMORY_CAP = 30   // max personal memories sent
+// Buckets (days from now) for the horizon histogram — shows how many events
+// would be added by extending HORIZON_DAYS to each value.
+const HORIZON_BUCKETS = [1, 3, 7, 14, 30, 60, 90, 180, 365]
+
+// Rough token estimate from character count (~3.7 chars/token for English prose
+// with JSON/structure). Good enough to reason about prompt cost in logs.
+const estTokens = (chars: number) => Math.round(chars / 3.7)
+
 export function buildFamilyContext(input: FamilyContextInput): string {
   const { timeHeader, dataBlock } = buildFamilyContextParts(input)
   return `${timeHeader}\n\n${dataBlock}`
@@ -172,32 +192,58 @@ export function buildFamilyContextParts(input: FamilyContextInput): {
   } = input
   const tz = timezone || undefined
   const nowDate = new Date(now)
-  const horizon = new Date(nowDate.getTime() + 14 * 24 * 60 * 60 * 1000)
+  const horizon = new Date(nowDate.getTime() + HORIZON_DAYS * 24 * 60 * 60 * 1000)
+  const pastCutoff = new Date(nowDate.getTime() - PAST_WINDOW_HOURS * 60 * 60 * 1000)
 
   const eventsInWindow = (events ?? [])
     .filter((e) => {
       const s = new Date(e.start)
-      return s >= new Date(nowDate.getTime() - 12 * 60 * 60 * 1000) && s <= horizon
+      return s >= pastCutoff && s <= horizon
     })
     .sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime())
-  const upcomingEvents = eventsInWindow.slice(0, 40)
+  const upcomingEvents = eventsInWindow.slice(0, EVENT_CAP)
 
   const openTasksAll = (tasks ?? []).filter((t) => !t.isCompleted)
-  const openTasks = openTasksAll.slice(0, 40)
+  const openTasks = openTasksAll.slice(0, TASK_CAP)
 
-  // Composition breakdown so we can see what the model ACTUALLY receives vs what
-  // the client shipped. The raw counts (events/tasks) include items the filters
-  // below discard — past-window events and completed tasks — plus anything over
-  // the 40-cap that gets silently dropped. If "dropped" is ever > 0, real items
-  // are being cut from the briefing and the cap needs raising.
+  // ── STAGE 1: EVENT FILTERING ─────────────────────────────────────────────
+  // Trace each event through the pipeline so we know exactly why anything is
+  // dropped before the model ever sees it.
+  const allEvents = events ?? []
+  const endedEvents = allEvents.filter((e) => new Date(e.start) < pastCutoff)
+  const beyondHorizon = allEvents.filter((e) => new Date(e.start) > horizon)
   console.log(
-    `[ctx/breakdown]` +
-    ` events: raw=${events?.length ?? 0} in14d=${eventsInWindow.length} sent=${upcomingEvents.length}` +
-    ` dropped=${Math.max(0, eventsInWindow.length - upcomingEvents.length)}` +
-    ` | tasks: raw=${tasks?.length ?? 0} open=${openTasksAll.length} sent=${openTasks.length}` +
-    ` dropped=${Math.max(0, openTasksAll.length - openTasks.length)}` +
-    ` completed=${(tasks?.length ?? 0) - openTasksAll.length}` +
-    ` | members=${members?.length ?? 0} memories=${memories?.length ?? 0} inbox=${inbox?.length ?? 0}`
+    `[ctx/events] raw=${allEvents.length}` +
+    ` → dropped_ended=${endedEvents.length} (start < ${PAST_WINDOW_HOURS}h ago)` +
+    ` dropped_beyond_horizon=${beyondHorizon.length} (start > ${HORIZON_DAYS}d out)` +
+    ` → in_window=${eventsInWindow.length}` +
+    ` → dropped_over_cap=${Math.max(0, eventsInWindow.length - upcomingEvents.length)} (cap=${EVENT_CAP})` +
+    ` → SENT=${upcomingEvents.length}`
+  )
+
+  // ── HORIZON HISTOGRAM ────────────────────────────────────────────────────
+  // How many events fall within each future window. This is the key signal for
+  // deciding whether to extend HORIZON_DAYS: it shows what additional context a
+  // longer horizon would capture (and therefore what it would cost in tokens).
+  const futureEvents = allEvents.filter((e) => new Date(e.start) >= nowDate)
+  const histogram = HORIZON_BUCKETS.map((days) => {
+    const edge = new Date(nowDate.getTime() + days * 24 * 60 * 60 * 1000)
+    const count = futureEvents.filter((e) => new Date(e.start) <= edge).length
+    const marker = days === HORIZON_DAYS ? '*' : ''
+    return `${days}d${marker}=${count}`
+  }).join(' ')
+  console.log(
+    `[ctx/horizon] cumulative events within N days (*=current horizon): ${histogram}` +
+    ` | total_future=${futureEvents.length}`
+  )
+
+  // ── STAGE 2: TASK FILTERING ──────────────────────────────────────────────
+  console.log(
+    `[ctx/tasks] raw=${tasks?.length ?? 0}` +
+    ` → dropped_completed=${(tasks?.length ?? 0) - openTasksAll.length}` +
+    ` → open=${openTasksAll.length}` +
+    ` → dropped_over_cap=${Math.max(0, openTasksAll.length - openTasks.length)} (cap=${TASK_CAP})` +
+    ` → SENT=${openTasks.length}`
   )
 
   // ── Time header (dynamic — changes every run, excluded from cache) ────────
@@ -266,6 +312,20 @@ export function buildFamilyContextParts(input: FamilyContextInput): {
   )
   const personalMemories = (memories ?? []).filter((m) => concernsViewer(m))
 
+  // ── STAGE 3: MEMORY FILTERING ────────────────────────────────────────────
+  // Memories split three ways: family-wide (everyone sees), personal (only the
+  // viewer, folded into their lens), and private-to-another-adult (hidden from
+  // this viewer entirely). Each visible bucket is then capped.
+  const hiddenPrivate = (memories ?? []).filter(isPrivateToOtherAdult).length
+  console.log(
+    `[ctx/memories] raw=${memories?.length ?? 0}` +
+    ` → hidden_private_to_other_adult=${hiddenPrivate}` +
+    ` | family: have=${familyMemories.length} sent=${Math.min(familyMemories.length, FAMILY_MEMORY_CAP)}` +
+    ` dropped_over_cap=${Math.max(0, familyMemories.length - FAMILY_MEMORY_CAP)} (cap=${FAMILY_MEMORY_CAP})` +
+    ` | personal: have=${personalMemories.length} sent=${Math.min(personalMemories.length, PERSONAL_MEMORY_CAP)}` +
+    ` dropped_over_cap=${Math.max(0, personalMemories.length - PERSONAL_MEMORY_CAP)} (cap=${PERSONAL_MEMORY_CAP})`
+  )
+
   // The personal lens: everything this individual has told us about themselves.
   // Preferences, routines, important info, and personal memories all go here.
   // This is the HIGHEST priority filter — the AI personalises the briefing
@@ -293,7 +353,7 @@ export function buildFamilyContextParts(input: FamilyContextInput): {
       const sorted = [...personalMemories].sort((a, b) => {
         if (!!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1
         return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-      }).slice(0, 30)
+      }).slice(0, PERSONAL_MEMORY_CAP)
       lensLines.push(
         `What I have learned about this person:\n${sorted
           .map((m) => `  - ${m.category ? `[${m.category}] ` : ''}${m.text} (noted ${notedOn(m.createdAt, tz)})`)
@@ -326,7 +386,7 @@ export function buildFamilyContextParts(input: FamilyContextInput): {
     const ordered = [...familyMemories].sort((a, b) => {
       if (!!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1
       return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-    }).slice(0, 60)
+    }).slice(0, FAMILY_MEMORY_CAP)
     dataSections.push(
       `WHAT YOU KNOW ABOUT THIS FAMILY (shared durable memory — facts, routines, preferences that apply to everyone):\n${ordered
         .map((m) => {
@@ -420,6 +480,13 @@ export function buildFamilyContextParts(input: FamilyContextInput): {
   const todayStr = nowDate.toISOString().split('T')[0]
   const freshInbox = (inbox ?? []).filter((s) => !s.date || s.date >= todayStr)
 
+  // ── STAGE 4: INBOX FILTERING ─────────────────────────────────────────────
+  console.log(
+    `[ctx/inbox] raw=${inbox?.length ?? 0}` +
+    ` → dropped_stale=${(inbox?.length ?? 0) - freshInbox.length} (date < today)` +
+    ` → SENT=${freshInbox.length}`
+  )
+
   if (freshInbox.length > 0) {
     dataSections.push(
       `FROM THE INBOX (actionable items the assistant found in the family's email — treat these as RAW SIGNALS, not facts. Fold the genuinely relevant ones into your briefing the same way you would a calendar event or task; decide what's worth surfacing and what's noise. Do NOT list these separately or tell the user to "check their inbox" — just inform them of what matters):\n${freshInbox
@@ -444,5 +511,25 @@ export function buildFamilyContextParts(input: FamilyContextInput): {
     )
   }
 
-  return { timeHeader, dataBlock: dataSections.join('\n\n') }
+  const dataBlock = dataSections.join('\n\n')
+
+  // ── STAGE 5: PROMPT SIZE BY SECTION ──────────────────────────────────────
+  // Which sections dominate the prompt. Each line: <section header>=<chars>
+  // (~<tokens>t). The header is the first words of each section so you can map
+  // cost back to content (e.g. if WHAT YOU KNOW ABOUT THIS FAMILY is huge, the
+  // memory cap is the lever; if UPCOMING EVENTS dominates, the horizon is).
+  const sectionSizes = dataSections
+    .map((s) => {
+      const header = s.split('\n')[0].replace(/\s*\(.*$/, '').slice(0, 32).trim()
+      return `${header}=${s.length}c(~${estTokens(s.length)}t)`
+    })
+    .join(' | ')
+  console.log(`[ctx/sections] ${sectionSizes}`)
+  console.log(
+    `[ctx/total] data_block=${dataBlock.length}c(~${estTokens(dataBlock.length)}t)` +
+    ` time_header=${timeHeader.length}c(~${estTokens(timeHeader.length)}t)` +
+    ` GRAND_TOTAL=${dataBlock.length + timeHeader.length}c(~${estTokens(dataBlock.length + timeHeader.length)}t)`
+  )
+
+  return { timeHeader, dataBlock }
 }
