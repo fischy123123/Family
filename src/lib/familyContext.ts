@@ -160,9 +160,9 @@ function fmtProfile(p: FamilyProfile): string {
 // tokens → higher per-call cost, slower processing, and a bigger cache-write on
 // cold starts. The [ctx/breakdown] log (especially the horizon histogram) shows
 // exactly what each increment would add before you change anything.
-const HORIZON_DAYS = 14          // how far into the future events are included
+const HORIZON_DAYS = 30          // how far into the future events are included
 const PAST_WINDOW_HOURS = 12     // how far back events are kept (catch ongoing/just-passed)
-const EVENT_CAP = 40             // max events sent to the model
+const EVENT_CAP = 60             // max events sent to the model (raised with the horizon)
 const TASK_CAP = 40              // max open tasks sent to the model
 const FAMILY_MEMORY_CAP = 60     // max shared memories sent
 const PERSONAL_MEMORY_CAP = 30   // max personal memories sent
@@ -401,7 +401,7 @@ export function buildFamilyContextParts(input: FamilyContextInput): {
   }
 
   dataSections.push(
-    `UPCOMING EVENTS (next 14 days):\n${
+    `UPCOMING EVENTS (next ${HORIZON_DAYS} days):\n${
       upcomingEvents.length
         ? upcomingEvents
             .map((e) => {
