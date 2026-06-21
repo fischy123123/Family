@@ -199,6 +199,8 @@ export async function createEvent(
     notes?: string
     calendarId?: string
     timezone?: string
+    // RFC 5545 recurrence rules — e.g. ["RRULE:FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR"]
+    recurrence?: string[]
   }
 ): Promise<GoogleEvent> {
   const auth = getAuthorizedClient(accessToken, refreshToken)
@@ -214,6 +216,7 @@ export async function createEvent(
     summary: string
     location?: string
     description?: string
+    recurrence?: string[]
     start: { date?: string; dateTime?: string; timeZone?: string }
     end: { date?: string; dateTime?: string; timeZone?: string }
   } = {
@@ -227,6 +230,8 @@ export async function createEvent(
       ? { date: event.end.split('T')[0] }
       : { dateTime: event.end, ...(tz ? { timeZone: tz } : {}) },
   }
+
+  if (event.recurrence?.length) requestBody.recurrence = event.recurrence
 
   const { data } = await calendar.events.insert({ calendarId, requestBody })
 

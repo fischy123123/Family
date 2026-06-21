@@ -283,6 +283,11 @@ export const TOOLS: Anthropic.Tool[] = [
         location: { type: 'string', description: 'Optional location' },
         notes: { type: 'string', description: 'Optional notes/description' },
         calendar_id: { type: 'string', description: 'Google Calendar ID to create the event in. Use list_google_calendars first to find the right ID when the user specifies a named calendar. Defaults to the primary calendar if omitted.' },
+        recurrence: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'RFC 5545 recurrence rules for repeating events. Pass a single RRULE string in the array. Common patterns:\n- Every weekday (Mon-Fri): ["RRULE:FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR"]\n- Every week on a specific day: ["RRULE:FREQ=WEEKLY;BYDAY=MO"] (change MO to TU/WE/TH/FR/SA/SU)\n- Every day: ["RRULE:FREQ=DAILY"]\n- Mon/Wed/Fri: ["RRULE:FREQ=WEEKLY;BYDAY=MO,WE,FR"]\n- Every 2 weeks: ["RRULE:FREQ=WEEKLY;INTERVAL=2;BYDAY=MO"]\n- N times only: append ";COUNT=N" e.g. ["RRULE:FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;COUNT=10"]\n- Until a date: append ";UNTIL=YYYYMMDD" e.g. ["RRULE:FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;UNTIL=20261231"]\nIMPORTANT: ALWAYS use recurrence for any request involving "Mon-Fri", "every week", "daily", "weekdays", etc. NEVER create separate individual events for each day — that is unreliable and will produce the wrong count.',
+        },
       },
       required: ['title', 'start_datetime', 'end_datetime'],
     },
@@ -477,6 +482,16 @@ export function buildSystemPrompt(
     ? `Google Calendar is connected — prefer get_google_events and create_google_event for calendar operations. Use list_events / create_event only for Firestore-only storage. ALWAYS call list_google_calendars before create_google_event. Prefer shared family calendars over the user's primary personal calendar for family events. Pass the chosen calendar_id to create_google_event.
 
 UPDATING EVENTS: Always use update_google_event — never delete + recreate. Call get_google_events first to find the event_id and calendar_id. Pass only the fields that change; omit unchanged fields.
+
+CREATING RECURRING EVENTS: Whenever the user says "every day", "Mon-Fri", "every week", "weekdays", "every Monday", or any other repeating pattern, ALWAYS use the recurrence parameter — NEVER create separate events for each day. Creating individual events is unreliable: the AI miscounts dates. The recurrence parameter uses Google Calendar's native RRULE format. Key patterns (memorize these):
+- "Monday through Friday" / "weekdays" / "Mon-Fri" → recurrence: ["RRULE:FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR"]
+- "every day" → recurrence: ["RRULE:FREQ=DAILY"]
+- "every Monday" → recurrence: ["RRULE:FREQ=WEEKLY;BYDAY=MO"]
+- "Mon/Wed/Fri" → recurrence: ["RRULE:FREQ=WEEKLY;BYDAY=MO,WE,FR"]
+- "every 2 weeks on Tuesday" → recurrence: ["RRULE:FREQ=WEEKLY;INTERVAL=2;BYDAY=TU"]
+- Add COUNT to limit: "for 4 weeks Mon-Fri" → RRULE:FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;COUNT=20
+- Add UNTIL to end on a date: append ;UNTIL=YYYYMMDD (e.g. UNTIL=20261231)
+The start_datetime for a recurring event is just the FIRST occurrence. Google Calendar generates all future instances automatically.
 
 RECURRING EVENTS: get_google_events returns a recurringEventId field when an event is part of a recurring series.
 - Default (scope "instance"): update_google_event only changes THIS specific occurrence — use this unless the user says "change all" or "every week" etc.
@@ -1033,6 +1048,7 @@ export async function executeTool(
     case 'create_google_event': {
       if (!googleTokens) return { error: 'Google Calendar not connected' }
       const isAllDay = input.is_all_day as boolean ?? !input.start_datetime.includes('T')
+      const recurrence = Array.isArray(input.recurrence) ? (input.recurrence as string[]) : undefined
       const created = await createGoogleEvent(
         googleTokens.accessToken,
         googleTokens.refreshToken,
@@ -1045,9 +1061,11 @@ export async function executeTool(
           notes: input.notes as string | undefined,
           timezone: ctx.timezone,
           calendarId: input.calendar_id as string | undefined,
+          recurrence,
         },
       )
-      actions.push(`Created Google Calendar event: ${created.title} on ${created.start.split('T')[0]}`)
+      const recLabel = recurrence?.length ? ` (recurring: ${recurrence[0]})` : ''
+      actions.push(`Created Google Calendar event: ${created.title} on ${created.start.split('T')[0]}${recLabel}`)
       return { success: true, event: created }
     }
 
