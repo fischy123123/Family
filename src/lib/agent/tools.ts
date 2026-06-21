@@ -97,7 +97,7 @@ export const TOOLS: Anthropic.Tool[] = [
   },
   {
     name: 'get_member_profile',
-    description: "Get the structured profile data stored directly on a family member — their importantInfo (medical, education, logistics, personal), routines, preferences, and profile notes. Call this BEFORE update_member_info or remove_member_info to see what already exists (so you don't add duplicates or use stale IDs).",
+    description: "Get the structured profile data stored directly on a family member — their importantInfo (medical, education, logistics, personal, work), routines, preferences, and profile notes. Call this BEFORE update_member_info or remove_member_info to see what already exists (so you don't add duplicates or use stale IDs).",
     input_schema: {
       type: 'object' as const,
       properties: {
@@ -490,8 +490,8 @@ export const TOOLS: Anthropic.Tool[] = [
         // importantInfo fields
         category: {
           type: 'string',
-          enum: ['medical', 'education', 'logistics', 'personal', 'other'],
-          description: "Category for importantInfo items. 'medical' for health/devices/allergies/medications/doctors. 'education' for school/teachers/grade. 'logistics' for practical facts (bus stop, locker combo). 'personal' for personal details. Required when field='importantInfo'.",
+          enum: ['medical', 'education', 'logistics', 'personal', 'work', 'other'],
+          description: "Category for importantInfo items. 'medical' for health/devices/allergies/medications/doctors. 'education' for school/teachers/grade. 'logistics' for practical facts (bus stop, locker combo). 'personal' for personal details. 'work' for job/career/employer/schedule details. Required when field='importantInfo'.",
         },
         label: { type: 'string', description: "Short label/key for importantInfo — e.g. 'Insulin pump', 'Allergies', 'Pediatrician', 'School'. Required when field='importantInfo'." },
         value: { type: 'string', description: "The full value for importantInfo — e.g. 'Tandem Mobi with SteadiSet infusion sets', 'Peanuts (EpiPen required)'. Required when field='importantInfo'." },
