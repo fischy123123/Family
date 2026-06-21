@@ -2300,13 +2300,14 @@ function CompactItemRow({
 
   return (
     <div className="flex items-center gap-2 min-w-0">
+      {/* Always a dot — tasks get a tappable one, events a static one. Same visual width either way. */}
       {isTask ? (
         <button
           onClick={(e) => { e.stopPropagation(); setDone(true); onComplete() }}
-          className="w-4 h-4 rounded border-2 flex items-center justify-center shrink-0 transition-colors"
-          style={{ borderColor: done ? '#22c55e' : '#cbd5e1', background: done ? '#22c55e' : 'transparent' }}
+          className="w-4 h-4 rounded-full shrink-0 flex items-center justify-center transition-colors"
+          title="Mark done"
         >
-          {done && <Check size={9} className="text-white" />}
+          <span className="w-1.5 h-1.5 rounded-full transition-colors" style={{ background: done ? '#22c55e' : accent }} />
         </button>
       ) : (
         <span className="w-1.5 h-1.5 rounded-full shrink-0 mt-px" style={{ background: accent }} />
@@ -2641,20 +2642,6 @@ function AttentionCard({
       style={{ borderLeft: `3px solid ${accent}`, opacity: done ? 0.5 : 1 }}
     >
       <div className="flex items-start gap-3 p-4">
-        {/* Checkbox only when the sourceId actually matches a real Firestore
-            task/reminder in the current data. The AI sometimes tags an
-            awareness item (e.g. a grounding pulled from memory) as a task with
-            a sourceId that doesn't exist — validating against live data here
-            means no phantom checkbox appears on things that aren't real tasks. */}
-        {backedByRealItem && (item.sourceType === 'task' || item.sourceType === 'reminder') && (
-          <button
-            onClick={() => { setDone(true); onComplete() }}
-            className="mt-0.5 w-5 h-5 rounded-md border-2 flex items-center justify-center shrink-0 transition-colors"
-            style={{ borderColor: done ? '#22c55e' : '#cbd5e1', background: done ? '#22c55e' : 'transparent' }}
-          >
-            {done && <Check size={12} className="text-white" />}
-          </button>
-        )}
         <div className="flex-1 min-w-0">
           <p className="text-sm font-semibold text-slate-900">{item.title}</p>
           <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">{item.reason}</p>
@@ -2748,15 +2735,27 @@ function AttentionCard({
           >
             <MessageCircle size={14} />
           </button>
-          <button
-            onClick={() => { setSaved(true); onSaveTask() }}
-            disabled={saved}
-            className="p-1.5 rounded-lg transition-colors"
-            style={{ color: saved ? '#22c55e' : '#cbd5e1' }}
-            title={saved ? 'Saved as task' : 'Save as task'}
-          >
-            <Bookmark size={14} fill={saved ? 'currentColor' : 'none'} />
-          </button>
+          {backedByRealItem && (item.sourceType === 'task' || item.sourceType === 'reminder') && (
+            <button
+              onClick={() => { setDone(true); onComplete() }}
+              className="p-1.5 rounded-lg transition-colors"
+              style={{ color: done ? '#22c55e' : '#cbd5e1' }}
+              title={done ? 'Done' : 'Mark done'}
+            >
+              <Check size={14} />
+            </button>
+          )}
+          {!(backedByRealItem && (item.sourceType === 'task' || item.sourceType === 'reminder')) && (
+            <button
+              onClick={() => { setSaved(true); onSaveTask() }}
+              disabled={saved}
+              className="p-1.5 rounded-lg transition-colors"
+              style={{ color: saved ? '#22c55e' : '#cbd5e1' }}
+              title={saved ? 'Saved as task' : 'Save as task'}
+            >
+              <Bookmark size={14} fill={saved ? 'currentColor' : 'none'} />
+            </button>
+          )}
           <button
             onClick={onDismiss}
             className="p-1.5 rounded-lg text-slate-300 hover:text-slate-500 hover:bg-slate-50 transition-colors"
