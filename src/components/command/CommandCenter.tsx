@@ -781,7 +781,7 @@ export function CommandCenter() {
     ) return
     scheduleEngine(!!report)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hydrated, googleLoaded, members.length, events.length, tasks.length, reminders.length])
+  }, [hydrated, googleLoaded, members.length, events.length > 0, tasks.length, reminders.length])
 
   // The inbox scan, durable memory, and profile often arrive a beat after the
   // first render. When they change, weave them into the briefing right away —
@@ -791,7 +791,7 @@ export function CommandCenter() {
   // first render (e.g. another family member's Google events arriving via the
   // server sync) immediately refreshes the briefing instead of waiting out the
   // 60s throttle. Using ids+starts catches replacements, not just count changes.
-  const eventsFingerprint = events.map((e) => `${e.id}:${e.start}`).sort().join(',')
+  const eventsFingerprint = events.map((e) => e.id).sort().join(',')
   const ctxSignature = `${emailSuggestions.length}|${memories.length}|${profile?.updatedAt ?? ''}|${completedCount}|${eventsFingerprint}`
   const lastCtxSig = useRef<string>('')
   const lastEmailCount = useRef<number>(0)
@@ -814,7 +814,7 @@ export function CommandCenter() {
     // than making the user wait up to 60 seconds or manually refresh.
     const inboxJustArrived = prevEmailCount === 0 && emailSuggestions.length > 0
     const eventsJustArrived = prevEventCount === 0 && events.length > 0
-    if (!inboxJustArrived && !eventsJustArrived && Date.now() - lastRun.current < 60_000) return
+    if (!inboxJustArrived && !eventsJustArrived && Date.now() - lastRun.current < ENGINE_THROTTLE_MS) return
     // Silent if a report exists, cold-start otherwise (so the user sees the loader).
     // Debounced so a burst of arrivals (events then inbox) coalesces into one run.
     scheduleEngine(!!report)
@@ -849,10 +849,16 @@ export function CommandCenter() {
       }
       const hasError = !!engineErrorRef.current
       const hasNoReport = !reportRef.current
-      if (hasError || hasNoReport || calChanged) {
+      // Run briefing on foreground if: Copilot changed something, error needs
+      // retry, no report yet, OR the cached briefing is older than REPORT_TTL_MS.
+      // Simple foregrounding (switching apps briefly) does NOT trigger a run —
+      // that's handled by the throttle and ctxSignature paths.
+      const isStale = Date.now() - lastRun.current > REPORT_TTL_MS
+      if (hasError || hasNoReport || calChanged || isStale) {
         setEngineError(null)
-        lastRun.current = 0
-        runEngine(undefined, !hasNoReport)
+        // Only bypass the throttle for forced cases — stale checks respect it.
+        if (calChanged || hasError || hasNoReport) lastRun.current = 0
+        runEngine(undefined, !!reportRef.current && !hasError)
       }
     }
     document.addEventListener('visibilitychange', handleVisible)
@@ -1127,6 +1133,23 @@ export function CommandCenter() {
     ].filter(Boolean)
     traceInCopilot(lines.join('\n'))
   }
+
+  // Merge a card-level patch (from CardChat context) into the live report without
+  // triggering a full briefing regeneration. Only the cards the user chatted about
+  // are updated; everything else is untouched.
+  const patchReport = useCallback((
+    updatedCards: AttentionItem[],
+    removedIds: string[],
+    newGreeting?: string,
+  ) => {
+    setReport((prev) => {
+      if (!prev) return prev
+      const items = prev.items
+        .filter((i) => !removedIds.includes(i.id))
+        .map((i) => updatedCards.find((u) => u.id === i.id) ?? i)
+      return { ...prev, items, greeting: newGreeting ?? prev.greeting }
+    })
+  }, [])
 
   function dismissItem(title: string) {
     setDismissedTitles((prev) => {
@@ -1574,6 +1597,10 @@ export function CommandCenter() {
                             onAssignItem={(item, f, r) => assignItem(item, f, r)}
                             debugMode={debugMode}
                             onTraceItem={traceItem}
+                            currentGreeting={report?.greeting ?? ''}
+                            allGroupItems={group.items}
+                            cardMembers={members}
+                            onPatch={patchReport}
                           />
                         )
                       }
@@ -1608,6 +1635,9 @@ export function CommandCenter() {
                           onAssign={(f, r) => assignItem(item, f, r)}
                           debugMode={debugMode}
                           onTrace={() => traceItem(item)}
+                          currentGreeting={report?.greeting ?? ''}
+                          cardMembers={members}
+                          onPatch={patchReport}
                         />
                       )
                     })}
@@ -2018,6 +2048,7 @@ type ResolvedItemForGroup = {
 function GroupedAttentionCard({
   groupTitle, resolvedItems, accent, allMembers,
   onCompleteItem, onDismissItem, onSaveTaskItem, onAssignItem, debugMode, onTraceItem,
+  currentGreeting, allGroupItems, cardMembers, onPatch,
 }: {
   groupTitle: string
   resolvedItems: ResolvedItemForGroup[]
@@ -2029,6 +2060,10 @@ function GroupedAttentionCard({
   onAssignItem: (item: AttentionItem, forIds: string[], responsibleId?: string) => void
   debugMode?: boolean
   onTraceItem?: (item: AttentionItem) => void
+  currentGreeting?: string
+  allGroupItems?: AttentionItem[]
+  cardMembers?: FamilyMember[]
+  onPatch?: (updated: AttentionItem[], removed: string[], greeting?: string) => void
 }) {
   const [expanded, setExpanded] = useState(false)
 
@@ -2109,6 +2144,10 @@ function GroupedAttentionCard({
               onAssign={(f, r) => onAssignItem(item, f, r)}
               debugMode={debugMode}
               onTrace={onTraceItem ? () => onTraceItem(item) : undefined}
+              currentGreeting={currentGreeting}
+              cardMembers={cardMembers}
+              onPatch={onPatch}
+              groupItems={allGroupItems}
             />
           ))}
         </div>
@@ -2166,9 +2205,17 @@ function CompactItemRow({
 function CardChat({
   cardContext,
   quickPrompts,
+  patchCards,
+  currentGreeting,
+  patchMembers,
+  onPatch,
 }: {
   cardContext: string
   quickPrompts: string[]
+  patchCards?: AttentionItem[]
+  currentGreeting?: string
+  patchMembers?: FamilyMember[]
+  onPatch?: (updated: AttentionItem[], removed: string[], greeting?: string) => void
 }) {
   const { user } = useAuth()
   const { familyId } = useFamily()
@@ -2271,6 +2318,30 @@ function CardChat({
               if (last?.role === 'assistant') return [...a.slice(0, -1), { ...last, isStreaming: false, content: reply }]
               return [...a, { role: 'assistant', content: reply }]
             })
+            // Background patch: update just the affected card(s) based on this
+            // conversation. Fire-and-forget — never blocks the chat UI.
+            if (onPatch && patchCards?.length) {
+              const fullConv = [...msgs, userMsg, { role: 'assistant' as const, content: ev.reply ?? '' }]
+              fetch('/api/ai/attention/patch', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  cards: patchCards,
+                  conversation: fullConv,
+                  greeting: currentGreeting ?? '',
+                  members: patchMembers ?? [],
+                  now: new Date().toISOString(),
+                  timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+                }),
+              })
+                .then((r) => r.json())
+                .then((d) => {
+                  if (d.updatedCards?.length || d.removedIds?.length) {
+                    onPatch(d.updatedCards ?? [], d.removedIds ?? [], d.greeting)
+                  }
+                })
+                .catch(() => { /* non-fatal — patch is best-effort */ })
+            }
           } else if (ev.type === 'error') {
             throw new Error(String((ev as { error?: unknown }).error ?? 'Error'))
           }
@@ -2399,6 +2470,7 @@ function CardChat({
 
 function AttentionCard({
   item, accent, allMembers, responsible, forMembers, backedByRealItem, isRecurring, onComplete, onDismiss, onSaveTask, onAssign, debugMode, onTrace,
+  currentGreeting, cardMembers, onPatch, groupItems,
 }: {
   item: AttentionItem
   accent: string
@@ -2413,6 +2485,10 @@ function AttentionCard({
   onAssign: (forIds: string[], responsibleId?: string) => void
   debugMode?: boolean
   onTrace?: () => void
+  currentGreeting?: string
+  cardMembers?: FamilyMember[]
+  onPatch?: (updated: AttentionItem[], removed: string[], greeting?: string) => void
+  groupItems?: AttentionItem[]
 }) {
   const [done, setDone] = useState(false)
   const [saved, setSaved] = useState(false)
@@ -2574,6 +2650,10 @@ function AttentionCard({
               item.sourceId ? `Source id: ${item.sourceId}` : '',
             ].filter(Boolean).join('\n')}
             quickPrompts={['Why is this showing up?', 'What should I do?', 'Where does this come from?']}
+            patchCards={groupItems ?? [item]}
+            currentGreeting={currentGreeting}
+            patchMembers={cardMembers}
+            onPatch={onPatch}
           />
         </div>
       )}
