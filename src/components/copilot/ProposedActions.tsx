@@ -15,6 +15,12 @@ import {
   Loader2,
   Trash2,
   PencilLine,
+  UserCog,
+  UserMinus,
+  BookMarked,
+  BookX,
+  SquareCheck,
+  ClipboardList,
 } from 'lucide-react'
 import { format, parseISO, isValid } from 'date-fns'
 import type { FamilyMember } from '@/lib/types'
@@ -175,8 +181,8 @@ function describe(action: PendingAction, members: FamilyMember[]): ActionView {
         icon: CheckCircle2,
         accent: 'text-emerald-600',
         bg: 'bg-emerald-50',
-        label: 'Mark complete',
-        title: 'Complete reminder',
+        label: 'Mark reminder complete',
+        title: input.reminder_title ?? 'Reminder',
         details: [],
       }
     }
@@ -185,8 +191,145 @@ function describe(action: PendingAction, members: FamilyMember[]): ActionView {
         icon: CheckCircle2,
         accent: 'text-emerald-600',
         bg: 'bg-emerald-50',
-        label: 'Mark complete',
-        title: 'Complete chore',
+        label: 'Mark chore done',
+        title: input.chore_name ?? 'Chore',
+        details: [],
+      }
+    }
+    case 'create_task': {
+      const details: { label: string; value: string }[] = []
+      if (input.priority && input.priority !== 'none') details.push({ label: 'Priority', value: String(input.priority) })
+      if (input.due_date) details.push({ label: 'Due', value: fmtDateTime(input.due_date) })
+      if (input.assignee) details.push({ label: 'Assigned to', value: String(input.assignee) })
+      const forNames = (input.for_member_names ?? []) as string[]
+      if (forNames.length) details.push({ label: 'For', value: forNames.join(', ') })
+      if (input.notes) details.push({ label: 'Notes', value: String(input.notes) })
+      return {
+        icon: SquareCheck,
+        accent: 'text-blue-600',
+        bg: 'bg-blue-50',
+        label: 'New task',
+        title: input.title ?? 'Task',
+        details,
+      }
+    }
+    case 'update_task': {
+      const details: { label: string; value: string }[] = []
+      if (input.title) details.push({ label: 'Title', value: String(input.title) })
+      if (input.priority) details.push({ label: 'Priority', value: String(input.priority) })
+      if (input.due_date !== undefined) details.push({ label: 'Due', value: input.due_date ? fmtDateTime(input.due_date) : 'cleared' })
+      if (input.assignee !== undefined) details.push({ label: 'Assigned to', value: input.assignee || 'unassigned' })
+      const forNames = input.for_member_names as string[] | undefined
+      if (forNames !== undefined) details.push({ label: 'For', value: forNames.length ? forNames.join(', ') : 'cleared' })
+      if (input.notes !== undefined) details.push({ label: 'Notes', value: String(input.notes) })
+      if (input.is_completed !== undefined) details.push({ label: 'Status', value: input.is_completed ? 'Completed' : 'Reopened' })
+      return {
+        icon: PencilLine,
+        accent: 'text-blue-600',
+        bg: 'bg-blue-50',
+        label: 'Update task',
+        title: input.task_title ?? 'Task',
+        details,
+      }
+    }
+    case 'complete_task': {
+      return {
+        icon: SquareCheck,
+        accent: 'text-emerald-600',
+        bg: 'bg-emerald-50',
+        label: 'Mark task complete',
+        title: input.task_title ?? 'Task',
+        details: [],
+      }
+    }
+    case 'delete_task': {
+      return {
+        icon: Trash2,
+        accent: 'text-red-600',
+        bg: 'bg-red-50',
+        label: 'Delete task',
+        title: input.task_title ?? 'Task',
+        details: [],
+      }
+    }
+    case 'update_member_info': {
+      const field = input.field as string
+      let title = ''
+      const details: { label: string; value: string }[] = []
+      if (input.member_name) details.push({ label: 'Member', value: String(input.member_name) })
+      if (field === 'importantInfo') {
+        const cat = input.category ? `[${input.category}] ` : ''
+        title = `${cat}${input.label ?? ''}: ${input.value ?? ''}`
+        if (input.replaces_id) details.push({ label: 'Action', value: 'Updating existing entry' })
+      } else if (field === 'routine') {
+        title = `${input.title ?? ''} — ${input.schedule ?? ''}`
+        if (input.replaces_id) details.push({ label: 'Action', value: 'Updating existing routine' })
+      } else if (field === 'preference') {
+        title = input.text as string ?? ''
+        if (input.pref_category) details.push({ label: 'Category', value: String(input.pref_category) })
+        if (input.replaces_id) details.push({ label: 'Action', value: 'Updating existing preference' })
+      } else if (field === 'note') {
+        title = input.text as string ?? ''
+        if (input.replaces_id) details.push({ label: 'Action', value: 'Updating existing note' })
+      } else {
+        title = String(input.label ?? input.text ?? field)
+      }
+      return {
+        icon: UserCog,
+        accent: 'text-indigo-600',
+        bg: 'bg-indigo-50',
+        label: `Save to ${input.member_name ?? 'member'}'s profile`,
+        title,
+        details,
+      }
+    }
+    case 'remove_member_info': {
+      return {
+        icon: UserMinus,
+        accent: 'text-red-600',
+        bg: 'bg-red-50',
+        label: `Remove from ${input.member_name ?? 'member'}'s profile`,
+        title: `${input.field ?? 'entry'} entry`,
+        details: [],
+      }
+    }
+    case 'add_briefing_rule': {
+      return {
+        icon: BookMarked,
+        accent: 'text-violet-600',
+        bg: 'bg-violet-50',
+        label: 'Add briefing rule',
+        title: input.rule as string ?? 'New rule',
+        details: [],
+      }
+    }
+    case 'remove_briefing_rule': {
+      return {
+        icon: BookX,
+        accent: 'text-red-600',
+        bg: 'bg-red-50',
+        label: 'Remove briefing rule',
+        title: input.rule as string ?? 'Rule',
+        details: [],
+      }
+    }
+    case 'forget': {
+      return {
+        icon: Brain,
+        accent: 'text-red-600',
+        bg: 'bg-red-50',
+        label: 'Forget memory',
+        title: 'Remove saved fact',
+        details: input.id ? [{ label: 'Memory ID', value: String(input.id) }] : [],
+      }
+    }
+    case 'relate': {
+      return {
+        icon: ClipboardList,
+        accent: 'text-slate-600',
+        bg: 'bg-slate-50',
+        label: 'Update link',
+        title: `Link ${input.item_type ?? 'item'}`,
         details: [],
       }
     }

@@ -162,15 +162,17 @@ Be precise and transparent over being concise. This mode is for trust and debugg
       const totalUsage = { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 }
       let iterations = 0
 
-      // Tool-use loop — up to 5 iterations.
+      // Tool-use loop — up to 8 iterations.
       // anthropic.messages.stream() is used for every call so text tokens are
       // emitted to the SSE stream as they arrive. During tool-calling iterations
       // Claude rarely produces text, so no tokens flow; they all flow during the
       // final reply turn.
-      for (let i = 0; i < 5; i++) {
+      // max_tokens=4096 is important: each tool_use block uses ~100-200 output
+      // tokens, so batches of many writes (e.g. 10 profile updates) need room.
+      for (let i = 0; i < 8; i++) {
         const streamObj = anthropic.messages.stream({
           model: AI_MODEL,
-          max_tokens: 1024,
+          max_tokens: 4096,
           system: cachedSystem,
           tools: cachedTools,
           messages: conversationMessages,
@@ -194,7 +196,14 @@ Be precise and transparent over being concise. This mode is for trust and debugg
           break
         }
 
-        if (response.stop_reason === 'tool_use') {
+        // max_tokens hit mid-tool-call: treat any tool_use blocks we got as
+        // valid and continue the loop so the model can emit the remaining calls.
+        if (response.stop_reason === 'max_tokens') {
+          console.warn('[agent] max_tokens hit — continuing loop to get remaining tool calls')
+          // Fall through into tool_use handling below (same path).
+        }
+
+        if (response.stop_reason === 'tool_use' || response.stop_reason === 'max_tokens') {
           conversationMessages.push({ role: 'assistant', content: response.content })
 
           const toolResults: Anthropic.ToolResultBlockParam[] = []
@@ -238,11 +247,11 @@ Be precise and transparent over being concise. This mode is for trust and debugg
 
           conversationMessages.push({ role: 'user', content: toolResults })
 
-          if (i === 4) {
+          if (i === 7) {
             // Safety: final iteration — squeeze out a text reply with reduced tokens.
             const finalStream = anthropic.messages.stream({
               model: AI_MODEL,
-              max_tokens: 512,
+              max_tokens: 1024,
               system: cachedSystem,
               tools: cachedTools,
               messages: conversationMessages,
