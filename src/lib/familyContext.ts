@@ -166,6 +166,8 @@ const EVENT_CAP = 60             // max events sent to the model (raised with th
 const TASK_CAP = 40              // max open tasks sent to the model
 const FAMILY_MEMORY_CAP = 60     // max shared memories sent
 const PERSONAL_MEMORY_CAP = 30   // max personal memories sent
+const RECENTLY_COMPLETED_DAYS = 7 // how far back to look for completed tasks
+const RECENTLY_COMPLETED_CAP = 25 // max recently-completed items shown
 // Buckets (days from now) for the horizon histogram — shows how many events
 // would be added by extending HORIZON_DAYS to each value.
 const HORIZON_BUCKETS = [1, 3, 7, 14, 30, 60, 90, 180, 365]
@@ -206,6 +208,16 @@ export function buildFamilyContextParts(input: FamilyContextInput): {
   const openTasksAll = (tasks ?? []).filter((t) => !t.isCompleted)
   const openTasks = openTasksAll.slice(0, TASK_CAP)
 
+  // Recently-completed tasks: completed within the lookback window. Sent to the
+  // model so it can cross-reference with inbox signals and memories and avoid
+  // re-surfacing things that are already done. Sorted newest-first so the most
+  // relevant completions appear first if the cap is hit.
+  const recentCompletedCutoff = new Date(nowDate.getTime() - RECENTLY_COMPLETED_DAYS * 24 * 60 * 60 * 1000)
+  const recentlyCompleted = (tasks ?? [])
+    .filter((t) => t.isCompleted && t.completedAt && new Date(t.completedAt) >= recentCompletedCutoff)
+    .sort((a, b) => new Date(b.completedAt!).getTime() - new Date(a.completedAt!).getTime())
+    .slice(0, RECENTLY_COMPLETED_CAP)
+
   // ── STAGE 1: EVENT FILTERING ─────────────────────────────────────────────
   // Trace each event through the pipeline so we know exactly why anything is
   // dropped before the model ever sees it.
@@ -238,12 +250,15 @@ export function buildFamilyContextParts(input: FamilyContextInput): {
   )
 
   // ── STAGE 2: TASK FILTERING ──────────────────────────────────────────────
+  const completedAll = (tasks ?? []).filter((t) => t.isCompleted)
   console.log(
     `[ctx/tasks] raw=${tasks?.length ?? 0}` +
-    ` → dropped_completed=${(tasks?.length ?? 0) - openTasksAll.length}` +
     ` → open=${openTasksAll.length}` +
     ` → dropped_over_cap=${Math.max(0, openTasksAll.length - openTasks.length)} (cap=${TASK_CAP})` +
-    ` → SENT=${openTasks.length}`
+    ` → SENT_open=${openTasks.length}` +
+    ` | completed_total=${completedAll.length}` +
+    ` → recent_completed=${recentlyCompleted.length} (last ${RECENTLY_COMPLETED_DAYS}d, cap=${RECENTLY_COMPLETED_CAP})` +
+    ` → SENT_completed=${recentlyCompleted.length}`
   )
 
   // ── PROVENANCE LINK LOOKUPS ──────────────────────────────────────────────
@@ -469,6 +484,25 @@ export function buildFamilyContextParts(input: FamilyContextInput): {
         : '(none)'
     }`
   )
+
+  if (recentlyCompleted.length > 0) {
+    dataSections.push(
+      `RECENTLY COMPLETED (last ${RECENTLY_COMPLETED_DAYS} days — CRITICAL: these are DONE. ` +
+      `Do NOT resurface them as pending items. Cross-reference these against open tasks, ` +
+      `inbox signals, and memories — if something here matches, it's already been handled):\n` +
+      recentlyCompleted
+        .map((t) => {
+          const who = resolveAssignee(members, t)?.name ?? t.assigneeEmail
+          const forNames = (t.forIds ?? [])
+            .map((id) => memberById(members, id)?.name)
+            .filter((n): n is string => Boolean(n))
+          const forStr = forNames.length ? ` [for: ${forNames.join(', ')}]` : ''
+          const doneStr = t.completedAt ? ` — done ${fmtDate(t.completedAt, tz)}` : ' — done'
+          return `- ✓ ${t.title}${who ? ` [by: ${who}]` : ''}${forStr}${doneStr}`
+        })
+        .join('\n')
+    )
+  }
 
   if (chores?.length) {
     dataSections.push(
