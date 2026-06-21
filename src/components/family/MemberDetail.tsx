@@ -13,6 +13,7 @@ import {
   Trash2,
   X,
   Cake,
+  Check,
 } from 'lucide-react'
 import { useFirestore } from '@/hooks/useFirestore'
 import { useToast } from '@/contexts/ToastContext'
@@ -203,6 +204,43 @@ function DeleteButton({ onClick }: { onClick: () => void }) {
   )
 }
 
+function EditButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      className="text-slate-300 hover:text-slate-600 transition-colors shrink-0 p-1"
+      aria-label="Edit"
+    >
+      <Pencil size={15} />
+    </button>
+  )
+}
+
+function InlineEditActions({ onSave, onCancel, onDelete }: { onSave: () => void; onCancel: () => void; onDelete: () => void }) {
+  return (
+    <div className="flex items-center gap-2 pt-1">
+      <button
+        onClick={onSave}
+        className="inline-flex items-center gap-1 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 px-2.5 py-1.5 rounded-lg transition-colors"
+      >
+        <Check size={12} /> Save
+      </button>
+      <button
+        onClick={onCancel}
+        className="text-xs font-medium text-slate-500 hover:text-slate-700 px-2.5 py-1.5 rounded-lg hover:bg-slate-50 transition-colors"
+      >
+        Cancel
+      </button>
+      <button
+        onClick={onDelete}
+        className="ml-auto text-xs font-medium text-red-500 hover:text-red-700 px-2.5 py-1.5 rounded-lg hover:bg-red-50 transition-colors"
+      >
+        Delete
+      </button>
+    </div>
+  )
+}
+
 function EmptyHint({ text }: { text: string }) {
   return <p className="text-sm text-slate-400">{text}</p>
 }
@@ -259,9 +297,25 @@ function OverviewSection({ member, onSave }: { member: FamilyMember; onSave: Sav
 function RoutinesSection({ member, onSave }: { member: FamilyMember; onSave: SaveFn }) {
   const routines = member.routines ?? []
   const [open, setOpen] = useState(false)
+  const [editId, setEditId] = useState<string | null>(null)
   const [title, setTitle] = useState('')
   const [schedule, setSchedule] = useState('')
+  const [editTitle, setEditTitle] = useState('')
+  const [editSchedule, setEditSchedule] = useState('')
   const { toast } = useToast()
+
+  function startEdit(r: RoutineEntry) {
+    setEditId(r.id)
+    setEditTitle(r.title)
+    setEditSchedule(r.schedule)
+    setOpen(false)
+  }
+
+  async function saveEdit() {
+    if (!editTitle.trim() || !editSchedule.trim()) return
+    await onSave({ routines: routines.map((r) => r.id === editId ? { ...r, title: editTitle.trim(), schedule: editSchedule.trim() } : r) })
+    setEditId(null)
+  }
 
   async function add() {
     if (!title.trim() || !schedule.trim()) {
@@ -277,6 +331,7 @@ function RoutinesSection({ member, onSave }: { member: FamilyMember; onSave: Sav
 
   async function remove(id: string) {
     await onSave({ routines: routines.filter((r) => r.id !== id) })
+    if (editId === id) setEditId(null)
   }
 
   return (
@@ -284,7 +339,7 @@ function RoutinesSection({ member, onSave }: { member: FamilyMember; onSave: Sav
       icon={<Clock size={18} />}
       title="Routines"
       count={routines.length}
-      action={<AddButton open={open} onToggle={() => setOpen((v) => !v)} />}
+      action={<AddButton open={open} onToggle={() => { setOpen((v) => !v); setEditId(null) }} />}
     >
       {open && (
         <div className="mb-4 p-4 rounded-xl bg-slate-50 space-y-3 animate-scale-in">
@@ -300,12 +355,25 @@ function RoutinesSection({ member, onSave }: { member: FamilyMember; onSave: Sav
       ) : (
         <ul className="space-y-2">
           {routines.map((r) => (
-            <li key={r.id} className="flex items-center gap-3 p-3 rounded-xl border border-slate-100">
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium text-slate-900 truncate">{r.title}</p>
-                <p className="text-sm text-slate-500 truncate">{r.schedule}</p>
-              </div>
-              <DeleteButton onClick={() => remove(r.id)} />
+            <li key={r.id} className="p-3 rounded-xl border border-slate-100">
+              {editId === r.id ? (
+                <div className="space-y-2">
+                  <Input value={editTitle} onChange={(e) => setEditTitle(e.target.value)} placeholder="Title" />
+                  <Input value={editSchedule} onChange={(e) => setEditSchedule(e.target.value)} placeholder="Schedule" />
+                  <InlineEditActions onSave={saveEdit} onCancel={() => setEditId(null)} onDelete={() => remove(r.id)} />
+                </div>
+              ) : (
+                <div className="flex items-start gap-2">
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-slate-900 break-words">{r.title}</p>
+                    <p className="text-sm text-slate-500 break-words">{r.schedule}</p>
+                  </div>
+                  <div className="flex items-center gap-0.5 shrink-0">
+                    <EditButton onClick={() => startEdit(r)} />
+                    <DeleteButton onClick={() => remove(r.id)} />
+                  </div>
+                </div>
+              )}
             </li>
           ))}
         </ul>
@@ -319,9 +387,25 @@ function RoutinesSection({ member, onSave }: { member: FamilyMember; onSave: Sav
 function PreferencesSection({ member, onSave }: { member: FamilyMember; onSave: SaveFn }) {
   const preferences = member.preferences ?? []
   const [open, setOpen] = useState(false)
+  const [editId, setEditId] = useState<string | null>(null)
   const [category, setCategory] = useState('')
   const [text, setText] = useState('')
+  const [editCategory, setEditCategory] = useState('')
+  const [editText, setEditText] = useState('')
   const { toast } = useToast()
+
+  function startEdit(p: PreferenceEntry) {
+    setEditId(p.id)
+    setEditCategory(p.category)
+    setEditText(p.text)
+    setOpen(false)
+  }
+
+  async function saveEdit() {
+    if (!editCategory.trim() || !editText.trim()) return
+    await onSave({ preferences: preferences.map((p) => p.id === editId ? { ...p, category: editCategory.trim(), text: editText.trim() } : p) })
+    setEditId(null)
+  }
 
   async function add() {
     if (!category.trim() || !text.trim()) {
@@ -337,6 +421,7 @@ function PreferencesSection({ member, onSave }: { member: FamilyMember; onSave: 
 
   async function remove(id: string) {
     await onSave({ preferences: preferences.filter((p) => p.id !== id) })
+    if (editId === id) setEditId(null)
   }
 
   return (
@@ -344,7 +429,7 @@ function PreferencesSection({ member, onSave }: { member: FamilyMember; onSave: 
       icon={<Heart size={18} />}
       title="Preferences"
       count={preferences.length}
-      action={<AddButton open={open} onToggle={() => setOpen((v) => !v)} />}
+      action={<AddButton open={open} onToggle={() => { setOpen((v) => !v); setEditId(null) }} />}
     >
       {open && (
         <div className="mb-4 p-4 rounded-xl bg-slate-50 space-y-3 animate-scale-in">
@@ -360,12 +445,25 @@ function PreferencesSection({ member, onSave }: { member: FamilyMember; onSave: 
       ) : (
         <ul className="space-y-2">
           {preferences.map((p) => (
-            <li key={p.id} className="flex items-center gap-3 p-3 rounded-xl border border-slate-100">
-              <span className="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium bg-purple-100 text-purple-700 shrink-0">
-                {p.category}
-              </span>
-              <p className="flex-1 min-w-0 text-sm text-slate-700 truncate">{p.text}</p>
-              <DeleteButton onClick={() => remove(p.id)} />
+            <li key={p.id} className="p-3 rounded-xl border border-slate-100">
+              {editId === p.id ? (
+                <div className="space-y-2">
+                  <Input value={editCategory} onChange={(e) => setEditCategory(e.target.value)} placeholder="Category" />
+                  <Input value={editText} onChange={(e) => setEditText(e.target.value)} placeholder="Detail" />
+                  <InlineEditActions onSave={saveEdit} onCancel={() => setEditId(null)} onDelete={() => remove(p.id)} />
+                </div>
+              ) : (
+                <div className="flex items-start gap-2">
+                  <span className="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium bg-purple-100 text-purple-700 shrink-0 mt-0.5">
+                    {p.category}
+                  </span>
+                  <p className="flex-1 min-w-0 text-sm text-slate-700 break-words">{p.text}</p>
+                  <div className="flex items-center gap-0.5 shrink-0">
+                    <EditButton onClick={() => startEdit(p)} />
+                    <DeleteButton onClick={() => remove(p.id)} />
+                  </div>
+                </div>
+              )}
             </li>
           ))}
         </ul>
@@ -379,10 +477,28 @@ function PreferencesSection({ member, onSave }: { member: FamilyMember; onSave: 
 function InfoSection({ member, onSave }: { member: FamilyMember; onSave: SaveFn }) {
   const info = member.importantInfo ?? []
   const [open, setOpen] = useState(false)
+  const [editId, setEditId] = useState<string | null>(null)
   const [category, setCategory] = useState<InfoEntry['category']>('medical')
   const [label, setLabel] = useState('')
   const [value, setValue] = useState('')
+  const [editCategory, setEditCategory] = useState<InfoEntry['category']>('medical')
+  const [editLabel, setEditLabel] = useState('')
+  const [editValue, setEditValue] = useState('')
   const { toast } = useToast()
+
+  function startEdit(i: InfoEntry) {
+    setEditId(i.id)
+    setEditCategory(i.category)
+    setEditLabel(i.label)
+    setEditValue(i.value)
+    setOpen(false)
+  }
+
+  async function saveEdit() {
+    if (!editLabel.trim() || !editValue.trim()) return
+    await onSave({ importantInfo: info.map((i) => i.id === editId ? { ...i, category: editCategory, label: editLabel.trim(), value: editValue.trim() } : i) })
+    setEditId(null)
+  }
 
   async function add() {
     if (!label.trim() || !value.trim()) {
@@ -398,6 +514,7 @@ function InfoSection({ member, onSave }: { member: FamilyMember; onSave: SaveFn 
 
   async function remove(id: string) {
     await onSave({ importantInfo: info.filter((i) => i.id !== id) })
+    if (editId === id) setEditId(null)
   }
 
   return (
@@ -405,7 +522,7 @@ function InfoSection({ member, onSave }: { member: FamilyMember; onSave: SaveFn 
       icon={<Info size={18} />}
       title="Important Information"
       count={info.length}
-      action={<AddButton open={open} onToggle={() => setOpen((v) => !v)} />}
+      action={<AddButton open={open} onToggle={() => { setOpen((v) => !v); setEditId(null) }} />}
     >
       {open && (
         <div className="mb-4 p-4 rounded-xl bg-slate-50 space-y-3 animate-scale-in">
@@ -417,7 +534,7 @@ function InfoSection({ member, onSave }: { member: FamilyMember; onSave: SaveFn 
             ))}
           </Select>
           <Input placeholder="Label (e.g. Allergies)" value={label} onChange={(e) => setLabel(e.target.value)} />
-          <Input placeholder="Value (e.g. Peanuts, penicillin)" value={value} onChange={(e) => setValue(e.target.value)} />
+          <Textarea rows={2} placeholder="Value (e.g. Peanuts, penicillin)" value={value} onChange={(e) => setValue(e.target.value)} />
           <Button size="sm" onClick={add} className="bg-gradient-to-r from-blue-600 to-purple-600">
             <Plus size={14} className="mr-1" /> Add info
           </Button>
@@ -428,18 +545,37 @@ function InfoSection({ member, onSave }: { member: FamilyMember; onSave: SaveFn 
       ) : (
         <ul className="space-y-2">
           {info.map((i) => (
-            <li key={i.id} className="flex items-center gap-3 p-3 rounded-xl border border-slate-100">
-              <span
-                className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium capitalize shrink-0 ${INFO_CATEGORY_STYLES[i.category]}`}
-              >
-                {i.category}
-              </span>
-              <div className="flex-1 min-w-0">
-                <p className="text-sm text-slate-700 truncate">
-                  <span className="font-medium text-slate-900">{i.label}:</span> {i.value}
-                </p>
-              </div>
-              <DeleteButton onClick={() => remove(i.id)} />
+            <li key={i.id} className="p-3 rounded-xl border border-slate-100">
+              {editId === i.id ? (
+                <div className="space-y-2">
+                  <Select value={editCategory} onChange={(e) => setEditCategory(e.target.value as InfoEntry['category'])}>
+                    {INFO_CATEGORIES.map((c) => (
+                      <option key={c} value={c} className="capitalize">
+                        {c.charAt(0).toUpperCase() + c.slice(1)}
+                      </option>
+                    ))}
+                  </Select>
+                  <Input value={editLabel} onChange={(e) => setEditLabel(e.target.value)} placeholder="Label" />
+                  <Textarea rows={2} value={editValue} onChange={(e) => setEditValue(e.target.value)} placeholder="Value" />
+                  <InlineEditActions onSave={saveEdit} onCancel={() => setEditId(null)} onDelete={() => remove(i.id)} />
+                </div>
+              ) : (
+                <div className="flex items-start gap-2">
+                  <span
+                    className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium capitalize shrink-0 mt-0.5 ${INFO_CATEGORY_STYLES[i.category]}`}
+                  >
+                    {i.category}
+                  </span>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-slate-900 break-words">{i.label}</p>
+                    <p className="text-sm text-slate-600 break-words mt-0.5">{i.value}</p>
+                  </div>
+                  <div className="flex items-center gap-0.5 shrink-0">
+                    <EditButton onClick={() => startEdit(i)} />
+                    <DeleteButton onClick={() => remove(i.id)} />
+                  </div>
+                </div>
+              )}
             </li>
           ))}
         </ul>
@@ -453,8 +589,22 @@ function InfoSection({ member, onSave }: { member: FamilyMember; onSave: SaveFn 
 function MemoriesSection({ member, onSave }: { member: FamilyMember; onSave: SaveFn }) {
   const memories = member.memories ?? []
   const [open, setOpen] = useState(false)
+  const [editId, setEditId] = useState<string | null>(null)
   const [text, setText] = useState('')
+  const [editText, setEditText] = useState('')
   const { toast } = useToast()
+
+  function startEdit(m: MemoryEntry) {
+    setEditId(m.id)
+    setEditText(m.text)
+    setOpen(false)
+  }
+
+  async function saveEdit() {
+    if (!editText.trim()) return
+    await onSave({ memories: memories.map((m) => m.id === editId ? { ...m, text: editText.trim() } : m) })
+    setEditId(null)
+  }
 
   async function add() {
     if (!text.trim()) {
@@ -469,6 +619,7 @@ function MemoriesSection({ member, onSave }: { member: FamilyMember; onSave: Sav
 
   async function remove(id: string) {
     await onSave({ memories: memories.filter((m) => m.id !== id) })
+    if (editId === id) setEditId(null)
   }
 
   const sorted = [...memories].sort((a, b) => b.createdAt.localeCompare(a.createdAt))
@@ -478,7 +629,7 @@ function MemoriesSection({ member, onSave }: { member: FamilyMember; onSave: Sav
       icon={<Sparkles size={18} />}
       title="Memories"
       count={memories.length}
-      action={<AddButton open={open} onToggle={() => setOpen((v) => !v)} />}
+      action={<AddButton open={open} onToggle={() => { setOpen((v) => !v); setEditId(null) }} />}
     >
       {open && (
         <div className="mb-4 p-4 rounded-xl bg-slate-50 space-y-3 animate-scale-in">
@@ -498,12 +649,24 @@ function MemoriesSection({ member, onSave }: { member: FamilyMember; onSave: Sav
       ) : (
         <ul className="space-y-2">
           {sorted.map((m) => (
-            <li key={m.id} className="flex items-start gap-3 p-3 rounded-xl border border-slate-100">
-              <div className="flex-1 min-w-0">
-                <p className="text-sm text-slate-700 whitespace-pre-wrap break-words">{m.text}</p>
-                <p className="text-xs text-slate-400 mt-1">{relativeDate(m.createdAt)}</p>
-              </div>
-              <DeleteButton onClick={() => remove(m.id)} />
+            <li key={m.id} className="p-3 rounded-xl border border-slate-100">
+              {editId === m.id ? (
+                <div className="space-y-2">
+                  <Textarea rows={3} value={editText} onChange={(e) => setEditText(e.target.value)} />
+                  <InlineEditActions onSave={saveEdit} onCancel={() => setEditId(null)} onDelete={() => remove(m.id)} />
+                </div>
+              ) : (
+                <div className="flex items-start gap-2">
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm text-slate-700 whitespace-pre-wrap break-words">{m.text}</p>
+                    <p className="text-xs text-slate-400 mt-1">{relativeDate(m.createdAt)}</p>
+                  </div>
+                  <div className="flex items-center gap-0.5 shrink-0">
+                    <EditButton onClick={() => startEdit(m)} />
+                    <DeleteButton onClick={() => remove(m.id)} />
+                  </div>
+                </div>
+              )}
             </li>
           ))}
         </ul>
@@ -572,7 +735,7 @@ function TimelineSection({ member, onSave }: { member: FamilyMember; onSave: Sav
               />
               <div className="flex-1 min-w-0 flex items-start gap-3">
                 <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-slate-900 break-words">{t.title}</p>
+                  <p className="text-sm font-medium text-slate-900 break-words leading-snug">{t.title}</p>
                   <p className="text-xs text-slate-400 mt-0.5">{formatDate(t.date)}</p>
                 </div>
                 <DeleteButton onClick={() => remove(t.id)} />
