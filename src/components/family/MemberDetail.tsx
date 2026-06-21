@@ -43,6 +43,7 @@ const INFO_CATEGORY_STYLES: Record<InfoEntry['category'], string> = {
   education: 'bg-blue-100 text-blue-700',
   logistics: 'bg-amber-100 text-amber-700',
   personal: 'bg-purple-100 text-purple-700',
+  work: 'bg-cyan-100 text-cyan-700',
   other: 'bg-slate-100 text-slate-600',
 }
 
@@ -51,6 +52,7 @@ const INFO_CATEGORIES: InfoEntry['category'][] = [
   'education',
   'logistics',
   'personal',
+  'work',
   'other',
 ]
 

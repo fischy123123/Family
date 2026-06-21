@@ -23,7 +23,7 @@ export interface PreferenceEntry {
 
 export interface InfoEntry {
   id: string
-  category: 'medical' | 'education' | 'logistics' | 'personal' | 'other'
+  category: 'medical' | 'education' | 'logistics' | 'personal' | 'work' | 'other'
   label: string            // "Allergies", "Teacher", "Shoe size"
   value: string
 }
