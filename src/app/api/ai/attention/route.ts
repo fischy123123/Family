@@ -3,10 +3,13 @@ import Anthropic from '@anthropic-ai/sdk'
 import { buildFamilyContextParts, type FamilyContextInput } from '@/lib/familyContext'
 import { logUsage, estimateCost } from '@/lib/ai'
 
-// Single-model attention engine. Sonnet is fast, capable, and cost-effective
-// for a family briefing. The previous Opus deep-pass was removed because it
-// ran on every call and dominated the API bill without meaningful quality gain.
-const MODEL = 'claude-sonnet-4-6'
+// Haiku 4.5 generates ~3× faster than Sonnet (500+ tok/s vs ~200 tok/s) which
+// is the dominant factor in briefing load time. At 1500 output tokens the
+// difference is ~3s vs ~8s of pure generation. Haiku handles structured JSON
+// output well and the quality difference in a briefing is minimal compared to
+// the UX gain of a 5s vs 30s load. Swap back to claude-sonnet-4-6 if quality
+// becomes a concern.
+const MODEL = 'claude-haiku-4-5-20251001'
 
 // The Attention Engine + Timeline Intelligence Engine.
 // Takes full family context, returns a prioritized "what needs attention now" report.
@@ -189,11 +192,11 @@ For each problem, include an optional "actionType" field: "copilot" for conversa
         const ai = anthropic.messages.stream(
           {
             model: MODEL,
-            // A comprehensive briefing (greeting + 10 items, each with 8 fields,
-            // plus problems, recommendations, and eventAssignments) can exceed
-            // 4096 output tokens when the context is rich (many events, inbox
-            // signals, memories). 8192 gives real headroom without being wasteful.
-            max_tokens: 8192,
+            // A full briefing (greeting + 10 items + problems + recommendations +
+            // eventAssignments) is ~1200-1800 output tokens. 3000 gives real
+            // headroom while forcing the model to be concise — which is a feature,
+            // not a limitation. 8192 was wasteful and slower on cache misses.
+            max_tokens: 3000,
             // System prompt: static → cache it (saves ~1800 tokens per cache hit).
             // 1-hour TTL (not the 5-min default): briefings run ~15 min apart per
             // the client throttle, and multiple family members load within the
@@ -261,7 +264,7 @@ For each problem, include an optional "actionType" field: "copilot" for conversa
         console.log(
           `[perf/attention] SUMMARY wall=${aiDone - reqStart}ms ai=${totalAi}ms` +
           ` model=${MODEL} cache=${cacheStatus}` +
-          ` in=${inTokens} cr=${cacheRead} cw=${cacheWrite} out=${outTokens} max=8192` +
+          ` in=${inTokens} cr=${cacheRead} cw=${cacheWrite} out=${outTokens} max=3000` +
           ` cost=${estimateCost(MODEL, uMap)}`
         )
 

@@ -3,7 +3,7 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import {
-  collection, doc, setDoc, updateDoc, writeBatch, getDocs, query, where, deleteField,
+  collection, doc, setDoc, getDoc, updateDoc, writeBatch, getDocs, query, where, deleteField,
 } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
 import {
@@ -100,7 +100,7 @@ const ENGINE_DATA_UNCHANGED_TTL_MS = 45 * 60 * 1000
 // the LAST trigger before running, so the whole burst collapses into one run
 // with the complete picture. Each new arrival resets the timer, so it adapts to
 // however long the sources take to settle.
-const ENGINE_COALESCE_MS = 3000
+const ENGINE_COALESCE_MS = 1000
 
 // Pull the (possibly still-streaming) greeting out of the raw JSON the attention
 // engine is generating, so we can show it live before the full briefing lands.
@@ -353,6 +353,49 @@ export function CommandCenter() {
     if (savedRunSig) lastRunSig.current = savedRunSig
     setHydrated(true)
   }, [familyId, attnKey, gmailKey, dismissKey, lastRunKey, ctxSigKey, lastRunSigKey, skipEaKey])
+
+  // ── Firestore cold-start cache ──────────────────────────────────────────────
+  // localStorage only survives on the same device + browser. On a new device,
+  // private browsing session, or after the user clears storage, there is no
+  // cached briefing and the cold-start generation takes 30-60s. We solve this by
+  // also caching the last good briefing in Firestore (per user). This effect reads
+  // that cache once on mount so cold starts show content in ~300ms regardless of
+  // device or storage state. It only runs when localStorage had nothing.
+  useEffect(() => {
+    if (!hydrated || report || !familyId || !user?.email) return
+    const emailKey = user.email.replace(/[@.]/g, '_')
+    getDoc(doc(db, 'families', familyId, 'briefings', emailKey))
+      .then((snap) => {
+        if (!snap.exists()) return
+        const cached = snap.data() as { report: AttentionReport; generatedAt: string }
+        if (!cached?.report || !cached?.generatedAt) return
+        const ageMs = Date.now() - new Date(cached.generatedAt).getTime()
+        // If the Firestore briefing is too stale, still show it but flag the next
+        // engine run as direct (not buffered) so fresh content replaces it immediately.
+        if (ageMs > REPORT_TTL_MS) { forceDirectRef.current = true }
+        setReport((prev) => {
+          if (prev) return prev  // localStorage won the race — keep it
+          lastRun.current = new Date(cached.generatedAt).getTime()
+          if (lastRunKey) writeCache(lastRunKey, lastRun.current)
+          return cached.report
+        })
+      })
+      .catch(() => { /* non-fatal — continue without Firestore cache */ })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hydrated, familyId, user?.email])
+
+  // Persist every fresh briefing to Firestore (fire-and-forget) so the cold-start
+  // read above always has an up-to-date result, even on new devices. Keyed by
+  // generatedAt so this only fires when a genuinely new report arrives.
+  useEffect(() => {
+    if (!report?.generatedAt || !familyId || !user?.email) return
+    const emailKey = user.email.replace(/[@.]/g, '_')
+    setDoc(
+      doc(db, 'families', familyId, 'briefings', emailKey),
+      { forEmail: user.email, generatedAt: report.generatedAt, report },
+    ).catch(() => { /* non-fatal */ })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [report?.generatedAt, familyId, user?.email])
 
   // Scan Gmail incrementally — only emails newer than the last scan.
   // Cache stores { signals, lastScanTs } so we never re-process seen emails.
@@ -701,12 +744,13 @@ export function CommandCenter() {
 
   // Auto-run once the data we expect is loaded. Always silent when a report is
   // already on screen (cached or fresh) so content updates in place, never via a
-  // skeleton flash. We always wait for Google Calendar to finish before firing so
-  // the engine never runs with a partial picture. Non-connected users get
-  // googleLoaded=true immediately, so they are never blocked.
+  // skeleton flash. If Firestore already has events from a previous sync we can
+  // start immediately — the Google Calendar sync will trigger a silent follow-up
+  // refresh when it completes and the event fingerprint changes. We only hard-block
+  // when there are literally no events yet, to avoid a meaningless empty briefing.
   useEffect(() => {
     if (!hydrated) return
-    if (!googleLoaded) return   // always wait for the Google sync to settle
+    if (!googleLoaded && localEvents.length === 0) return  // no events at all yet
     if (members.length === 0) return
     if (Date.now() - lastRun.current < ENGINE_THROTTLE_MS) return
     // Core data-change optimization: if the data fingerprint hasn't changed since
