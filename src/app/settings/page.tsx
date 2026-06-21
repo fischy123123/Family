@@ -60,7 +60,23 @@ export default function SettingsPage() {
   const [showMemories, setShowMemories] = useState(false)
   const [debugMode, setDebugMode] = useState(false)
   const [retrofitting, setRetrofitting] = useState(false)
-  const [retrofitResult, setRetrofitResult] = useState<string | null>(null)
+  const [retrofitResult, setRetrofitResult] = useState<{
+    summary: string
+    scanned: number
+    events: number
+    linked: { collection: string; id: string; title: string; eventTitle: string; day: string }[]
+    ambiguous: { collection: string; id: string; title: string; candidates: string[] }[]
+    breakdown: {
+      already_linked: number
+      completed: number
+      no_due_date: number
+      no_keywords: number
+      no_event_that_day: number
+      no_keyword_match: number
+      people_mismatch: number
+      ambiguous: number
+    }
+  } | { error: string } | null>(null)
 
   // Hydrate the AI-debug toggle from localStorage on mount.
   useEffect(() => {
@@ -88,9 +104,9 @@ export default function SettingsPage() {
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error ?? 'Failed')
-      setRetrofitResult(data.summary as string)
+      setRetrofitResult(data)
     } catch (e) {
-      setRetrofitResult(e instanceof Error ? `Couldn't connect items: ${e.message}` : 'Something went wrong.')
+      setRetrofitResult({ error: e instanceof Error ? e.message : 'Something went wrong.' })
     } finally {
       setRetrofitting(false)
     }
@@ -715,7 +731,53 @@ export default function SettingsPage() {
               </button>
             </div>
             {retrofitResult && (
-              <p className="text-xs text-emerald-600 mt-3">{retrofitResult}</p>
+              <div className="mt-3 text-xs rounded-xl border border-slate-200 overflow-hidden">
+                {'error' in retrofitResult ? (
+                  <p className="px-3 py-2 text-red-600">{retrofitResult.error}</p>
+                ) : (
+                  <>
+                    <div className="px-3 py-2 bg-slate-50 border-b border-slate-200 font-medium text-slate-700">
+                      {retrofitResult.summary}
+                    </div>
+                    {retrofitResult.linked.length > 0 && (
+                      <div className="px-3 py-2 border-b border-slate-100">
+                        <p className="font-medium text-emerald-700 mb-1">Linked ({retrofitResult.linked.length})</p>
+                        <ul className="space-y-0.5 text-slate-600">
+                          {retrofitResult.linked.map((l) => (
+                            <li key={l.id}>
+                              &ldquo;{l.title}&rdquo; → &ldquo;{l.eventTitle}&rdquo; ({l.day})
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    {retrofitResult.ambiguous.length > 0 && (
+                      <div className="px-3 py-2 border-b border-slate-100">
+                        <p className="font-medium text-amber-700 mb-1">Too ambiguous to link ({retrofitResult.ambiguous.length}) — tell Copilot which event each belongs to</p>
+                        <ul className="space-y-0.5 text-slate-600">
+                          {retrofitResult.ambiguous.map((a) => (
+                            <li key={a.id}>
+                              &ldquo;{a.title}&rdquo; — could be: {a.candidates.join(', ')}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    <div className="px-3 py-2">
+                      <p className="font-medium text-slate-500 mb-1">Why the rest were skipped</p>
+                      <ul className="space-y-0.5 text-slate-400">
+                        {retrofitResult.breakdown.already_linked > 0 && <li>{retrofitResult.breakdown.already_linked} already linked</li>}
+                        {retrofitResult.breakdown.completed > 0 && <li>{retrofitResult.breakdown.completed} already completed</li>}
+                        {retrofitResult.breakdown.no_due_date > 0 && <li>{retrofitResult.breakdown.no_due_date} have no due date (need a date to match against an event)</li>}
+                        {retrofitResult.breakdown.no_keywords > 0 && <li>{retrofitResult.breakdown.no_keywords} title has no distinctive words (all common/short words)</li>}
+                        {retrofitResult.breakdown.no_event_that_day > 0 && <li>{retrofitResult.breakdown.no_event_that_day} no calendar event on that day</li>}
+                        {retrofitResult.breakdown.no_keyword_match > 0 && <li>{retrofitResult.breakdown.no_keyword_match} event on same day but no shared word in title</li>}
+                        {retrofitResult.breakdown.people_mismatch > 0 && <li>{retrofitResult.breakdown.people_mismatch} keyword matched but assigned to different person</li>}
+                      </ul>
+                    </div>
+                  </>
+                )}
+              </div>
             )}
           </div>
         </section>
