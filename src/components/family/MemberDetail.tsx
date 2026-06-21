@@ -151,19 +151,21 @@ type SaveFn = (changes: Partial<FamilyMember>) => Promise<void>
 function Section({
   icon,
   title,
+  hint,
   count,
   action,
   children,
 }: {
   icon: React.ReactNode
   title: string
+  hint?: string
   count?: number
   action?: React.ReactNode
   children: React.ReactNode
 }) {
   return (
     <section className="bg-white rounded-2xl shadow-card border border-slate-100 p-6 animate-slide-up">
-      <div className="flex items-center justify-between gap-3 mb-4">
+      <div className="flex items-center justify-between gap-3 mb-1">
         <div className="flex items-center gap-2.5">
           <div className="h-9 w-9 rounded-xl bg-slate-50 flex items-center justify-center text-slate-500">
             {icon}
@@ -177,6 +179,8 @@ function Section({
         </div>
         {action}
       </div>
+      {hint && <p className="text-xs text-slate-400 mb-4 pl-[52px]">{hint}</p>}
+      {!hint && <div className="mb-4" />}
       {children}
     </section>
   )
@@ -340,6 +344,7 @@ function RoutinesSection({ member, onSave }: { member: FamilyMember; onSave: Sav
     <Section
       icon={<Clock size={18} />}
       title="Routines"
+      hint="Repeating time patterns — classes, pickups, appointments, medication schedules"
       count={routines.length}
       action={<AddButton open={open} onToggle={() => { setOpen((v) => !v); setEditId(null) }} />}
     >
@@ -523,6 +528,7 @@ function InfoSection({ member, onSave }: { member: FamilyMember; onSave: SaveFn 
     <Section
       icon={<Info size={18} />}
       title="Important Information"
+      hint="Static reference facts — diagnoses, medications, allergies, doctors, school, employer"
       count={info.length}
       action={<AddButton open={open} onToggle={() => { setOpen((v) => !v); setEditId(null) }} />}
     >
