@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useRef, useEffect } from 'react'
-import { Plus, CheckCircle2, Circle, Trash2, Pencil, X, Check, Repeat, UserPlus } from 'lucide-react'
+import { Plus, CheckCircle2, Circle, Trash2, Pencil, X, Check, Repeat, UserPlus, Users } from 'lucide-react'
 import { useFirestore } from '@/hooks/useFirestore'
 import { useFamily } from '@/contexts/FamilyContext'
 import { generateId } from '@/lib/utils'
@@ -125,6 +125,13 @@ export function TasksView() {
     }
   }
 
+  // Quick "for" update directly from the card — tasks only (reminders don't have forIds).
+  async function quickFor(item: ListItem, forIds: string[]) {
+    if (item.source !== 'task') return
+    const newForIds = forIds.length ? forIds : undefined
+    await updateTask({ ...(item.raw as Task), forIds: newForIds })
+  }
+
   async function remove(item: ListItem) {
     if (item.source === 'task') await removeTask(item.id)
     else await removeReminder(item.id)
@@ -209,6 +216,7 @@ export function TasksView() {
               onSave={(patch) => save(item, patch)}
               onRemove={() => remove(item)}
               onQuickAssign={(id) => quickAssign(item, id)}
+              onQuickFor={(ids) => quickFor(item, ids)}
             />
           ))}
         </div>
@@ -234,6 +242,7 @@ export function TasksView() {
                   onSave={(patch) => save(item, patch)}
                   onRemove={() => remove(item)}
                   onQuickAssign={(id) => quickAssign(item, id)}
+                  onQuickFor={(ids) => quickFor(item, ids)}
                 />
               ))}
             </div>
@@ -376,18 +385,21 @@ function ChoresSection({ chores, members, onCreate, onUpdate, onDelete }: {
 
 type EditPatch = { title: string; notes: string; priority: Priority; dueDate: string; assigneeId?: string; forIds?: string[] }
 
-function TaskRow({ item, members, onToggle, onSave, onRemove, onQuickAssign }: {
+function TaskRow({ item, members, onToggle, onSave, onRemove, onQuickAssign, onQuickFor }: {
   item: ListItem
   members: FamilyMember[]
   onToggle: () => void
   onSave: (patch: EditPatch) => Promise<void>
   onRemove: () => void
   onQuickAssign: (memberId?: string) => void
+  onQuickFor: (forIds: string[]) => void
 }) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState<EditPatch>({ title: '', notes: '', priority: 'none', dueDate: '', assigneeId: undefined, forIds: [] })
   const [saving, setSaving] = useState(false)
   const [assignOpen, setAssignOpen] = useState(false)
+  const [forOpen, setForOpen] = useState(false)
+  const [forDraft, setForDraft] = useState<string[]>([])
   const titleRef = useRef<HTMLInputElement>(null)
 
   const dueStr = item.dueDate
@@ -526,7 +538,7 @@ function TaskRow({ item, members, onToggle, onSave, onRemove, onQuickAssign }: {
           )}
           {/* Quick-assign: tap the assignee (or "Assign") to reassign in one tap */}
           <button
-            onClick={() => setAssignOpen((v) => !v)}
+            onClick={() => { setAssignOpen((v) => !v); setForOpen(false) }}
             className="inline-flex items-center gap-1 text-[11px] font-medium text-slate-500 hover:text-slate-700 transition-colors"
           >
             {assignee ? (
@@ -544,23 +556,34 @@ function TaskRow({ item, members, onToggle, onSave, onRemove, onQuickAssign }: {
               </span>
             )}
           </button>
-          {/* "For" members — who the task is about */}
-          {(item.forIds?.length ?? 0) > 0 && (() => {
-            const forMembers = members.filter((m) => item.forIds!.includes(m.id))
-            return forMembers.length > 0 ? (
-              <span className="inline-flex items-center gap-1 text-[11px] text-slate-400">
-                for{' '}
-                {forMembers.map((m) => (
-                  <span key={m.id} className="inline-flex items-center gap-0.5 font-medium text-slate-600">
-                    <span className="w-4 h-4 rounded-full flex items-center justify-center text-[9px]" style={{ background: `${m.colorHex}25` }}>
-                      {m.emoji}
-                    </span>
-                    {m.name}
+          {/* "For" — who the task is about (tasks only) */}
+          {item.source === 'task' && (
+            <button
+              onClick={() => { setForDraft(item.forIds ?? []); setForOpen((v) => !v); setAssignOpen(false) }}
+              className="inline-flex items-center gap-1 text-[11px] font-medium transition-colors"
+            >
+              {(item.forIds?.length ?? 0) > 0 ? (() => {
+                const forMembers = members.filter((m) => item.forIds!.includes(m.id))
+                return forMembers.length > 0 ? (
+                  <span className="inline-flex items-center gap-1 text-slate-500 hover:text-slate-700">
+                    <span className="text-slate-400">for</span>
+                    {forMembers.map((m) => (
+                      <span key={m.id} className="inline-flex items-center gap-0.5 font-medium text-slate-600">
+                        <span className="w-4 h-4 rounded-full flex items-center justify-center text-[9px]" style={{ background: `${m.colorHex}25` }}>
+                          {m.emoji}
+                        </span>
+                        {m.name}
+                      </span>
+                    ))}
                   </span>
-                ))}
-              </span>
-            ) : null
-          })()}
+                ) : null
+              })() : (
+                <span className="inline-flex items-center gap-1 text-slate-400 hover:text-blue-600">
+                  <Users size={11} /> For
+                </span>
+              )}
+            </button>
+          )}
         </div>
         {assignOpen && (
           <div className="mt-2">
@@ -570,6 +593,31 @@ function TaskRow({ item, members, onToggle, onSave, onRemove, onQuickAssign }: {
               onChange={(id) => { onQuickAssign(id); setAssignOpen(false) }}
               label=""
             />
+          </div>
+        )}
+        {forOpen && item.source === 'task' && (
+          <div className="mt-2">
+            <p className="text-[11px] font-medium text-slate-500 mb-1.5">For (who is this about?)</p>
+            <ForPicker
+              members={members}
+              value={forDraft}
+              onChange={setForDraft}
+              label=""
+            />
+            <div className="flex gap-2 mt-2">
+              <button
+                onClick={() => { onQuickFor(forDraft); setForOpen(false) }}
+                className="text-[11px] font-semibold text-white bg-blue-600 hover:bg-blue-700 px-3 py-1.5 rounded-lg transition-colors"
+              >
+                Done
+              </button>
+              <button
+                onClick={() => setForOpen(false)}
+                className="text-[11px] font-medium text-slate-500 hover:text-slate-700 px-3 py-1.5 rounded-lg hover:bg-slate-50 transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
           </div>
         )}
       </div>

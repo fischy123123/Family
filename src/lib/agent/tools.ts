@@ -25,6 +25,19 @@ export const TOOLS: Anthropic.Tool[] = [
     },
   },
   {
+    name: 'list_tasks',
+    description: 'Get the family To Do list (tasks). Use this to see what tasks exist before creating new ones or when the user asks about their task list.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        include_completed: {
+          type: 'boolean',
+          description: 'Whether to include completed tasks (default false)',
+        },
+      },
+    },
+  },
+  {
     name: 'list_reminders',
     description: 'Get family reminders',
     input_schema: {
@@ -132,6 +145,70 @@ export const TOOLS: Anthropic.Tool[] = [
         related_event_id: { type: 'string', description: 'Optional. If this reminder is FOR or ABOUT a specific calendar event you already looked up (e.g. "buy flowers for the recital"), pass that event\'s id here so the two are explicitly linked. ONLY set this when the connection is a fact from the conversation — never guess. Use the event id from list_events / get_google_events.' },
       },
       required: ['title'],
+    },
+  },
+  {
+    name: 'create_task',
+    description: 'Create a task in the family To Do list. Use this for action items that belong in the task list (not calendar events or reminders). Tasks support "assignee" (who is responsible) and "for_member_names" (who the task is about — e.g. a task for a child).',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        title: { type: 'string', description: 'Task title' },
+        priority: { type: 'string', description: 'Priority: none, low, medium, or high (default: none)' },
+        due_date: { type: 'string', description: 'Optional due date as ISO date string (e.g. 2024-03-15)' },
+        assignee: { type: 'string', description: 'Optional NAME of the family member responsible for this task' },
+        for_member_names: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Optional list of family member NAMES who this task is FOR or ABOUT (e.g. ["Maddie"] for a task about Maddie\'s appointment). Different from assignee — assignee is who does it, "for" is who it concerns.',
+        },
+        notes: { type: 'string', description: 'Optional notes' },
+      },
+      required: ['title'],
+    },
+  },
+  {
+    name: 'update_task',
+    description: 'Update an existing task. Call list_tasks first to get the task id. Only pass fields you want to change.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        task_id: { type: 'string', description: 'ID of the task to update' },
+        title: { type: 'string', description: 'New title (omit to leave unchanged)' },
+        priority: { type: 'string', description: 'New priority: none, low, medium, or high (omit to leave unchanged)' },
+        due_date: { type: 'string', description: 'New due date as ISO date string, or empty string "" to clear it (omit to leave unchanged)' },
+        assignee: { type: 'string', description: 'NAME of the new assignee, or empty string "" to unassign (omit to leave unchanged)' },
+        for_member_names: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'New list of member names this task is FOR/ABOUT, or empty array [] to clear (omit to leave unchanged)',
+        },
+        notes: { type: 'string', description: 'New notes (omit to leave unchanged)' },
+        is_completed: { type: 'boolean', description: 'Set true to mark complete, false to reopen (omit to leave unchanged)' },
+      },
+      required: ['task_id'],
+    },
+  },
+  {
+    name: 'complete_task',
+    description: 'Mark a task as complete. Call list_tasks first to get the task id.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        task_id: { type: 'string', description: 'ID of the task to complete' },
+      },
+      required: ['task_id'],
+    },
+  },
+  {
+    name: 'delete_task',
+    description: 'Delete a task permanently. Call list_tasks first to get the task id. Use complete_task instead if the user just wants to check it off.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        task_id: { type: 'string', description: 'ID of the task to delete' },
+      },
+      required: ['task_id'],
     },
   },
   {
@@ -492,6 +569,10 @@ export const TOOLS: Anthropic.Tool[] = [
 export const WRITE_TOOLS = new Set<string>([
   'create_event',
   'create_reminder',
+  'create_task',
+  'update_task',
+  'complete_task',
+  'delete_task',
   'create_chore',
   'create_shopping_list',
   'add_shopping_items',
@@ -678,6 +759,14 @@ Examples of what you can do:
 - "Add chicken tacos to Monday dinner" → set_meal (queued for confirmation)
 - "Remind Eric to pay rent on the 1st" → create_reminder with assignee "Eric" (queued for confirmation)
 - "What chores are due?" → list_chores
+- "Add 'buy birthday gift for Grandma' to my to do list" → create_task (queued for confirmation)
+- "What's on my task list?" → list_tasks, summarize concisely
+- "Mark the grocery run task as done" → list_tasks to find id, then complete_task (queued for confirmation)
+- "Change the priority of the dentist task to high" → list_tasks to find id, then update_task (queued for confirmation)
+
+TASKS vs REMINDERS: Tasks live in the To Do list (list_tasks / create_task). Reminders are date-bound items (create_reminder). Use tasks for action items the user wants to track and check off; use reminders when there's a specific due date/time that matters and the user wants to be reminded. When in doubt, prefer tasks for general to-dos.
+
+TASK "FOR" FIELD: Tasks support a "for_member_names" field — who the task is FOR or ABOUT. This is separate from "assignee" (who is responsible). Use for_member_names when a task concerns a specific family member who isn't necessarily the one doing it — e.g. "Schedule Maddie's dentist" → assignee could be a parent, for_member_names: ["Maddie"].
 
 If the user asks to add something to shopping and no list exists yet, create one first with create_shopping_list, then add items with add_shopping_items — use the temporary id returned by create_shopping_list as the list_id for add_shopping_items.
 
@@ -752,6 +841,17 @@ export async function executeTool(
           new Date(a.start as string).getTime() - new Date(b.start as string).getTime()
         )
       return { events }
+    }
+
+    case 'list_tasks': {
+      if (!db) return { error: 'Firestore admin not configured', tasks: [] }
+      const includeCompleted = (input.include_completed as boolean) ?? false
+      const snap = await col('tasks').get()
+      let tasks = snap.docs.map((d) => ({ id: d.id, ...d.data() }))
+      if (!includeCompleted) {
+        tasks = tasks.filter((t: Record<string, unknown>) => !t.isCompleted)
+      }
+      return { tasks }
     }
 
     case 'list_reminders': {
@@ -868,6 +968,106 @@ export async function executeTool(
       await col('reminders').doc(id).set(reminder)
       actions.push(`Created reminder: ${reminder.title as string}`)
       return { success: true, id, reminder }
+    }
+
+    case 'create_task': {
+      if (!db) return { error: 'Firestore admin not configured. Cannot create task.' }
+      const id = generateId()
+      const priority = (input.priority as string) ?? 'none'
+      const taskAssignee = resolveMemberRef(ctx.members ?? [], (input.assignee as string) ?? '')
+      const forNames = (input.for_member_names as string[]) ?? []
+      const forIds = forNames
+        .map((n) => resolveMemberRef(ctx.members ?? [], n))
+        .filter(Boolean)
+        .map((m) => m!.id)
+      const task: Record<string, unknown> = {
+        title: input.title as string,
+        isCompleted: false,
+        priority: ['none', 'low', 'medium', 'high'].includes(priority) ? priority : 'none',
+        notes: (input.notes as string) ?? '',
+        source: 'ai',
+        createdAt: new Date().toISOString(),
+      }
+      if (input.due_date) task.dueDate = input.due_date as string
+      if (taskAssignee) {
+        task.assigneeId = taskAssignee.id
+        if (taskAssignee.email) task.assigneeEmail = taskAssignee.email
+      }
+      if (forIds.length) task.forIds = forIds
+      await col('tasks').doc(id).set(task)
+      actions.push(`Created task: ${task.title as string}`)
+      return { success: true, id, task }
+    }
+
+    case 'update_task': {
+      if (!db) return { error: 'Firestore admin not configured. Cannot update task.' }
+      const taskId = input.task_id as string
+      if (!taskId) return { error: 'No task_id provided.' }
+      const taskRef = col('tasks').doc(taskId)
+      const snap = await taskRef.get()
+      if (!snap.exists) return { error: `Task ${taskId} not found.` }
+      const existing = snap.data() as Record<string, unknown>
+      const updates: Record<string, unknown> = {}
+      if (input.title !== undefined) updates.title = input.title as string
+      if (input.notes !== undefined) updates.notes = input.notes as string
+      if (input.priority !== undefined) {
+        const p = input.priority as string
+        updates.priority = ['none', 'low', 'medium', 'high'].includes(p) ? p : 'none'
+      }
+      if (input.due_date !== undefined) updates.dueDate = (input.due_date as string) || null
+      if (input.assignee !== undefined) {
+        if (!input.assignee) {
+          updates.assigneeId = null
+          updates.assigneeEmail = null
+        } else {
+          const m = resolveMemberRef(ctx.members ?? [], input.assignee as string)
+          if (m) {
+            updates.assigneeId = m.id
+            if (m.email) updates.assigneeEmail = m.email
+          }
+        }
+      }
+      if (input.for_member_names !== undefined) {
+        const names = input.for_member_names as string[]
+        const ids = names
+          .map((n) => resolveMemberRef(ctx.members ?? [], n))
+          .filter(Boolean)
+          .map((m) => m!.id)
+        updates.forIds = ids.length ? ids : null
+      }
+      if (input.is_completed !== undefined) {
+        updates.isCompleted = input.is_completed as boolean
+        if (input.is_completed) updates.completedAt = new Date().toISOString()
+        else updates.completedAt = null
+      }
+      await taskRef.update(updates)
+      const title = (existing.title as string) ?? taskId
+      actions.push(`Updated task: ${title}`)
+      return { success: true, id: taskId }
+    }
+
+    case 'complete_task': {
+      if (!db) return { error: 'Firestore admin not configured. Cannot complete task.' }
+      const taskId = input.task_id as string
+      const taskRef = col('tasks').doc(taskId)
+      const snap = await taskRef.get()
+      if (!snap.exists) return { error: `Task ${taskId} not found.` }
+      const title = (snap.data()?.title as string) ?? taskId
+      await taskRef.update({ isCompleted: true, completedAt: new Date().toISOString() })
+      actions.push(`Completed task: ${title}`)
+      return { success: true }
+    }
+
+    case 'delete_task': {
+      if (!db) return { error: 'Firestore admin not configured. Cannot delete task.' }
+      const taskId = input.task_id as string
+      const taskRef = col('tasks').doc(taskId)
+      const snap = await taskRef.get()
+      if (!snap.exists) return { error: `Task ${taskId} not found.` }
+      const title = (snap.data()?.title as string) ?? taskId
+      await taskRef.delete()
+      actions.push(`Deleted task: ${title}`)
+      return { success: true }
     }
 
     case 'remember': {
