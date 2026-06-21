@@ -118,6 +118,7 @@ export const TOOLS: Anthropic.Tool[] = [
         priority: { type: 'string', description: 'Priority: none, low, medium, or high' },
         assignee: { type: 'string', description: 'Optional NAME of who this is assigned to (use their name, works for children/pets without an email)' },
         notes: { type: 'string', description: 'Optional notes' },
+        related_event_id: { type: 'string', description: 'Optional. If this reminder is FOR or ABOUT a specific calendar event you already looked up (e.g. "buy flowers for the recital"), pass that event\'s id here so the two are explicitly linked. ONLY set this when the connection is a fact from the conversation — never guess. Use the event id from list_events / get_google_events.' },
       },
       required: ['title'],
     },
@@ -337,8 +338,24 @@ export const TOOLS: Anthropic.Tool[] = [
           description: 'Best-fit category for the fact',
         },
         subject_email: { type: 'string', description: "Email of the family member this fact is about, if it's about a specific person" },
+        related_event_id: { type: 'string', description: 'Optional. If this fact is specifically ABOUT a calendar event you already looked up (e.g. a note clarifying what an event is), pass that event\'s id to link them. ONLY when it\'s an explicit fact — never guess.' },
+        related_task_id: { type: 'string', description: 'Optional. If this fact is specifically ABOUT a reminder/task you already looked up, pass that task/reminder id to link them. ONLY when it\'s an explicit fact — never guess.' },
       },
       required: ['text'],
+    },
+  },
+  {
+    name: 'relate',
+    description: "Create, change, or remove the explicit link between two items the family already has — use this to FIX connections when the user tells you the real story (e.g. \"that flowers reminder is actually for the OTHER recital\", or \"that note isn't about the dentist appointment\"). Links are how you avoid guessing what relates to what. Look up the item ids first with the list tools. To REMOVE a link, pass an empty string for the target id.",
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        item_type: { type: 'string', enum: ['reminder', 'memory'], description: 'The type of the item that HOLDS the link (a reminder or a memory).' },
+        item_id: { type: 'string', description: 'The id of the reminder or memory to update (from the list tools / [id:xxx] labels).' },
+        related_event_id: { type: 'string', description: 'The calendar event id to link this item to. Pass an empty string "" to REMOVE an existing event link. Omit if not changing the event link.' },
+        related_task_id: { type: 'string', description: 'For memories only: the reminder/task id to link this memory to. Pass empty string "" to remove. Omit if not changing.' },
+      },
+      required: ['item_type', 'item_id'],
     },
   },
   {
@@ -384,6 +401,7 @@ export const WRITE_TOOLS = new Set<string>([
   'update_google_event',
   'remember',
   'forget',
+  'relate',
 ])
 
 // ---------------------------------------------------------------------------
@@ -496,6 +514,7 @@ ${calendarRef}
 DATE VALIDATION RULE: Before quoting any date to the user — whether from memory, a reminder, or an event — look up the exact date in the DAY-DATE REFERENCE table above and use the day name from the table. Never trust a day name that was embedded in stored text; dates can outlive the day name that was written alongside them (e.g. a memory saying "Sunday, June 22" is wrong if the table shows June 22 is Monday). Always show the corrected day name.
 CONFLICT DETECTION RULE: If you notice two memories that directly contradict each other about the same fact (e.g., two different end dates for the same grounding, two different school schedules), do not pick one silently. Tell the user there are conflicting entries, show both, ask which is correct, then queue a forget for the old one and a remember for the confirmed fact.
 INFERENCE RULE (critical): A fact must be explicitly stated in a single source to be reported as true. Never combine two separate memories, events, or data points to infer a new fact that neither one states on its own. Common mistakes to avoid: (1) a memory gives a time but no day — do NOT borrow the day from a nearby memory about the same person; the day is unknown unless explicitly stated. (2) a memory mentions a place — do NOT assume other events involving that person also happen at that place. (3) two events happening at similar times — do NOT conclude they are the same event. If a piece of information is missing (e.g. day of week for a recurring appointment), say it is not in the data and ask the user rather than guessing. When you catch yourself about to combine two pieces of information, stop — state each piece separately and flag what is unknown.
+LINKING RULE: When you create a reminder or a memory that is clearly FOR or ABOUT a specific calendar event (e.g. "buy flowers for Maddie's recital" → the recital event, or a note explaining what an event is), record that connection: look up the event id first, then pass related_event_id when you create_reminder or remember. This is how the family's data stays connected so future briefings don't have to guess what relates to what. CRITICAL: only set a link when the connection is an explicit fact from the conversation or the data — NEVER guess a link from coincidence (same day, same person is not enough). A wrong link is worse than no link. If the user later tells you a link is wrong ("that reminder is for the other recital", "that note isn't about the dentist"), use the relate tool to fix or remove it — you can always redo connections as the real story becomes clear.
 All times you display to the user should be in ${timezone ? `the user's timezone (${timezone})` : 'local time'}, not UTC.
 CRITICAL — when calling create_google_event or create_event, always use LOCAL datetime strings in the format YYYY-MM-DDTHH:mm:ss with NO "Z" suffix and NO timezone offset. "3pm" means ${timezone ?? 'local time'} 3pm, output as "YYYY-MM-DDTHH:15:00:00", not UTC.
 
@@ -706,6 +725,7 @@ export async function executeTool(
         notes: (input.notes as string) ?? '',
       }
       if (input.due_date) reminder.dueDate = input.due_date
+      if (input.related_event_id) reminder.relatedEventId = input.related_event_id as string
       const remAssignee = resolveMemberRef(ctx.members ?? [], (input.assignee as string) ?? (input.assignee_email as string))
       if (remAssignee) {
         reminder.assigneeId = remAssignee.id
@@ -728,9 +748,37 @@ export async function executeTool(
       }
       if (input.category) memory.category = input.category
       if (input.subject_email) memory.subjectEmail = input.subject_email
+      if (input.related_event_id) memory.relatedEventId = input.related_event_id as string
+      if (input.related_task_id) memory.relatedTaskId = input.related_task_id as string
       await col('memories').doc(id).set(memory)
       actions.push(`Remembered: ${memory.text as string}`)
       return { success: true, id, memory }
+    }
+
+    case 'relate': {
+      if (!db) return { error: 'Firestore admin not configured. Cannot update link.' }
+      const itemType = input.item_type as string
+      const itemId = input.item_id as string
+      if (!itemId) return { error: 'No item id provided.' }
+      const collection = itemType === 'memory' ? 'memories' : 'reminders'
+      const ref = col(collection).doc(itemId)
+      const snap = await ref.get()
+      if (!snap.exists) return { error: `${itemType} ${itemId} not found.` }
+      // An empty string clears the link; a value sets it; omitted leaves it as-is.
+      const updates: Record<string, unknown> = {}
+      if (input.related_event_id !== undefined) {
+        updates.relatedEventId = input.related_event_id === '' ? null : (input.related_event_id as string)
+      }
+      if (itemType === 'memory' && input.related_task_id !== undefined) {
+        updates.relatedTaskId = input.related_task_id === '' ? null : (input.related_task_id as string)
+      }
+      if (Object.keys(updates).length === 0) return { error: 'No link fields to update.' }
+      await ref.update(updates)
+      const changed = Object.entries(updates)
+        .map(([k, v]) => `${k}=${v === null ? 'cleared' : v}`)
+        .join(', ')
+      actions.push(`Updated link on ${itemType} ${itemId}: ${changed}`)
+      return { success: true, id: itemId }
     }
 
     case 'forget': {

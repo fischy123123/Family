@@ -246,6 +246,24 @@ export function buildFamilyContextParts(input: FamilyContextInput): {
     ` → SENT=${openTasks.length}`
   )
 
+  // ── PROVENANCE LINK LOOKUPS ──────────────────────────────────────────────
+  // Resolve recorded links (set at creation time) to human-readable titles so
+  // the model sees explicit "this is for that" facts instead of guessing. We
+  // index ALL events/tasks (not just the windowed ones) so a link still
+  // resolves even when its target sits outside the briefing window.
+  const eventTitleById = new Map((events ?? []).map((e) => [e.id, e.title]))
+  const taskTitleById = new Map((tasks ?? []).map((t) => [t.id, t.title]))
+  // Reverse index: event id → titles of the open tasks that prepare for it,
+  // so an event line can list its prep work.
+  const prepTasksByEvent = new Map<string, string[]>()
+  for (const t of openTasks) {
+    if (t.relatedEventId) {
+      const arr = prepTasksByEvent.get(t.relatedEventId) ?? []
+      arr.push(t.title)
+      prepTasksByEvent.set(t.relatedEventId, arr)
+    }
+  }
+
   // ── Time header (dynamic — changes every run, excluded from cache) ────────
   const nowFormatted = fmtDatetime(now, tz)
   const localDateStr = new Date(now).toLocaleDateString('en-US', {
@@ -394,7 +412,11 @@ export function buildFamilyContextParts(input: FamilyContextInput): {
             .map((s) => memberByIdent(s)?.name ?? s)
           const who = subs.length ? ` (about ${subs.join(', ')})` : ''
           const cat = m.category ? `[${m.category}] ` : ''
-          return `- ${cat}${m.text}${who} (noted ${notedOn(m.createdAt, tz)})`
+          // Explicit links recorded against this memory (not inferred).
+          const le = m.relatedEventId ? eventTitleById.get(m.relatedEventId) : undefined
+          const lt = m.relatedTaskId ? taskTitleById.get(m.relatedTaskId) : undefined
+          const linkStr = le ? ` [about event: "${le}"]` : lt ? ` [about task: "${lt}"]` : ''
+          return `- ${cat}${m.text}${who}${linkStr} (noted ${notedOn(m.createdAt, tz)})`
         })
         .join('\n')}`
     )
@@ -411,9 +433,12 @@ export function buildFamilyContextParts(input: FamilyContextInput): {
               const forStr = forNames.length ? ` [for: ${forNames.join(', ')}]` : ''
               const respName = e.assigneeId ? memberById(members, e.assigneeId)?.name : undefined
               const respStr = respName ? ` [responsible: ${respName}]` : ''
+              // Explicit prep links recorded against this event (not inferred).
+              const prep = prepTasksByEvent.get(e.id)
+              const prepStr = prep?.length ? ` [linked prep: ${prep.join('; ')}]` : ''
               return `- [id:${e.id}] ${e.title} | ${e.isAllDay ? 'all-day ' : ''}${fmtDatetime(e.start, tz)}${
                 e.location ? ` @ ${e.location}` : ''
-              }${e.ownerEmail ? ` (${e.ownerEmail})` : ''}${forStr}${respStr}`
+              }${e.ownerEmail ? ` (${e.ownerEmail})` : ''}${forStr}${respStr}${prepStr}`
             })
             .join('\n')
         : '(none)'
@@ -432,9 +457,12 @@ export function buildFamilyContextParts(input: FamilyContextInput): {
                   .filter((n): n is string => Boolean(n))
                 const forStr = forNames.length ? ` [for: ${forNames.join(', ')}]` : ''
                 const notesStr = t.notes ? ` | notes: ${t.notes.slice(0, 200)}` : ''
+                // Explicit link to the event this task prepares for (not inferred).
+                const linkedEvent = t.relatedEventId ? eventTitleById.get(t.relatedEventId) : undefined
+                const linkStr = linkedEvent ? ` [prep for event: "${linkedEvent}"]` : ''
                 return `- [id:${t.id}] ${t.title}${t.dueDate ? ` (due ${fmtDate(t.dueDate, tz)})` : ''}${
                   who ? ` [assigned: ${who}]` : ''
-                }${forStr} priority=${t.priority}${notesStr}`
+                }${forStr}${linkStr} priority=${t.priority}${notesStr}`
               }
             )
             .join('\n')

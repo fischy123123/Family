@@ -494,6 +494,7 @@ export function CommandCenter() {
       assigneeEmail: r.assigneeEmail,
       priority: r.priority,
       recurrence: r.recurrence,
+      relatedEventId: r.relatedEventId,
       source: 'ai' as const,
       createdAt: r.dueDate ?? new Date().toISOString(),
     }))

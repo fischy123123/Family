@@ -455,6 +455,8 @@ export interface FamilyReminder {
   assigneeId?: string           // canonical assignment key (member id)
   assigneeEmail?: string        // legacy / AI-derived fallback
   recurrence?: RecurrenceRule
+  // ── Provenance link (factual, set at creation time — never inferred) ──
+  relatedEventId?: string       // the calendar event this reminder prepares for / is about
 }
 
 export interface Chore {
