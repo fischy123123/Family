@@ -82,6 +82,17 @@ export const TOOLS: Anthropic.Tool[] = [
       properties: {},
     },
   },
+  {
+    name: 'get_member_profile',
+    description: "Get the structured profile data stored directly on a family member — their importantInfo (medical, education, logistics, personal), routines, preferences, and profile notes. Call this BEFORE update_member_info or remove_member_info to see what already exists (so you don't add duplicates or use stale IDs).",
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        member_name: { type: 'string', description: "Exact name of the family member (e.g. 'Maddie', 'Eric')" },
+      },
+      required: ['member_name'],
+    },
+  },
 
   // --- Write tools ---
   {
@@ -388,6 +399,56 @@ export const TOOLS: Anthropic.Tool[] = [
     },
   },
   {
+    name: 'update_member_info',
+    description: "Add or update a structured fact directly on a family member's profile — their medical info, routines, preferences, or personal notes. Use this instead of remember() for personal facts ABOUT a specific person. The data appears on their profile card in the app and feeds into their personal AI context.\n\nCall get_member_profile first to see what already exists so you don't add duplicates.\n\nField types:\n- 'importantInfo': structured facts — medical devices, allergies, school, doctors, logistics (provide category + label + value)\n- 'routine': a recurring schedule item — 'Soccer practice Tue/Thu 5pm', 'School pickup 3:30pm' (provide title + schedule + optional notes)\n- 'preference': something they like or dislike — 'Food: loves tacos', 'Dislikes: loud noises' (provide category + text)\n- 'note': a freeform personal note that doesn't fit the above (provide text only)",
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        member_name: { type: 'string', description: "Name of the family member to update (e.g. 'Maddie')" },
+        field: {
+          type: 'string',
+          enum: ['importantInfo', 'routine', 'preference', 'note'],
+          description: "Which profile field to add/update",
+        },
+        // importantInfo fields
+        category: {
+          type: 'string',
+          enum: ['medical', 'education', 'logistics', 'personal', 'other'],
+          description: "Category for importantInfo items. 'medical' for health/devices/allergies/medications/doctors. 'education' for school/teachers/grade. 'logistics' for practical facts (bus stop, locker combo). 'personal' for personal details. Required when field='importantInfo'.",
+        },
+        label: { type: 'string', description: "Short label/key for importantInfo — e.g. 'Insulin pump', 'Allergies', 'Pediatrician', 'School'. Required when field='importantInfo'." },
+        value: { type: 'string', description: "The full value for importantInfo — e.g. 'Tandem Mobi with SteadiSet infusion sets', 'Peanuts (EpiPen required)'. Required when field='importantInfo'." },
+        // routine fields
+        title: { type: 'string', description: "Routine name — e.g. 'Soccer practice', 'School pickup'. Required when field='routine'." },
+        schedule: { type: 'string', description: "Human-readable schedule — e.g. 'Tue/Thu 5–6pm', 'Weekdays 3:30pm'. Required when field='routine'." },
+        notes: { type: 'string', description: "Optional extra notes for a routine — e.g. 'Parent must stay', 'Bring water bottle'." },
+        // preference fields
+        pref_category: { type: 'string', description: "Preference category — e.g. 'Food', 'Activities', 'Dislikes', 'Comfort'. Required when field='preference'." },
+        text: { type: 'string', description: "Preference text — e.g. 'Loves tacos and pizza', 'Hates loud noises'. Required when field='preference' or field='note'." },
+        // update existing
+        replaces_id: { type: 'string', description: "ID of an existing item to replace/update in place (from get_member_profile). Omit to add a new item. Use this when a fact has changed — e.g. a new doctor, a different infusion set — so you don't leave a stale copy." },
+      },
+      required: ['member_name', 'field'],
+    },
+  },
+  {
+    name: 'remove_member_info',
+    description: "Remove a specific item from a family member's profile (importantInfo, routine, preference, or note). Call get_member_profile first to get the exact item ID.",
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        member_name: { type: 'string', description: "Name of the family member" },
+        field: {
+          type: 'string',
+          enum: ['importantInfo', 'routine', 'preference', 'note'],
+          description: "Which profile field to remove from",
+        },
+        item_id: { type: 'string', description: "ID of the item to remove (from get_member_profile)" },
+      },
+      required: ['member_name', 'field', 'item_id'],
+    },
+  },
+  {
     name: 'add_briefing_rule',
     description: "Add a hard behavioral rule to the family's briefing rules. Use this when the user tells you to ALWAYS or NEVER do something about how the briefing is presented — e.g. 'always put swim lessons under each child, not Family', 'never suggest creating reminders for things already in my task list', 'group Liam's therapy under Liam, not Family'. These rules are injected into every future briefing as authoritative hard constraints that override all other AI guidance. Use this sparingly — only for genuine, durable presentation preferences the user wants enforced every time, not for one-off requests.",
     input_schema: {
@@ -447,6 +508,8 @@ export const WRITE_TOOLS = new Set<string>([
   'relate',
   'add_briefing_rule',
   'remove_briefing_rule',
+  'update_member_info',
+  'remove_member_info',
 ])
 
 // ---------------------------------------------------------------------------
@@ -603,6 +666,10 @@ How to operate:
 - When asked open-ended questions like "what needs my attention?" or "what am I forgetting?", gather the relevant context with the read tools first, then give a focused, prioritized answer.
 - REMEMBER what matters. When the user shares a durable fact about the family (an allergy, a routine, a preference, a relationship, a standing logistic), quietly queue a remember action so it informs every future briefing. Don't remember one-off tasks or events. Lean on what you already know above before asking the user to repeat themselves.
 - CORRECT stale memory. When the user updates or contradicts something already in durable memory (e.g. "actually Maddie's grounding is extended to June 28" when memory says it ends June 22), queue a forget action for the old [id:xxx] AND a remember action for the corrected fact in the same turn. Never leave two contradictory memories on file — that makes briefings wrong. Match memories about a person even when tagged to that person, not just family-wide ones. When storing updated facts that include dates, store dates as YYYY-MM-DD without a day name (e.g. "Maddie's grounding ends 2026-06-28") so the fact stays accurate as time passes.
+- PROFILE vs MEMORY: When saving a personal fact that is ABOUT a specific named family member, prefer update_member_info over remember. Use this decision rule:
+  → update_member_info: health facts (medical devices, allergies, medications, doctors), school/education details, personal routines and schedules, preferences and dislikes — anything that belongs on THAT PERSON'S profile card. Call get_member_profile first to check what already exists and avoid duplicates; if something changed, pass replaces_id so the old entry is overwritten.
+  → remember: family-wide facts (logistics everyone shares), relationships between people ("Maddie and Liam are both in the school play"), one-time events that have context beyond a single person, or facts that don't cleanly map to a profile field.
+  If unsure: if a fact is primarily ABOUT one person and would make sense on their profile page, use update_member_info.
 
 Examples of what you can do:
 - "Add milk to shopping" → call list_shopping_lists to find the right list, then add_shopping_items (queued for confirmation)
@@ -1097,6 +1164,89 @@ export async function executeTool(
       const scopeLabel = scope === 'all' ? ' (all occurrences)' : ''
       actions.push(`Updated Google Calendar event: ${updated.title}${scopeLabel}`)
       return { success: true, event: updated, scope }
+    }
+
+    case 'get_member_profile': {
+      const targetMember = resolveMemberRef(ctx.members ?? [], input.member_name as string)
+      if (!targetMember) return { error: `Member "${input.member_name}" not found.` }
+      // Return all structured profile arrays with their IDs so the caller can reference them
+      return {
+        member: targetMember.name,
+        importantInfo: targetMember.importantInfo ?? [],
+        routines: targetMember.routines ?? [],
+        preferences: targetMember.preferences ?? [],
+        notes: targetMember.memories ?? [],
+      }
+    }
+
+    case 'update_member_info': {
+      if (!db) return { error: 'Firestore not configured.' }
+      const targetMember = resolveMemberRef(ctx.members ?? [], input.member_name as string)
+      if (!targetMember) return { error: `Member "${input.member_name}" not found.` }
+      const memberRef = db.collection('families').doc(familyId).collection('members').doc(targetMember.id)
+      const snap = await memberRef.get()
+      if (!snap.exists) return { error: `Member ${targetMember.id} not found in Firestore.` }
+      const data = snap.data() as Record<string, unknown>
+      const field = input.field as string
+      const replacesId = (input.replaces_id as string) || ''
+
+      if (field === 'importantInfo') {
+        const existing = (data.importantInfo as Array<{ id: string; category: string; label: string; value: string }>) ?? []
+        const newItem = { id: replacesId || generateId(), category: (input.category as string) ?? 'other', label: input.label as string, value: input.value as string }
+        const updated = replacesId ? existing.map((i) => i.id === replacesId ? newItem : i) : [...existing, newItem]
+        await memberRef.update({ importantInfo: updated })
+        actions.push(`Saved to ${targetMember.name}'s profile [${newItem.category}] ${newItem.label}: ${newItem.value}`)
+        return { success: true, id: newItem.id }
+      }
+
+      if (field === 'routine') {
+        const existing = (data.routines as Array<{ id: string; title: string; schedule: string; notes?: string }>) ?? []
+        const newItem = { id: replacesId || generateId(), title: input.title as string, schedule: input.schedule as string, ...(input.notes ? { notes: input.notes as string } : {}) }
+        const updated = replacesId ? existing.map((i) => i.id === replacesId ? newItem : i) : [...existing, newItem]
+        await memberRef.update({ routines: updated })
+        actions.push(`Saved to ${targetMember.name}'s routines: ${newItem.title} — ${newItem.schedule}`)
+        return { success: true, id: newItem.id }
+      }
+
+      if (field === 'preference') {
+        const existing = (data.preferences as Array<{ id: string; category: string; text: string }>) ?? []
+        const newItem = { id: replacesId || generateId(), category: (input.pref_category as string) ?? 'other', text: input.text as string }
+        const updated = replacesId ? existing.map((i) => i.id === replacesId ? newItem : i) : [...existing, newItem]
+        await memberRef.update({ preferences: updated })
+        actions.push(`Saved to ${targetMember.name}'s preferences [${newItem.category}]: ${newItem.text}`)
+        return { success: true, id: newItem.id }
+      }
+
+      if (field === 'note') {
+        const existing = (data.memories as Array<{ id: string; text: string; createdAt: string }>) ?? []
+        const newItem = { id: replacesId || generateId(), text: input.text as string, createdAt: new Date().toISOString() }
+        const updated = replacesId ? existing.map((i) => i.id === replacesId ? newItem : i) : [...existing, newItem]
+        await memberRef.update({ memories: updated })
+        actions.push(`Saved note to ${targetMember.name}'s profile: ${newItem.text}`)
+        return { success: true, id: newItem.id }
+      }
+
+      return { error: `Unknown field type: ${field}` }
+    }
+
+    case 'remove_member_info': {
+      if (!db) return { error: 'Firestore not configured.' }
+      const targetMember = resolveMemberRef(ctx.members ?? [], input.member_name as string)
+      if (!targetMember) return { error: `Member "${input.member_name}" not found.` }
+      const memberRef = db.collection('families').doc(familyId).collection('members').doc(targetMember.id)
+      const snap = await memberRef.get()
+      if (!snap.exists) return { error: `Member ${targetMember.id} not found.` }
+      const data = snap.data() as Record<string, unknown>
+      const field = input.field as string
+      const itemId = input.item_id as string
+
+      const fieldKey = field === 'note' ? 'memories' : field === 'routine' ? 'routines' : field === 'preference' ? 'preferences' : 'importantInfo'
+      const existing = (data[fieldKey] as Array<{ id: string }>) ?? []
+      const filtered = existing.filter((i) => i.id !== itemId)
+      if (filtered.length === existing.length) return { error: `Item ${itemId} not found in ${targetMember.name}'s ${field}.` }
+      await memberRef.update({ [fieldKey]: filtered })
+      actions.push(`Removed item from ${targetMember.name}'s ${field}`)
+      return { success: true }
     }
 
     case 'list_briefing_rules': {
