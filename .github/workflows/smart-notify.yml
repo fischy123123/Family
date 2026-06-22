@@ -1,0 +1,42 @@
+name: Smart Notify
+
+# Runs every 30 minutes and calls the smart-notify endpoint.
+# The endpoint itself handles all the intelligence: prompt caching keeps AI
+# cost near-zero on most runs, and the hash dedup skips the AI call entirely
+# when nothing in the family's data has changed since the last check.
+#
+# Required repository secrets (Settings → Secrets → Actions):
+#   APP_URL      — your Vercel deployment URL, e.g. https://your-app.vercel.app
+#   CRON_SECRET  — same value as CRON_SECRET in your Vercel environment variables
+
+on:
+  schedule:
+    - cron: '0,30 * * * *'
+  # Allow manual runs from the Actions tab for testing.
+  workflow_dispatch:
+
+jobs:
+  notify:
+    name: Trigger smart notification check
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+
+    steps:
+      - name: Call smart-notify endpoint
+        run: |
+          echo "Calling ${{ secrets.APP_URL }}/api/cron/smart-notify"
+          response=$(curl -s -w "\n%{http_code}" \
+            --max-time 120 \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            "${{ secrets.APP_URL }}/api/cron/smart-notify")
+
+          body=$(echo "$response" | head -n -1)
+          status=$(echo "$response" | tail -n 1)
+
+          echo "Status: $status"
+          echo "Response: $body"
+
+          if [ "$status" -lt 200 ] || [ "$status" -ge 300 ]; then
+            echo "Request failed with status $status"
+            exit 1
+          fi
