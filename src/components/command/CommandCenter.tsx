@@ -310,6 +310,10 @@ export function CommandCenter() {
   // Greeting text as it streams in during a cold start, shown in place of the
   // skeleton so the user reads the headline ~2s in rather than waiting ~20s.
   const [streamingGreeting, setStreamingGreeting] = useState('')
+  // Cards as they stream in during a cold start — each appears the instant the
+  // model finishes writing it, so the briefing fills in like Copilot's prose
+  // instead of all cards popping in at once when the full JSON parses.
+  const [streamingItems, setStreamingItems] = useState<AttentionItem[]>([])
   const [googleLoaded, setGoogleLoaded] = useState(false)
   const [hydrated, setHydrated] = useState(false)
   const lastRun = useRef<number>(0)
@@ -704,9 +708,10 @@ export function CommandCenter() {
         return
       }
 
-      // Only show the streaming greeting on a foreground cold start — background
-      // refreshes must not disturb the report already on screen.
+      // Only show the streaming greeting + cards on a foreground cold start —
+      // background refreshes must not disturb the report already on screen.
       const progressive = !silent
+      if (progressive) setStreamingItems([])
       const reader = res.body.getReader()
       const decoder = new TextDecoder()
       let buf = ''
@@ -724,7 +729,7 @@ export function CommandCenter() {
           const line = buf.slice(0, nl).trim()
           buf = buf.slice(nl + 1)
           if (!line) continue
-          let evt: { t?: string; d?: string; error?: string } & Partial<AttentionReport>
+          let evt: { t?: string; d?: string; error?: string; item?: AttentionItem } & Partial<AttentionReport>
           try { evt = JSON.parse(line) } catch { continue }
           if (evt.t === 'delta') {
             if (engineTTFT === -1 && evt.d) {
@@ -735,6 +740,14 @@ export function CommandCenter() {
               rawText += evt.d
               const g = extractPartialGreeting(rawText)
               if (g) setStreamingGreeting(g)
+            }
+          } else if (evt.t === 'item') {
+            // A card finished generating — show it right away on a cold start.
+            if (progressive && evt.item) {
+              const card = evt.item
+              setStreamingItems((prev) =>
+                prev.some((p) => p.id === card.id) ? prev : [...prev, card]
+              )
             }
           } else if (evt.t === 'final') {
             const total = Math.round(performance.now() - engineStart)
@@ -788,6 +801,7 @@ export function CommandCenter() {
         setLoading(false)
         setRefreshing(false)
         setStreamingGreeting('')
+        setStreamingItems([])
       }
     }
   }, [buildEngineBody, eventContexts, attnKey, report])
@@ -1701,11 +1715,33 @@ export function CommandCenter() {
           ) : (
             <div className="skeleton h-20 w-full rounded-2xl" />
           )}
-          <div className="space-y-3">
-            <div className="skeleton h-4 w-24 rounded" />
-            <div className="skeleton h-20 w-full rounded-2xl" />
-            <div className="skeleton h-20 w-full rounded-2xl" />
-          </div>
+          {streamingItems.length > 0 ? (
+            // Cards stream in one-by-one as the model writes them. These are slim
+            // previews (title + reason); the full grouped/assignable cards render
+            // once the authoritative 'final' report replaces this block.
+            <div className="space-y-2 stagger-children">
+              {streamingItems.map((it) => (
+                <div
+                  key={it.id}
+                  className="rounded-2xl bg-white shadow-card p-4 animate-slide-up"
+                  style={{ borderLeft: '3px solid #94a3b8' }}
+                >
+                  <p className="text-sm font-semibold text-slate-900">{it.title}</p>
+                  {it.reason && (
+                    <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">{it.reason}</p>
+                  )}
+                </div>
+              ))}
+              {/* A trailing shimmer hints more cards are still arriving. */}
+              <div className="skeleton h-16 w-full rounded-2xl opacity-60" />
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <div className="skeleton h-4 w-24 rounded" />
+              <div className="skeleton h-20 w-full rounded-2xl" />
+              <div className="skeleton h-20 w-full rounded-2xl" />
+            </div>
+          )}
         </div>
       )}
 

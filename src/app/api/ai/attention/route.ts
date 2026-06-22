@@ -6,6 +6,46 @@ import { ATTENTION_MODEL, ATTENTION_MAX_TOKENS, ATTENTION_SYSTEM_PROMPT } from '
 
 const MODEL = ATTENTION_MODEL
 
+// Incrementally pull COMPLETE item objects out of the still-streaming JSON so we
+// can emit each card the instant the model finishes writing it — instead of
+// making the user wait for the entire document to parse. Returns every
+// fully-closed object inside the top-level "items" array found so far. This is
+// the array-of-objects analogue of the client's extractPartialGreeting.
+function extractCompleteItems(raw: string): Record<string, unknown>[] {
+  const key = raw.indexOf('"items"')
+  if (key === -1) return []
+  const arrOpen = raw.indexOf('[', key)
+  if (arrOpen === -1) return []
+
+  const out: Record<string, unknown>[] = []
+  let depth = 0          // object-brace nesting depth within the array
+  let objStart = -1      // index where the current top-level object began
+  let inStr = false
+  let escaped = false
+
+  for (let i = arrOpen + 1; i < raw.length; i++) {
+    const c = raw[i]
+    if (inStr) {
+      if (escaped) escaped = false
+      else if (c === '\\') escaped = true
+      else if (c === '"') inStr = false
+      continue
+    }
+    if (c === '"') { inStr = true; continue }
+    if (c === '{') { if (depth === 0) objStart = i; depth++; continue }
+    if (c === '}') {
+      depth--
+      if (depth === 0 && objStart !== -1) {
+        try { out.push(JSON.parse(raw.slice(objStart, i + 1))) } catch { /* skip malformed */ }
+        objStart = -1
+      }
+      continue
+    }
+    if (c === ']' && depth === 0) break  // items array closed — nothing more to extract
+  }
+  return out
+}
+
 // The Attention Engine + Timeline Intelligence Engine.
 // Takes full family context, returns a prioritized "what needs attention now" report.
 export async function POST(request: NextRequest) {
@@ -54,6 +94,10 @@ export async function POST(request: NextRequest) {
         let ttft = -1
         let chunkCount = 0
         let streamedChars = 0
+        // Accumulated model text + how many items we've already pushed as cards,
+        // so the text handler can emit each newly-completed item exactly once.
+        let rawSoFar = ''
+        let emittedItems = 0
         const ai = anthropic.messages.stream(
           {
             model: MODEL,
@@ -91,6 +135,16 @@ export async function POST(request: NextRequest) {
           chunkCount++
           streamedChars += delta.length
           send({ t: 'delta', d: delta })
+
+          // Progressive cards: as soon as the model closes an item object, ship
+          // it so the client can render that card immediately. The greeting comes
+          // first in the JSON, so by the time items appear it has already streamed.
+          rawSoFar += delta
+          const items = extractCompleteItems(rawSoFar)
+          for (let i = emittedItems; i < items.length; i++) {
+            send({ t: 'item', index: i, item: { id: `att-${i}`, ...items[i] } })
+          }
+          emittedItems = items.length
         })
 
         const finalMsg = await ai.finalMessage()
