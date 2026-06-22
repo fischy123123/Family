@@ -179,7 +179,7 @@ export async function POST(request: NextRequest) {
         console.log(
           `[perf/attention] SUMMARY wall=${aiDone - reqStart}ms ai=${totalAi}ms` +
           ` model=${MODEL} cache=${cacheStatus}` +
-          ` in=${inTokens} cr=${cacheRead} cw=${cacheWrite} out=${outTokens} max=6000` +
+          ` in=${inTokens} cr=${cacheRead} cw=${cacheWrite} out=${outTokens} max=${ATTENTION_MAX_TOKENS}` +
           ` cost=${estimateCost(MODEL, uMap)}`
         )
 

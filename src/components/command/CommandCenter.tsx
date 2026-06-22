@@ -708,8 +708,8 @@ export function CommandCenter() {
         return
       }
 
-      // Only show the streaming greeting + cards on a foreground cold start —
-      // background refreshes must not disturb the report already on screen.
+      // Show streaming for manual (non-silent) runs regardless of whether
+      // a cached report exists. Background (silent) runs never disturb the screen.
       const progressive = !silent
       if (progressive) setStreamingItems([])
       const reader = res.body.getReader()
@@ -1699,11 +1699,12 @@ export function CommandCenter() {
         </div>
       )}
 
-      {/* Cold-start skeleton — only when we have nothing cached to show. Shaped
-          like the real content so there is no jump when the report arrives.
-          Once the greeting starts streaming in, show it live in place of the
-          top skeleton block so the user reads the headline ~2s in. */}
-      {loading && !report && (
+      {/* Streaming view — shown on cold start (no report) OR once streaming
+          content begins on a manual refresh. Stays hidden during silent background
+          refreshes so the existing report never jumps while you're scrolling.
+          We transition from the old report into this the moment the greeting
+          starts coming in, so there's no blank-screen gap. */}
+      {loading && (!report || streamingGreeting || streamingItems.length > 0) && (
         <div className="space-y-6 animate-fade-in">
           {streamingGreeting ? (
             <div className="rounded-2xl p-5 bg-gradient-to-br from-blue-600 to-purple-700 text-white shadow-elevated animate-scale-in">
@@ -1745,8 +1746,9 @@ export function CommandCenter() {
         </div>
       )}
 
-      {/* PERSON SECTIONS — one per family member + shared Family section */}
-      {report && sections.length > 0 && (
+      {/* PERSON SECTIONS — one per family member + shared Family section.
+          Hidden while streaming is active so the two views don't overlap. */}
+      {report && sections.length > 0 && !streamingGreeting && !streamingItems.length && (
         <div className="space-y-6">
           {sections.map((section) => {
             const collapsed = collapsedSections.has(section.key)
@@ -1814,7 +1816,7 @@ export function CommandCenter() {
       )}
 
       {/* POTENTIAL PROBLEMS */}
-      {report && (report.problems?.length ?? 0) > 0 && (
+      {report && (report.problems?.length ?? 0) > 0 && !streamingGreeting && !streamingItems.length && (
         <section>
           <SectionLabel icon={AlertTriangle} color="#dc2626">Potential Problems</SectionLabel>
           <div className="space-y-2 stagger-children">
@@ -1847,7 +1849,7 @@ export function CommandCenter() {
       )}
 
       {/* COPILOT RECOMMENDATIONS */}
-      {report && (report.recommendations?.length ?? 0) > 0 && (
+      {report && (report.recommendations?.length ?? 0) > 0 && !streamingGreeting && !streamingItems.length && (
         <section>
           <SectionLabel icon={Lightbulb} color="#7c3aed">Copilot Recommendations</SectionLabel>
           <div className="space-y-2 stagger-children">
