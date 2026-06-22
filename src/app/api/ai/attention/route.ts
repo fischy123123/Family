@@ -89,6 +89,15 @@ export async function POST(request: NextRequest) {
       const send = (obj: unknown) => {
         try { controller.enqueue(encoder.encode(JSON.stringify(obj) + '\n')) } catch { /* closed */ }
       }
+      // Flush a padding line + an "open" event immediately, before the slow AI
+      // call. This forces the connection open and pushes past any byte-threshold
+      // buffering in the proxy, so subsequent token events stream in real time
+      // instead of being held until the response completes. The client ignores
+      // unknown event types and skips blank/comment lines.
+      try {
+        controller.enqueue(encoder.encode(':' + ' '.repeat(2048) + '\n'))
+        send({ t: 'open' })
+      } catch { /* closed */ }
       try {
         const aiStart = Date.now()
         let ttft = -1
@@ -256,6 +265,13 @@ export async function POST(request: NextRequest) {
     headers: {
       'Content-Type': 'application/x-ndjson; charset=utf-8',
       'Cache-Control': 'no-cache, no-transform',
+      // Defeat proxy/CDN buffering so NDJSON events reach the browser as they're
+      // produced. Without this, Vercel/nginx hold the whole response and flush it
+      // at the end — the user sees a blank screen for the full generation, then
+      // everything at once. X-Accel-Buffering disables nginx-style buffering;
+      // the upfront padding flush (see stream start) defeats byte-threshold
+      // buffering before the slow AI call begins.
+      'X-Accel-Buffering': 'no',
     },
   })
 }
