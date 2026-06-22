@@ -10,9 +10,9 @@ name: Smart Notify
 #   CRON_SECRET  — same value as CRON_SECRET in your Vercel environment variables
 
 on:
-  schedule:
-    - cron: '0,30 * * * *'
-  # Allow manual runs from the Actions tab for testing.
+  # Schedule disabled — re-enable when iOS push is configured.
+  # schedule:
+  #   - cron: '0,30 * * * *'
   workflow_dispatch:
 
 jobs:

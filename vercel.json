@@ -1,12 +1,3 @@
 {
-  "crons": [
-    {
-      "path": "/api/cron/notify",
-      "schedule": "0 15 * * *"
-    },
-    {
-      "path": "/api/cron/coach",
-      "schedule": "0 1 * * 1"
-    }
-  ]
+  "crons": []
 }
