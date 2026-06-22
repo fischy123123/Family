@@ -846,7 +846,11 @@ export function CommandCenter() {
       lastRunSig.current === lastCtxSig.current &&
       timeSinceLastRun < ENGINE_DATA_UNCHANGED_TTL_MS
     ) return
-    scheduleEngine(!!report)
+    // By the time we reach here, ENGINE_THROTTLE_MS (15 min) has passed since
+    // the last run — the user is returning to the app. Always run in foreground
+    // (loading=true) so the streaming skeleton appears immediately instead of
+    // the stale report sitting on screen for the full generation time.
+    scheduleEngine(false)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hydrated, googleLoaded, members.length, events.length > 0, tasks.length, reminders.length])
 
@@ -882,8 +886,8 @@ export function CommandCenter() {
     const inboxJustArrived = prevEmailCount === 0 && emailSuggestions.length > 0
     const eventsJustArrived = prevEventCount === 0 && events.length > 0
     if (!inboxJustArrived && !eventsJustArrived && Date.now() - lastRun.current < ENGINE_THROTTLE_MS) return
-    // Silent if a report exists, cold-start otherwise (so the user sees the loader).
-    // Debounced so a burst of arrivals (events then inbox) coalesces into one run.
+    // Data arrived mid-session — stay silent (buffered) so content doesn't jump
+    // while the user is reading. Only inbox/event first-arrivals bypass the throttle.
     scheduleEngine(!!report)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ctxSignature, hydrated])
@@ -925,7 +929,8 @@ export function CommandCenter() {
         setEngineError(null)
         // Only bypass the throttle for forced cases — stale checks respect it.
         if (calChanged || hasError || hasNoReport) lastRun.current = 0
-        runEngine(undefined, !!reportRef.current && !hasError)
+        // Always foreground on return — show streaming instead of stale report.
+        runEngine(undefined, false)
       }
     }
     document.addEventListener('visibilitychange', handleVisible)
@@ -1665,26 +1670,6 @@ export function CommandCenter() {
         </div>
       )}
 
-      {report?.greeting && (
-        <div className="rounded-2xl p-5 bg-gradient-to-br from-blue-600 to-purple-700 text-white shadow-elevated animate-scale-in">
-          <button
-            onClick={() => openBriefingInCopilot(report.greeting!)}
-            className="flex items-start gap-3 text-left w-full"
-          >
-            <Sparkles size={18} className="mt-0.5 shrink-0 opacity-90" />
-            <p className="text-[15px] leading-relaxed font-medium">{report.greeting}</p>
-          </button>
-          <div className="flex items-center justify-between mt-3">
-            <button
-              onClick={() => openBriefingInCopilot(report.greeting!)}
-              className="flex items-center gap-1.5 text-[12px] font-semibold text-white/90 hover:text-white transition-colors"
-            >
-              <MessageCircle size={13} className="shrink-0" />
-              Ask a follow-up
-            </button>
-          </div>
-        </div>
-      )}
 
       {/* Empty state — shown when the engine ran but found nothing for this person */}
       {report && !loading &&
