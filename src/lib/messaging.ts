@@ -63,12 +63,31 @@ export async function enableNotifications(familyId: string, userEmail: string): 
   return true
 }
 
-/** Subscribe to foreground messages (when the app is open). */
+/** Subscribe to foreground messages (when the app is open).
+ *  Also shows a real OS notification via the service worker so the user
+ *  sees it even when looking at a different tab or window. */
 export async function onForegroundMessage(cb: (title: string, body: string) => void) {
   const msg = await getMessagingInstance()
   if (!msg) return
-  onMessage(msg, (payload) => {
-    cb(payload.notification?.title ?? 'Family Command Center', payload.notification?.body ?? '')
+  onMessage(msg, async (payload) => {
+    const title = payload.notification?.title ?? 'Family Command Center'
+    const body = payload.notification?.body ?? ''
+    // Show an OS-level notification even while the app is in the foreground.
+    if (Notification.permission === 'granted' && 'serviceWorker' in navigator) {
+      try {
+        const reg = await navigator.serviceWorker.ready
+        await reg.showNotification(title, {
+          body,
+          icon: '/icons/icon-192.png',
+          badge: '/icons/icon-192.png',
+          data: payload.data ?? {},
+        })
+      } catch {
+        // Fallback: plain Notification API
+        new Notification(title, { body, icon: '/icons/icon-192.png' })
+      }
+    }
+    cb(title, body)
   })
 }
 
