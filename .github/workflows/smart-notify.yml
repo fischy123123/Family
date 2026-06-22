@@ -25,7 +25,7 @@ jobs:
       - name: Call smart-notify endpoint
         run: |
           echo "Calling ${{ secrets.APP_URL }}/api/cron/smart-notify"
-          response=$(curl -s -w "\n%{http_code}" \
+          response=$(curl -s -L -w "\n%{http_code}" \
             --max-time 120 \
             -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
             "${{ secrets.APP_URL }}/api/cron/smart-notify")
