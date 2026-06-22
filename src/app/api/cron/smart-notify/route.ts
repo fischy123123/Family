@@ -266,6 +266,14 @@ export async function GET(request: NextRequest) {
     if (!decision.shouldNotify || !decision.body) continue
 
     // Step 6: Send the push notification
+    // Link to the page most relevant to what triggered the alert:
+    // events only → calendar, tasks only → task list, both → command center.
+    const notifLink = soonEvents.length > 0 && dueTasks.length === 0
+      ? '/calendar'
+      : dueTasks.length > 0 && soonEvents.length === 0
+        ? '/tasks'
+        : '/command'
+
     try {
       const res = await messaging.sendEachForMulticast({
         tokens,
@@ -274,7 +282,8 @@ export async function GET(request: NextRequest) {
           body: decision.body,
         },
         webpush: {
-          fcmOptions: { link: '/command' },
+          fcmOptions: { link: notifLink },
+          data: { link: notifLink },
         },
       })
       sent += res.successCount

@@ -143,6 +143,7 @@ export async function GET(request: NextRequest) {
       },
       webpush: {
         fcmOptions: { link: '/command' },
+        data: { link: '/command' },
       },
     })
     sent += res.successCount
