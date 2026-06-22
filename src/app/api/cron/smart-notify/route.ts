@@ -3,80 +3,61 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getAdminDb, getAdminMessaging } from '@/lib/firebaseAdmin'
 import { getAnthropic, MODEL_FAST, logUsage } from '@/lib/ai'
 import { getEvents } from '@/lib/google/calendar'
-import type { CalendarEvent } from '@/lib/types'
+import { buildFamilyContextParts } from '@/lib/familyContext'
+import { DEFAULT_TIMEZONE } from '@/lib/time'
+import type {
+  CalendarEvent, FamilyMember, Task, Chore, Plan, SmartList, FamilyProfile, FamilyMemory,
+} from '@/lib/types'
 
 export const dynamic = 'force-dynamic'
 
-// Near-real-time smart notification endpoint.
-// Designed to be called every 15–30 min by an external cron (e.g. cron-job.org).
-// For each family:
-//   1. Syncs Google Calendar using stored tokens (keeps data fresh without user opening the app)
-//   2. Hashes the relevant actionable state (events in next 4h, due/overdue tasks)
-//   3. Skips the AI call entirely when nothing changed since last notification
-//   4. Calls Claude Haiku to decide whether to push — and what to say — only when warranted
-//   5. Deduplicates to avoid re-sending the same message
+// Smart notification endpoint — designed to run every 30–60 minutes.
+// Unlike the morning cron (which sends a fixed daily briefing), this uses
+// the same full family context the attention engine uses so Claude can reason
+// holistically: prep time from memories, medication routines, quiet hours from
+// the profile, coach check-ins, anything the family said matters to them.
+//
+// Cost controls:
+//   • Push tokens checked first — bail immediately if no devices registered.
+//   • Data block prompt-cached (1h TTL) — same strategy as the attention engine.
+//     On a 30-60 min cron, the static family data rarely changes between runs,
+//     so only the time header incurs full token cost after the first call.
+//   • Hash dedup — if the full data state hasn't changed AND we notified within
+//     the last hour, skip the AI call entirely. The AI only fires when something
+//     actually changed (new event, new task, new memory, etc.).
 
 function hashState(data: unknown): string {
   return crypto.createHash('sha256').update(JSON.stringify(data)).digest('hex').slice(0, 16)
 }
 
-function isDueOrOverdue(iso?: string): boolean {
-  if (!iso) return false
-  const today = new Date().toISOString().split('T')[0]
-  return iso.split('T')[0] <= today
-}
-
-function isWithinHours(iso: string, hours: number): boolean {
-  const t = new Date(iso).getTime()
-  return t >= Date.now() && t <= Date.now() + hours * 3_600_000
-}
+// Cached at the prompt level (1h TTL) — never changes between runs.
+const SYSTEM_PROMPT =
+  `You are the push notification brain for a family app. Your job is to decide, RIGHT NOW, ` +
+  `whether this family needs a push notification based on everything you know about them.\n\n` +
+  `You have their full context: calendar, tasks, memories, personal notes, routines, ` +
+  `priorities, and family profile. Use ALL of it — not just the raw event list.\n\n` +
+  `WHAT TO LOOK FOR:\n` +
+  `• Upcoming events that need PREP TIME — if a memory says they need to leave 45 min early, ` +
+  `account for that. An event 2 hours away might need a push now.\n` +
+  `• Overdue tasks that are blocking something real or time-sensitive today.\n` +
+  `• Health or medication routines that happen at a specific time.\n` +
+  `• Anything the family has explicitly said they want to be reminded about.\n` +
+  `• Coach check-ins or insights that just became available and feel personally relevant.\n\n` +
+  `WHAT TO IGNORE:\n` +
+  `• Routine chores — these are already in the morning briefing.\n` +
+  `• Events happening tomorrow or later — only what's relevant in the next 3 hours.\n` +
+  `• Quiet hours specified in the family profile — do NOT push during those times.\n` +
+  `• Anything that was already sent recently (a dedupe note will be included if relevant).\n\n` +
+  `Be VERY selective. A push is an interruption. When in doubt, do NOT send.\n\n` +
+  `Return ONLY valid JSON — no markdown, no explanation:\n` +
+  `{"shouldNotify":true/false,"title":"...","body":"...","trigger":"event"|"task"|"coach"|"other"}\n` +
+  `title ≤50 chars · body ≤160 chars · trigger drives the tap destination.`
 
 interface NotifyDecision {
   shouldNotify: boolean
   title: string
   body: string
-}
-
-async function askShouldNotify(
-  familyName: string,
-  currentTimeISO: string,
-  summary: string,
-  recentBody: string,
-): Promise<NotifyDecision> {
-  const anthropic = getAnthropic()
-
-  const dedupeNote = recentBody
-    ? `\n\nDO NOT repeat this notification already sent recently:\n"${recentBody}"`
-    : ''
-
-  const response = await anthropic.messages.create({
-    model: MODEL_FAST,
-    max_tokens: 120,
-    system:
-      'You are a push notification assistant for a family app. Be selective and direct. ' +
-      'Only push when there is something genuinely time-sensitive or overdue right now. ' +
-      'Keep title ≤50 chars, body ≤160 chars. Return only valid JSON — no markdown, no explanation.',
-    messages: [
-      {
-        role: 'user',
-        content:
-          `Family: ${familyName}\nCurrent time: ${currentTimeISO}\n\n` +
-          `${summary}${dedupeNote}\n\n` +
-          `Should we send a push notification right now? ` +
-          `Return JSON: {"shouldNotify":true/false,"title":"...","body":"..."}`,
-      },
-    ],
-  })
-
-  logUsage('smart-notify', MODEL_FAST, response.usage)
-
-  const raw = response.content[0]?.type === 'text' ? response.content[0].text.trim() : ''
-  try {
-    const parsed = JSON.parse(raw) as NotifyDecision
-    return { shouldNotify: !!parsed.shouldNotify, title: parsed.title ?? '', body: parsed.body ?? '' }
-  } catch {
-    return { shouldNotify: false, title: '', body: '' }
-  }
+  trigger: 'event' | 'task' | 'coach' | 'other'
 }
 
 export async function GET(request: NextRequest) {
@@ -97,8 +78,8 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: 'ANTHROPIC_API_KEY not configured' }, { status: 500 })
   }
 
+  const anthropic = getAnthropic()
   const now = new Date()
-  const todayStr = now.toISOString().split('T')[0]
   const familiesSnap = await db.collection('families').get()
 
   let sent = 0
@@ -106,21 +87,23 @@ export async function GET(request: NextRequest) {
 
   for (const familyDoc of familiesSnap.docs) {
     const familyId = familyDoc.id
-    const familyName: string = familyDoc.data().name ?? 'the family'
+    const fam = (col: string) => db.collection('families').doc(familyId).collection(col)
 
-    // Check push tokens first — pointless to do any work without them
-    const tokensSnap = await db.collection('families').doc(familyId).collection('pushTokens').get()
+    // No tokens → nothing to send, skip all work for this family.
+    const tokensSnap = await fam('pushTokens').get()
     const tokens = tokensSnap.docs.map((d) => d.data().token as string).filter(Boolean)
     if (tokens.length === 0) continue
 
-    // Step 1: Sync Google Calendar for all connected members
-    const googleTokensSnap = await db
-      .collection('families').doc(familyId).collection('googleTokens').get()
+    // ── Calendar sync ──────────────────────────────────────────────────────
+    // Refresh Google Calendar data so Claude reasons about fresh events,
+    // not whatever was last synced when the user had the app open.
+    const googleTokensSnap = await db.collection('families').doc(familyId)
+      .collection('googleTokens').get()
 
     if (!googleTokensSnap.empty) {
       const calendarTimeMin = now.toISOString()
       const calendarTimeMax = new Date(Date.now() + 7 * 86_400_000).toISOString()
-      const eventsCol = db.collection('families').doc(familyId).collection('events')
+      const eventsCol = fam('events')
 
       for (const tokenDoc of googleTokensSnap.docs) {
         const { accessToken, refreshToken, email } = tokenDoc.data() as {
@@ -131,8 +114,7 @@ export async function GET(request: NextRequest) {
         try {
           const rawEvents = await getEvents(accessToken, refreshToken, calendarTimeMin, calendarTimeMax)
           const events: CalendarEvent[] = rawEvents.map((e) => ({
-            ...e,
-            ownerEmail: e.ownerEmail || email,
+            ...e, ownerEmail: e.ownerEmail || email,
           }))
 
           const BATCH_LIMIT = 490
@@ -159,99 +141,111 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    // Step 2: Read fresh data to evaluate urgency
-    const [tasksSnap, eventsSnap, choresSnap] = await Promise.all([
-      db.collection('families').doc(familyId).collection('tasks').get(),
-      db.collection('families').doc(familyId).collection('events').get(),
-      db.collection('families').doc(familyId).collection('chores').get(),
+    // ── Pull full family data ──────────────────────────────────────────────
+    // Same collections as the attention engine. Coach insights included so
+    // Claude can surface a new check-in as a notification trigger.
+    const [
+      membersSnap, eventsSnap, tasksSnap, choresSnap,
+      plansSnap, listsSnap, profileSnap, memoriesSnap, insightsSnap,
+    ] = await Promise.all([
+      fam('members').get(), fam('events').get(), fam('tasks').get(), fam('chores').get(),
+      fam('plans').get(), fam('lists').get(), fam('profile').get(),
+      fam('memories').get(), fam('insights').get(),
     ])
 
-    const dueTasks: { title: string; assignedTo?: string; overdue: boolean }[] = []
-    tasksSnap.forEach((d) => {
-      const t = d.data()
-      if (!t.isCompleted && isDueOrOverdue(t.dueDate)) {
-        dueTasks.push({
-          title: t.title,
-          assignedTo: t.assignedTo,
-          overdue: !!t.dueDate && t.dueDate.split('T')[0] < todayStr,
-        })
-      }
+    const docs = <T,>(s: FirebaseFirestore.QuerySnapshot) =>
+      s.docs.map((d) => ({ id: d.id, ...d.data() } as T))
+
+    const members = docs<FamilyMember>(membersSnap)
+    if (members.length === 0) continue
+
+    // Append unread coach insights to memories so Claude sees them as context.
+    // They're short text entries — blending them in is simpler than a new field.
+    const baseMemories = docs<FamilyMemory>(memoriesSnap)
+    const insightMemories: FamilyMemory[] = insightsSnap.docs
+      .filter((d) => !d.data().notifiedAt)
+      .map((d) => ({
+        id: d.id,
+        text: `[Coach check-in] ${d.data().title ?? ''}: ${d.data().body ?? ''}`.trim(),
+        createdAt: d.data().generatedAt ?? now.toISOString(),
+      } as FamilyMemory))
+    const memories = [...baseMemories, ...insightMemories]
+
+    // ── Build full context ─────────────────────────────────────────────────
+    const { timeHeader, dataBlock } = buildFamilyContextParts({
+      members,
+      events: docs<CalendarEvent>(eventsSnap),
+      tasks: docs<Task>(tasksSnap),
+      chores: docs<Chore>(choresSnap),
+      plans: docs<Plan>(plansSnap),
+      lists: docs<SmartList>(listsSnap),
+      profile: (profileSnap.docs[0]?.data() as FamilyProfile) ?? null,
+      memories,
+      now: now.toISOString(),
+      timezone: DEFAULT_TIMEZONE,
     })
 
-    // Events starting within the next 4 hours
-    const soonEvents: { title: string; start: string; minsUntil: number; attendees?: string[] }[] = []
-    eventsSnap.forEach((d) => {
-      const e = d.data()
-      if (typeof e.start === 'string' && isWithinHours(e.start, 4)) {
-        soonEvents.push({
-          title: e.title,
-          start: e.start,
-          minsUntil: Math.round((new Date(e.start).getTime() - now.getTime()) / 60_000),
-          attendees: e.attendees,
-        })
-      }
-    })
+    // ── Hash dedup ─────────────────────────────────────────────────────────
+    // Hash the data block (everything Claude will reason about). If nothing
+    // changed AND we notified within the last hour, skip the AI call.
+    const currentHash = hashState(dataBlock)
 
-    const pendingChores: string[] = []
-    choresSnap.forEach((d) => {
-      const c = d.data()
-      if (c.lastCompletedDate !== todayStr) pendingChores.push(c.name)
-    })
-
-    // Step 3: Hash the actionable state to detect changes
-    const actionableState = { dueTasks, soonEvents }
-    const currentHash = hashState(actionableState)
-
-    const stateRef = db.collection('families').doc(familyId).collection('meta').doc('smartNotify')
+    const stateRef = fam('meta').doc('smartNotify')
     const stateDoc = await stateRef.get()
     const stored = stateDoc.data() ?? {}
     const lastHash: string = stored.lastHash ?? ''
     const lastNotifiedAt: string = stored.lastNotifiedAt ?? ''
     const lastBody: string = stored.lastBody ?? ''
 
-    // Skip if unchanged within last 30 min (prevents hammering when cron runs frequently)
-    const thirtyMinAgo = Date.now() - 30 * 60_000
-    if (currentHash === lastHash && lastNotifiedAt && new Date(lastNotifiedAt).getTime() > thirtyMinAgo) {
+    const oneHourAgo = Date.now() - 60 * 60_000
+    if (currentHash === lastHash && lastNotifiedAt && new Date(lastNotifiedAt).getTime() > oneHourAgo) {
       skipped++
       await stateRef.set({ lastCheckedAt: now.toISOString() }, { merge: true })
       continue
     }
 
-    // Skip early if nothing actionable at all
-    if (dueTasks.length === 0 && soonEvents.length === 0) {
-      await stateRef.set({ lastHash: currentHash, lastCheckedAt: now.toISOString() }, { merge: true })
-      continue
-    }
+    // ── Ask Claude ────────────────────────────────────────────────────────
+    const dedupeNote = lastBody
+      ? `\n\nDo NOT send a notification if it repeats this recently sent message:\n"${lastBody}"`
+      : ''
 
-    // Step 4: Build a concise summary for Claude
-    const lines: string[] = []
-    if (soonEvents.length > 0) {
-      lines.push('Upcoming events (next 4h):')
-      soonEvents.forEach((e) => {
-        const who = e.attendees?.length ? ` — ${e.attendees.join(', ')}` : ''
-        lines.push(`  • ${e.title} in ${e.minsUntil} min${who}`)
-      })
-    }
-    if (dueTasks.length > 0) {
-      lines.push('Due/overdue tasks:')
-      dueTasks.forEach((t) => {
-        const tag = t.overdue ? ' [OVERDUE]' : ''
-        const who = t.assignedTo ? ` → ${t.assignedTo}` : ''
-        lines.push(`  • ${t.title}${who}${tag}`)
-      })
-    }
-    const summary = lines.join('\n')
-
-    // Step 5: Ask Claude if this warrants a notification
     let decision: NotifyDecision
     try {
-      decision = await askShouldNotify(familyName, now.toISOString(), summary, lastBody)
+      const response = await anthropic.messages.create({
+        model: MODEL_FAST,
+        max_tokens: 150,
+        system: [
+          // System prompt cached at 1h — never changes between runs.
+          { type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral', ttl: '1h' } as { type: 'ephemeral' } },
+        ],
+        messages: [{
+          role: 'user',
+          content: [
+            // Data block cached at 1h — only changes when family data changes.
+            { type: 'text', text: `FAMILY CONTEXT:\n\n${dataBlock}`, cache_control: { type: 'ephemeral', ttl: '1h' } as { type: 'ephemeral' } },
+            // Time header always fresh — current time + dedupe note.
+            { type: 'text', text: timeHeader + dedupeNote },
+          ],
+        }],
+      })
+
+      logUsage('smart-notify', MODEL_FAST, response.usage)
+
+      const raw = response.content[0]?.type === 'text' ? response.content[0].text.trim() : ''
+      const match = raw.match(/\{[\s\S]*\}/)
+      const parsed = match ? JSON.parse(match[0]) : {}
+      decision = {
+        shouldNotify: !!parsed.shouldNotify,
+        title: String(parsed.title ?? ''),
+        body: String(parsed.body ?? ''),
+        trigger: (['event', 'task', 'coach', 'other'].includes(parsed.trigger) ? parsed.trigger : 'other') as NotifyDecision['trigger'],
+      }
     } catch (err) {
       console.error(`smart-notify AI failed for family ${familyId}:`, err)
       continue
     }
 
-    // Always update the stored hash so next run skips unchanged state
+    // Always update stored hash so subsequent runs with unchanged data skip.
     await stateRef.set(
       {
         lastHash: currentHash,
@@ -263,24 +257,20 @@ export async function GET(request: NextRequest) {
       { merge: true },
     )
 
-    if (!decision.shouldNotify || !decision.body) continue
+    if (!decision.shouldNotify || !decision.body) { skipped++; continue }
 
-    // Step 6: Send the push notification
-    // Link to the page most relevant to what triggered the alert:
-    // events only → calendar, tasks only → task list, both → command center.
-    const notifLink = soonEvents.length > 0 && dueTasks.length === 0
-      ? '/calendar'
-      : dueTasks.length > 0 && soonEvents.length === 0
-        ? '/tasks'
-        : '/command'
+    // ── Send ───────────────────────────────────────────────────────────────
+    // Link to the most relevant destination based on Claude's trigger label.
+    const notifLink =
+      decision.trigger === 'event' ? '/calendar' :
+      decision.trigger === 'task' ? '/tasks' :
+      decision.trigger === 'coach' ? '/coach' :
+      '/command'
 
     try {
       const res = await messaging.sendEachForMulticast({
         tokens,
-        notification: {
-          title: decision.title || `${familyName} Update`,
-          body: decision.body,
-        },
+        notification: { title: decision.title || 'Family Update', body: decision.body },
         webpush: {
           fcmOptions: { link: notifLink },
           data: { link: notifLink },
@@ -288,11 +278,21 @@ export async function GET(request: NextRequest) {
       })
       sent += res.successCount
 
+      // Clean up stale device tokens.
       res.responses.forEach((r, i) => {
         if (!r.success && r.error?.code === 'messaging/registration-token-not-registered') {
           tokensSnap.docs[i].ref.delete().catch(() => {})
         }
       })
+
+      // Mark coach insights as notified so they aren't re-surfaced next run.
+      if (decision.trigger === 'coach' && insightMemories.length > 0) {
+        const batch = db.batch()
+        insightsSnap.docs
+          .filter((d) => !d.data().notifiedAt)
+          .forEach((d) => batch.update(d.ref, { notifiedAt: now.toISOString() }))
+        await batch.commit()
+      }
     } catch (err) {
       console.error(`smart-notify FCM send failed for family ${familyId}:`, err)
     }
