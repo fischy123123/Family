@@ -663,27 +663,25 @@ export function CommandCenter() {
     engineAbortRef.current = controller
     const myRunToken = ++runTokenRef.current
 
-    if (silent) setRefreshing(true)
+    // isPending: result goes into pendingReport (buffered) — used for minor
+    // background refreshes where the user is mid-scroll and we don't want jumps.
+    // When isPending=false the result writes directly to report, so we also
+    // show the streaming view (progressive=true) regardless of the silent flag.
+    const isPending = !!(silent && report) && !forceDirectRef.current
+    forceDirectRef.current = false
+
+    // Use loading (foreground) whenever the result will write directly.
+    // Refreshing (background) only when result is buffered into pendingReport.
+    if (isPending) setRefreshing(true)
     else setLoading(true)
-    // Stamp the run time immediately so manual refreshes also update the throttle.
-    // Both auto-runs (which set lastRun.current before calling) and manual refreshes
-    // (which call runEngine directly) will record the correct timestamp.
+
     const runAt = Date.now()
     lastRun.current = runAt
     const engineStart = performance.now()
     let engineTTFT = -1
     console.log(`[perf:engine] start events=${events.length} tasks=${tasks.length + reminders.length} members=${members.length}`)
-    // Bump the token: this fast run is now the latest, so any in-flight deep pass
-    // from a previous run will be ignored when it returns.
     const myToken = ++deepToken.current
-    // Background runs (silent + already have a report) are buffered into
-    // pendingReport so content doesn't shift while the user is scrolling.
-    // The user applies the update by tapping the "Briefing updated" banner.
-    // Foreground runs (cold start or manual refresh) update report immediately.
-    // forceDirectRef overrides: stale cached reports and post-reset runs bypass
-    // the buffer so the corrected content appears without a "tap to see" step.
-    const isPending = !!(silent && report) && !forceDirectRef.current
-    forceDirectRef.current = false
+
     try {
       const eventContext = overrideContext ??
         eventContexts.map((e) => ({ eventTitle: e.eventTitle, context: e.context }))
@@ -708,9 +706,10 @@ export function CommandCenter() {
         return
       }
 
-      // Show streaming for manual (non-silent) runs regardless of whether
-      // a cached report exists. Background (silent) runs never disturb the screen.
-      const progressive = !silent
+      // Show streaming whenever the result writes directly to report (not buffered).
+      // This covers cold starts, manual refreshes, AND silent runs where the
+      // cached report was stale enough that forceDirectRef bypassed the buffer.
+      const progressive = !isPending
       if (progressive) setStreamingItems([])
       const reader = res.body.getReader()
       const decoder = new TextDecoder()
@@ -1699,12 +1698,11 @@ export function CommandCenter() {
         </div>
       )}
 
-      {/* Streaming view — shown on cold start (no report) OR once streaming
-          content begins on a manual refresh. Stays hidden during silent background
-          refreshes so the existing report never jumps while you're scrolling.
-          We transition from the old report into this the moment the greeting
-          starts coming in, so there's no blank-screen gap. */}
-      {loading && (!report || streamingGreeting || streamingItems.length > 0) && (
+      {/* Streaming view — shown for all foreground (loading=true) runs, which
+          covers cold starts, manual refreshes, and stale-report auto-runs.
+          Silent background refreshes use refreshing=true instead so the
+          existing report never jumps while the user is scrolling. */}
+      {loading && (
         <div className="space-y-6 animate-fade-in">
           {streamingGreeting ? (
             <div className="rounded-2xl p-5 bg-gradient-to-br from-blue-600 to-purple-700 text-white shadow-elevated animate-scale-in">
@@ -1746,9 +1744,8 @@ export function CommandCenter() {
         </div>
       )}
 
-      {/* PERSON SECTIONS — one per family member + shared Family section.
-          Hidden while streaming is active so the two views don't overlap. */}
-      {report && sections.length > 0 && !streamingGreeting && !streamingItems.length && (
+      {/* PERSON SECTIONS — hidden while streaming is active (loading=true). */}
+      {!loading && report && sections.length > 0 && (
         <div className="space-y-6">
           {sections.map((section) => {
             const collapsed = collapsedSections.has(section.key)
@@ -1816,7 +1813,7 @@ export function CommandCenter() {
       )}
 
       {/* POTENTIAL PROBLEMS */}
-      {report && (report.problems?.length ?? 0) > 0 && !streamingGreeting && !streamingItems.length && (
+      {!loading && report && (report.problems?.length ?? 0) > 0 && (
         <section>
           <SectionLabel icon={AlertTriangle} color="#dc2626">Potential Problems</SectionLabel>
           <div className="space-y-2 stagger-children">
@@ -1849,7 +1846,7 @@ export function CommandCenter() {
       )}
 
       {/* COPILOT RECOMMENDATIONS */}
-      {report && (report.recommendations?.length ?? 0) > 0 && !streamingGreeting && !streamingItems.length && (
+      {!loading && report && (report.recommendations?.length ?? 0) > 0 && (
         <section>
           <SectionLabel icon={Lightbulb} color="#7c3aed">Copilot Recommendations</SectionLabel>
           <div className="space-y-2 stagger-children">
@@ -1909,7 +1906,7 @@ export function CommandCenter() {
       )}
 
       {/* EVENT ASSIGNMENT CONFIRMATIONS */}
-      {pendingAssignments.length > 0 && (
+      {!loading && pendingAssignments.length > 0 && (
         <section>
           <SectionLabel icon={Users} color="#7c3aed">Confirm Event Assignments</SectionLabel>
           <div className="space-y-2 stagger-children">
