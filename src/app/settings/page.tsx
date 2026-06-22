@@ -7,10 +7,11 @@ import { useRouter } from 'next/navigation'
 import {
   LogOut, Trash2, UserMinus, ArrowLeft, ShieldAlert, RefreshCw,
   Loader2, RotateCcw, Sparkles, Brain, ChevronDown, Bug, BookMarked,
-  Plus, X, Bell,
+  Plus, X, Bell, Calendar,
 } from 'lucide-react'
 import { isAiDebugEnabled, setAiDebugEnabled } from '@/lib/aiDebug'
 import { enableNotifications, getNotificationStatus, onForegroundMessage } from '@/lib/messaging'
+import { useGoogleTokens } from '@/hooks/useGoogleTokens'
 import { useAuth } from '@/contexts/AuthContext'
 import { useFamily } from '@/contexts/FamilyContext'
 import { useFirestore } from '@/hooks/useFirestore'
@@ -49,6 +50,7 @@ export default function SettingsPage() {
   const { user, signOut } = useAuth()
   const { familyId, inviteCode, resetFamily, deleteFamily } = useFamily()
   const { toast } = useToast()
+  const { tokens: googleTokens, isConnected: googleConnected } = useGoogleTokens()
   const { data: memories, create, update, remove } = useFirestore<FamilyMemory>('memories')
   const { data: members, update: updateMember } = useFirestore<FamilyMember>('members')
   const { data: profileDocs, update: updateProfile, create: createProfile } = useFirestore<FamilyProfile>('profile')
@@ -113,6 +115,14 @@ export default function SettingsPage() {
     } finally {
       setEnablingNotif(false)
     }
+  }
+
+  async function disconnectGoogle() {
+    if (!familyId || !user?.email) return
+    const { deleteDoc, doc: firestoreDoc } = await import('firebase/firestore')
+    const { db } = await import('@/lib/firebase')
+    await deleteDoc(firestoreDoc(db, 'families', familyId, 'googleTokens', user.email))
+    toast('Google Calendar disconnected.', 'info')
   }
 
   function toggleDebugMode() {
@@ -444,6 +454,51 @@ export default function SettingsPage() {
             <LogOut size={16} className="text-slate-400" />
             Sign Out
           </button>
+        </section>
+
+        {/* Google Calendar */}
+        <section className="bg-white rounded-2xl border border-slate-200 divide-y divide-slate-100 mb-4">
+          <div className="px-5 py-4 flex items-center gap-2">
+            <Calendar size={15} className="text-slate-400" />
+            <p className="text-xs font-semibold text-slate-400 uppercase tracking-widest">Google Calendar</p>
+          </div>
+          <div className="px-5 py-4">
+            {googleConnected ? (
+              <div className="flex items-center justify-between gap-4">
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-slate-700 mb-0.5">Connected</p>
+                  <p className="text-xs text-slate-400 truncate">{googleTokens?.email}</p>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <a
+                    href="/api/auth/google"
+                    className="text-xs font-medium text-blue-600 hover:text-blue-700 px-3 py-1.5 rounded-lg border border-blue-200 hover:bg-blue-50 transition-colors"
+                  >
+                    Reconnect
+                  </a>
+                  <button
+                    onClick={disconnectGoogle}
+                    className="text-xs font-medium text-slate-500 hover:text-red-600 px-3 py-1.5 rounded-lg border border-slate-200 hover:border-red-200 transition-colors"
+                  >
+                    Disconnect
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="flex items-center justify-between gap-4">
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-slate-700 mb-0.5">Not connected</p>
+                  <p className="text-xs text-slate-400">Connect to sync your calendar and enable smart notifications.</p>
+                </div>
+                <a
+                  href="/api/auth/google"
+                  className="shrink-0 text-xs font-medium bg-blue-600 text-white rounded-lg px-3 py-1.5 hover:bg-blue-700 transition-colors"
+                >
+                  Connect
+                </a>
+              </div>
+            )}
+          </div>
         </section>
 
         {/* Briefing */}
