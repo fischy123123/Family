@@ -43,15 +43,19 @@ const SYSTEM_PROMPT =
   `• Health or medication routines that happen at a specific time.\n` +
   `• Anything the family has explicitly said they want to be reminded about.\n` +
   `• Coach check-ins or insights that just became available and feel personally relevant.\n` +
-  `• Time-sensitive chores with real consequences if missed — trash/recycling day before ` +
-  `collection, anything that has to happen before a specific event or deadline today.\n\n` +
+  `• Time-sensitive chores that need to happen TODAY — trash/recycling before morning ` +
+  `collection, anything with a real consequence for missing it (not dishes or laundry).\n\n` +
   `WHAT TO IGNORE:\n` +
-  `• Everyday routine chores with no deadline (dishes, laundry, tidying) — these can wait.\n` +
-  `• Events happening tomorrow or later — only what's relevant in the next 3 hours.\n` +
+  `• Everyday routine chores with no deadline (dishes, laundry, tidying).\n` +
+  `• Events more than 4 hours away UNLESS they need meaningful prep time based on what you ` +
+  `know about the family (long drive, equipment to pack, leaving early).\n` +
   `• Quiet hours specified in the family profile — do NOT push during those times.\n` +
   `• Anything that was already sent recently (a dedupe note will be included if relevant).\n\n` +
+  `TIME HORIZON: Think about what needs action TODAY — not just the next 3 hours. An evening ` +
+  `reminder to take out trash before tomorrow's collection is useful. A heads-up about ` +
+  `tomorrow's early morning event tonight is useful. Pure future planning is not.\n\n` +
   `Be selective but not overly cautious. If something has a real consequence for missing it ` +
-  `today, that is worth a push. When genuinely nothing is time-sensitive, do NOT send.\n\n` +
+  `today or tonight, push. When genuinely nothing needs attention, do NOT send.\n\n` +
   `Return ONLY valid JSON — no markdown, no explanation:\n` +
   `{"shouldNotify":true/false,"title":"...","body":"...","trigger":"event"|"task"|"coach"|"other"}\n` +
   `title ≤50 chars · body ≤160 chars · trigger drives the tap destination.`
