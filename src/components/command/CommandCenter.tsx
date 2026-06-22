@@ -8,7 +8,7 @@ import {
 import { db } from '@/lib/firebase'
 import {
   RefreshCw, AlertTriangle, Lightbulb, Clock,
-  Calendar as CalIcon, Sparkles, Check, X, MessageCircle, Users, Bookmark, Plus, ChevronDown, Bug, Send,
+  Calendar as CalIcon, Sparkles, Check, X, MessageCircle, Users, Bookmark, Plus, ChevronDown, ChevronRight, Bug, Send,
 } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { useFirestore } from '@/hooks/useFirestore'
@@ -846,11 +846,9 @@ export function CommandCenter() {
       lastRunSig.current === lastCtxSig.current &&
       timeSinceLastRun < ENGINE_DATA_UNCHANGED_TTL_MS
     ) return
-    // By the time we reach here, ENGINE_THROTTLE_MS (15 min) has passed since
-    // the last run — the user is returning to the app. Always run in foreground
-    // (loading=true) so the streaming skeleton appears immediately instead of
-    // the stale report sitting on screen for the full generation time.
-    scheduleEngine(false)
+    // 15+ minutes have passed — silently update in the background if a cached
+    // report is already on screen. Only run in foreground on cold starts.
+    scheduleEngine(!!reportRef.current)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hydrated, googleLoaded, members.length, events.length > 0, tasks.length, reminders.length])
 
@@ -929,8 +927,9 @@ export function CommandCenter() {
         setEngineError(null)
         // Only bypass the throttle for forced cases — stale checks respect it.
         if (calChanged || hasError || hasNoReport) lastRun.current = 0
-        // Always foreground on return — show streaming instead of stale report.
-        runEngine(undefined, false)
+        // Silent when a valid report is showing — don't replace it with a skeleton.
+        const shouldBeSilent = !!(reportRef.current && !hasError && !hasNoReport)
+        runEngine(undefined, shouldBeSilent)
       }
     }
     document.addEventListener('visibilitychange', handleVisible)
@@ -1727,6 +1726,19 @@ export function CommandCenter() {
             </div>
           )}
         </div>
+      )}
+
+      {/* GREETING — shown once briefing finishes loading. Tap to open in Copilot. */}
+      {!loading && report?.greeting && (
+        <button
+          onClick={() => openBriefingInCopilot(report.greeting)}
+          className="w-full rounded-2xl p-5 bg-gradient-to-br from-blue-600 to-purple-700 text-white shadow-elevated text-left hover:opacity-95 active:opacity-90 transition-opacity animate-scale-in"
+        >
+          <div className="flex items-start gap-3">
+            <Sparkles size={18} className="mt-0.5 shrink-0 opacity-90" />
+            <p className="text-[15px] leading-relaxed font-medium">{report.greeting}</p>
+          </div>
+        </button>
       )}
 
       {/* PERSON SECTIONS — hidden while streaming is active (loading=true). */}
@@ -2616,6 +2628,7 @@ function CardChat({
 }
 
 // ── Individual attention card ────────────────────────────────
+// Tapping a card opens a bottom sheet with all actions.
 
 function AttentionCard({
   item, accent, allMembers, responsible, forMembers, backedByRealItem, isRecurring, onComplete, onDismiss, onSaveTask, onAssign, debugMode, onTrace,
@@ -2639,187 +2652,80 @@ function AttentionCard({
   onPatch?: (updated: AttentionItem[], removed: string[], greeting?: string) => void
   groupItems?: AttentionItem[]
 }) {
+  const [sheetOpen, setSheetOpen] = useState(false)
   const [done, setDone] = useState(false)
-  const [saved, setSaved] = useState(false)
-  const [chatOpen, setChatOpen] = useState(false)
-  const [assigning, setAssigning] = useState(false)
-  const [detailExpanded, setDetailExpanded] = useState(false)
-  const panelRef = useRef<HTMLDivElement>(null)
-  useEffect(() => {
-    if ((chatOpen || assigning) && panelRef.current) {
-      panelRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
-    }
-  }, [chatOpen, assigning])
   const startStr = item.startBy
     ? new Date(item.startBy).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
     : null
 
-  const hasAssignment = !!responsible || forMembers.length > 0
-
   return (
-    <div
-      className="rounded-2xl bg-white shadow-card animate-slide-up transition-opacity"
-      style={{ borderLeft: `3px solid ${accent}`, opacity: done ? 0.5 : 1 }}
-    >
-      <div className="flex items-start gap-3 p-4">
-        <div className="flex-1 min-w-0">
-          <p className="text-sm font-semibold text-slate-900">{item.title}</p>
-          <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">{item.reason}</p>
-          {item.detail && (
-            <div className="mt-1">
-              {detailExpanded && (
-                <p className="text-xs text-slate-400 leading-relaxed mb-0.5">{item.detail}</p>
-              )}
-              <button
-                onClick={(e) => { e.stopPropagation(); setDetailExpanded((v) => !v) }}
-                className="text-[11px] font-medium text-blue-500 hover:text-blue-700"
-              >
-                {detailExpanded ? '− less' : '+ details'}
-              </button>
-            </div>
-          )}
-          <div className="flex items-center gap-2 mt-1.5 flex-wrap">
-            {startStr && (
-              <span className="inline-flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-full" style={{ background: `${accent}15`, color: accent }}>
-                <Clock size={10} /> Start by {startStr}
-              </span>
-            )}
-            {/* Who it's FOR (the kids / subject) */}
-            {forMembers.length > 0 && (
-              <button
-                onClick={() => setAssigning((v) => !v)}
-                className="inline-flex items-center gap-1 text-[11px] text-slate-500 hover:text-slate-700"
-              >
-                <span className="text-slate-400">For</span>
-                {forMembers.map((m) => (
-                  <span key={m.id} className="inline-flex items-center gap-1">
-                    <span className="w-4 h-4 rounded-full flex items-center justify-center text-[9px]" style={{ background: `${m.colorHex}25` }}>
-                      {m.emoji}
-                    </span>
-                    {m.name}
-                  </span>
-                ))}
-              </button>
-            )}
-            {/* Who's RESPONSIBLE (the parent handling it) */}
-            {responsible && (
-              <button
-                onClick={() => setAssigning((v) => !v)}
-                className="inline-flex items-center gap-1 text-[11px] text-slate-600 font-medium"
-              >
-                <span className="text-slate-400 font-normal">·</span>
-                <span className="w-4 h-4 rounded-full flex items-center justify-center text-[9px]" style={{ background: `${responsible.colorHex}25` }}>
-                  {responsible.emoji}
+    <>
+      <button
+        onClick={() => setSheetOpen(true)}
+        className="w-full rounded-2xl bg-white shadow-card animate-slide-up text-left active:scale-[0.99] transition-all"
+        style={{ borderLeft: `3px solid ${accent}`, opacity: done ? 0.4 : 1 }}
+      >
+        <div className="flex items-start gap-3 p-4">
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-semibold text-slate-900">{item.title}</p>
+            <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">{item.reason}</p>
+            <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+              {startStr && (
+                <span
+                  className="inline-flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-full"
+                  style={{ background: `${accent}15`, color: accent }}
+                >
+                  <Clock size={10} /> {startStr}
                 </span>
-                {responsible.name}
-                <span className="text-slate-400 font-normal">on it</span>
-              </button>
-            )}
-            {/* Assign affordance when nothing is set yet */}
-            {!hasAssignment && (
-              <button
-                onClick={() => setAssigning((v) => !v)}
-                className="inline-flex items-center gap-1 text-[11px] font-medium text-blue-600 hover:text-blue-700"
-              >
-                <Users size={11} /> Assign
-              </button>
-            )}
+              )}
+              {forMembers.map((m) => (
+                <span key={m.id} className="inline-flex items-center gap-1 text-[11px] text-slate-500">
+                  <span
+                    className="w-4 h-4 rounded-full flex items-center justify-center text-[9px]"
+                    style={{ background: `${m.colorHex}25` }}
+                  >{m.emoji}</span>
+                  {m.name}
+                </span>
+              ))}
+              {responsible && (
+                <span className="inline-flex items-center gap-1 text-[11px] text-slate-400">
+                  <span>·</span>
+                  <span
+                    className="w-4 h-4 rounded-full flex items-center justify-center text-[9px]"
+                    style={{ background: `${responsible.colorHex}25` }}
+                  >{responsible.emoji}</span>
+                  {responsible.name}
+                </span>
+              )}
+            </div>
           </div>
+          <ChevronRight size={16} className="text-slate-200 shrink-0 mt-0.5" />
         </div>
-        <div className="flex gap-0.5 shrink-0">
-          {debugMode && onTrace && (
-            <button
-              onClick={onTrace}
-              className="p-1.5 rounded-lg text-blue-400 hover:text-blue-600 hover:bg-blue-50 transition-colors"
-              title="Trace sources (debug)"
-            >
-              <Bug size={14} />
-            </button>
-          )}
-          <button
-            onClick={() => setAssigning((v) => !v)}
-            className="p-1.5 rounded-lg text-slate-300 hover:text-slate-500 hover:bg-slate-50 transition-colors"
-            title="Assign"
-          >
-            <Users size={14} />
-          </button>
-          <button
-            onClick={() => setChatOpen((v) => !v)}
-            className={cn(
-              'p-1.5 rounded-lg transition-colors',
-              chatOpen
-                ? 'text-blue-600 bg-blue-50'
-                : 'text-slate-300 hover:text-blue-500 hover:bg-blue-50',
-            )}
-            title="Ask AI"
-          >
-            <MessageCircle size={14} />
-          </button>
-          {backedByRealItem && (item.sourceType === 'task' || item.sourceType === 'reminder') && (
-            <button
-              onClick={() => { setDone(true); onComplete() }}
-              className="p-1.5 rounded-lg transition-colors"
-              style={{ color: done ? '#22c55e' : '#cbd5e1' }}
-              title={done ? 'Done' : 'Mark done'}
-            >
-              <Check size={14} />
-            </button>
-          )}
-          {!(backedByRealItem && (item.sourceType === 'task' || item.sourceType === 'reminder')) && (
-            <button
-              onClick={() => { setSaved(true); onSaveTask() }}
-              disabled={saved}
-              className="p-1.5 rounded-lg transition-colors"
-              style={{ color: saved ? '#22c55e' : '#cbd5e1' }}
-              title={saved ? 'Saved as task' : 'Save as task'}
-            >
-              <Bookmark size={14} fill={saved ? 'currentColor' : 'none'} />
-            </button>
-          )}
-          <button
-            onClick={onDismiss}
-            className="p-1.5 rounded-lg text-slate-300 hover:text-slate-500 hover:bg-slate-50 transition-colors"
-            title="Dismiss"
-          >
-            <X size={14} />
-          </button>
-        </div>
-      </div>
+      </button>
 
-      {assigning && (
-        <div ref={panelRef}>
-          <AssignPanel
-            allMembers={allMembers}
-            initialFor={forMembers.map((m) => m.id)}
-            initialResponsible={responsible?.id}
-            isRecurring={isRecurring}
-            onCancel={() => setAssigning(false)}
-            onSave={(f, r) => { onAssign(f, r); setAssigning(false) }}
-          />
-        </div>
+      {sheetOpen && (
+        <CardActionSheet
+          item={item}
+          accent={accent}
+          allMembers={allMembers}
+          responsible={responsible}
+          forMembers={forMembers}
+          backedByRealItem={backedByRealItem}
+          isRecurring={isRecurring}
+          onClose={() => setSheetOpen(false)}
+          onComplete={() => { setDone(true); setSheetOpen(false); onComplete() }}
+          onDismiss={() => { setSheetOpen(false); onDismiss() }}
+          onSaveTask={() => { setSheetOpen(false); onSaveTask() }}
+          onAssign={(f, r) => { setSheetOpen(false); onAssign(f, r) }}
+          debugMode={debugMode}
+          onTrace={onTrace}
+          currentGreeting={currentGreeting}
+          cardMembers={cardMembers}
+          onPatch={onPatch}
+          groupItems={groupItems}
+        />
       )}
-
-      {chatOpen && (
-        <div ref={panelRef}>
-          <CardChat
-            cardContext={[
-              `Title: "${item.title}"`,
-              `Reason: "${item.reason}"`,
-              `Source type: ${item.sourceType}`,
-              item.dueAt ? `Due/scheduled: ${item.dueAt}` : '',
-              item.startBy ? `Start by: ${item.startBy}` : '',
-              item.sourceId ? `Source id: ${item.sourceId}` : '',
-            ].filter(Boolean).join('\n')}
-            quickPrompts={['Why is this showing up?', 'What should I do?', 'Where does this come from?']}
-            patchCards={groupItems ?? [item]}
-            currentGreeting={currentGreeting}
-            patchMembers={cardMembers}
-            onPatch={onPatch}
-          />
-        </div>
-      )}
-
-    </div>
+    </>
   )
 }
 
@@ -2906,6 +2812,219 @@ function AssignPanel({
         </button>
       </div>
     </div>
+  )
+}
+
+// ── Card action sheet ────────────────────────────────────────
+// Slides up from the bottom when the user taps an AttentionCard.
+// Contains all per-card actions + inline assign / chat sub-views.
+
+function CardActionSheet({
+  item, accent, allMembers, responsible, forMembers, backedByRealItem, isRecurring,
+  onClose, onComplete, onDismiss, onSaveTask, onAssign, debugMode, onTrace,
+  currentGreeting, cardMembers, onPatch, groupItems,
+}: {
+  item: AttentionItem
+  accent: string
+  allMembers: FamilyMember[]
+  responsible?: FamilyMember
+  forMembers: FamilyMember[]
+  backedByRealItem: boolean
+  isRecurring?: boolean
+  onClose: () => void
+  onComplete: () => void
+  onDismiss: () => void
+  onSaveTask: () => void
+  onAssign: (forIds: string[], responsibleId?: string) => void
+  debugMode?: boolean
+  onTrace?: () => void
+  currentGreeting?: string
+  cardMembers?: FamilyMember[]
+  onPatch?: (updated: AttentionItem[], removed: string[], greeting?: string) => void
+  groupItems?: AttentionItem[]
+}) {
+  const [view, setView] = useState<'actions' | 'assign' | 'chat'>('actions')
+  const isTask = backedByRealItem && (item.sourceType === 'task' || item.sourceType === 'reminder')
+  const startStr = item.startBy
+    ? new Date(item.startBy).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+    : null
+
+  // Prevent body from scrolling behind the sheet
+  useEffect(() => {
+    document.body.style.overflow = 'hidden'
+    return () => { document.body.style.overflow = '' }
+  }, [])
+
+  return (
+    <>
+      {/* Backdrop */}
+      <div
+        className="fixed inset-0 z-40 bg-black/40 animate-fade-in"
+        onClick={onClose}
+      />
+      {/* Sheet */}
+      <div
+        className="fixed inset-x-0 bottom-0 z-50 bg-white rounded-t-2xl shadow-elevated flex flex-col animate-slide-up"
+        style={{ maxHeight: '85vh', paddingBottom: 'env(safe-area-inset-bottom, 16px)' }}
+      >
+        {/* Drag handle */}
+        <div className="flex justify-center pt-3 pb-2 shrink-0">
+          <div className="w-10 h-1 rounded-full bg-slate-200" />
+        </div>
+
+        {/* Back nav for sub-views */}
+        {view !== 'actions' && (
+          <button
+            onClick={() => setView('actions')}
+            className="flex items-center gap-1.5 px-5 py-2 text-sm text-blue-600 font-medium shrink-0"
+          >
+            ← Back
+          </button>
+        )}
+
+        {/* Card summary header (main actions view only) */}
+        {view === 'actions' && (
+          <div className="px-5 pt-1 pb-4 border-b border-slate-100 shrink-0">
+            <div className="flex items-start gap-3">
+              <div className="w-1 self-stretch rounded-full shrink-0" style={{ background: accent }} />
+              <div className="flex-1 min-w-0">
+                <p className="text-[15px] font-semibold text-slate-900">{item.title}</p>
+                <p className="text-sm text-slate-500 mt-0.5 leading-relaxed">{item.reason}</p>
+                {item.detail && (
+                  <p className="text-xs text-slate-400 mt-1 leading-relaxed">{item.detail}</p>
+                )}
+                <div className="flex items-center gap-2 mt-2 flex-wrap">
+                  {startStr && (
+                    <span
+                      className="inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full"
+                      style={{ background: `${accent}15`, color: accent }}
+                    >
+                      <Clock size={11} /> Start by {startStr}
+                    </span>
+                  )}
+                  {forMembers.map((m) => (
+                    <span key={m.id} className="inline-flex items-center gap-1 text-xs text-slate-500">
+                      <span
+                        className="w-4 h-4 rounded-full flex items-center justify-center text-[9px]"
+                        style={{ background: `${m.colorHex}25` }}
+                      >{m.emoji}</span>
+                      {m.name}
+                    </span>
+                  ))}
+                  {responsible && (
+                    <span className="inline-flex items-center gap-1 text-xs text-slate-400">
+                      <span>·</span>
+                      <span
+                        className="w-4 h-4 rounded-full flex items-center justify-center text-[9px]"
+                        style={{ background: `${responsible.colorHex}25` }}
+                      >{responsible.emoji}</span>
+                      {responsible.name} handling it
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Scrollable content */}
+        <div className="flex-1 overflow-y-auto">
+          {view === 'actions' && (
+            <div className="py-2">
+              {isTask ? (
+                <SheetAction
+                  icon={<Check size={18} className="text-green-600" />}
+                  label="Mark as done"
+                  onClick={onComplete}
+                />
+              ) : (
+                <SheetAction
+                  icon={<Bookmark size={18} className="text-slate-600" />}
+                  label="Save as task"
+                  onClick={onSaveTask}
+                />
+              )}
+              <SheetAction
+                icon={<Users size={18} className="text-slate-600" />}
+                label="Assign to someone"
+                onClick={() => setView('assign')}
+                showChevron
+              />
+              <SheetAction
+                icon={<MessageCircle size={18} className="text-blue-500" />}
+                label="Ask about this…"
+                onClick={() => setView('chat')}
+                showChevron
+              />
+              <div className="mx-5 my-1 border-t border-slate-100" />
+              <SheetAction
+                icon={<X size={18} className="text-red-400" />}
+                label="Dismiss"
+                onClick={onDismiss}
+              />
+              {debugMode && onTrace && (
+                <SheetAction
+                  icon={<Bug size={18} className="text-blue-400" />}
+                  label="Trace sources (debug)"
+                  onClick={() => { onClose(); onTrace() }}
+                />
+              )}
+            </div>
+          )}
+
+          {view === 'assign' && (
+            <AssignPanel
+              allMembers={allMembers}
+              initialFor={forMembers.map((m) => m.id)}
+              initialResponsible={responsible?.id}
+              isRecurring={isRecurring}
+              onCancel={() => setView('actions')}
+              onSave={(f, r) => { onAssign(f, r) }}
+            />
+          )}
+
+          {view === 'chat' && (
+            <CardChat
+              cardContext={[
+                `Title: "${item.title}"`,
+                `Reason: "${item.reason}"`,
+                `Source type: ${item.sourceType}`,
+                item.dueAt ? `Due/scheduled: ${item.dueAt}` : '',
+                item.startBy ? `Start by: ${item.startBy}` : '',
+                item.sourceId ? `Source id: ${item.sourceId}` : '',
+              ].filter(Boolean).join('\n')}
+              quickPrompts={['Why is this showing up?', 'What should I do?', 'Where does this come from?']}
+              patchCards={groupItems ?? [item]}
+              currentGreeting={currentGreeting}
+              patchMembers={cardMembers}
+              onPatch={onPatch}
+            />
+          )}
+        </div>
+      </div>
+    </>
+  )
+}
+
+function SheetAction({
+  icon, label, onClick, disabled, showChevron,
+}: {
+  icon: React.ReactNode
+  label: string
+  onClick: () => void
+  disabled?: boolean
+  showChevron?: boolean
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      className="w-full flex items-center gap-4 px-5 py-3.5 text-left hover:bg-slate-50 active:bg-slate-100 transition-colors disabled:opacity-40"
+    >
+      <span className="shrink-0 w-7 flex justify-center">{icon}</span>
+      <span className="flex-1 text-sm font-medium text-slate-800">{label}</span>
+      {showChevron && <ChevronRight size={15} className="text-slate-300 shrink-0" />}
+    </button>
   )
 }
 
