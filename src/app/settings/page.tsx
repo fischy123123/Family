@@ -218,7 +218,7 @@ export default function SettingsPage() {
         const res = await fetch('/api/ai/cleanup-memories', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ memories: snapshot, members: refs, now: new Date().toISOString() }),
+          body: JSON.stringify({ memories: snapshot, members: refs, now: new Date().toISOString(), timezone: Intl.DateTimeFormat().resolvedOptions().timeZone }),
         })
         const result = await res.json().catch(() => ({}))
         if (!res.ok) {

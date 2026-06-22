@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
 import type { CalendarEvent, FamilyMember } from '@/lib/types'
 import { logUsage } from '@/lib/ai'
+import { resolveTimezone } from '@/lib/time'
 
 // Generating clarifying questions about ambiguous events is light classification
 // work that runs in the background — Haiku handles it fast and cheap.
@@ -33,7 +34,7 @@ export async function POST(request: NextRequest) {
   const systemPrompt = `You are analyzing a family's Google Calendar events. Identify events whose title or context is ambiguous — unclear who it's for, what it's about, or what preparation is needed. Return ONLY a JSON array (no markdown) of clarification requests. Limit to 5 max.`
 
   const memberNames = members.map((m) => m.name).join(', ')
-  const tz = timezone || 'UTC'
+  const tz = resolveTimezone(timezone)
   const eventLines = pending
     .map((e) => {
       const date = new Date(e.start).toLocaleDateString('en-US', {

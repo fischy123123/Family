@@ -3,6 +3,7 @@ import Anthropic from '@anthropic-ai/sdk'
 import type { FamilyMember, Task, Chore, FamilyMemory, FamilyProfile, CalendarEvent } from '@/lib/types'
 import { logUsage } from '@/lib/ai'
 import { memoryConcernsMember } from '@/lib/types'
+import { resolveTimezone, formatDate as fmtDate, formatDateTime as fmtDatetime } from '@/lib/time'
 
 const MODEL = 'claude-sonnet-4-6'
 
@@ -18,14 +19,6 @@ interface MemberBriefRequest {
   timezone?: string
 }
 
-function fmtDate(iso: string): string {
-  try {
-    return new Date(iso).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })
-  } catch {
-    return iso
-  }
-}
-
 // Strict match: both id AND email must be explicitly set and match — never
 // match when either side is undefined (avoids undefined === undefined).
 function matchesMember(member: FamilyMember, assigneeId?: string, assigneeEmail?: string): boolean {
@@ -36,6 +29,7 @@ function matchesMember(member: FamilyMember, assigneeId?: string, assigneeEmail?
 
 function buildMemberContext(req: MemberBriefRequest): string {
   const { member, tasks, chores, memories, events, now } = req
+  const tz = resolveTimezone(req.timezone)
   const lines: string[] = []
 
   if (member.summary) lines.push(`Summary: ${member.summary}`)
@@ -121,7 +115,9 @@ function buildMemberContext(req: MemberBriefRequest): string {
   if (memberEvents.length) {
     lines.push('Upcoming calendar events (next 14 days):')
     memberEvents.forEach((e) => {
-      const start = new Date(e.start).toLocaleString('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+      // Format in the user's timezone — without this the server (UTC) shifts
+      // every time by the local offset (e.g. 11 AM Pacific → "6 PM").
+      const start = e.isAllDay ? fmtDate(e.start, tz) : fmtDatetime(e.start, tz)
       const isFor = member.id && e.forIds?.includes(member.id)
       const isResponsible = member.id && e.assigneeId === member.id
       let role = ''
@@ -147,7 +143,7 @@ export async function POST(request: NextRequest) {
   const memberContext = buildMemberContext(req)
 
   const nowFmt = new Date(now).toLocaleString('en-US', {
-    timeZone: timezone,
+    timeZone: resolveTimezone(timezone),
     weekday: 'long',
     month: 'long',
     day: 'numeric',

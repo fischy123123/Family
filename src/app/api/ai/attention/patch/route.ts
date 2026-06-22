@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
 import { logUsage, estimateCost } from '@/lib/ai'
 import { ATTENTION_MODEL } from '@/lib/attentionPrompt'
+import { resolveTimezone } from '@/lib/time'
 import type { AttentionItem, FamilyMember } from '@/lib/types'
 
 // Targeted card-patch endpoint. Called after a user chats with a briefing card —
@@ -54,7 +55,7 @@ export async function POST(request: NextRequest) {
 
   const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
-  const tz = timezone || 'America/Los_Angeles'
+  const tz = resolveTimezone(timezone)
   const nowFmt = new Date(now).toLocaleString('en-US', {
     timeZone: tz, weekday: 'short', month: 'short', day: 'numeric',
     hour: 'numeric', minute: '2-digit', timeZoneName: 'short',

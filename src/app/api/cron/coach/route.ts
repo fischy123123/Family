@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getAdminDb } from '@/lib/firebaseAdmin'
 import { generateCoaching, type CoachInput } from '@/lib/coach'
+import { DEFAULT_TIMEZONE } from '@/lib/time'
 import type {
   FamilyMember, CalendarEvent, Task, Chore, Plan, SmartList,
   FamilyProfile, FamilyMemory, FamilyGoal, Reflection, CoachingInsight,
@@ -82,7 +83,7 @@ export async function GET(request: NextRequest) {
         pastEvents: events,
         completedTasks: tasks.filter((t) => t.isCompleted),
         now: now.toISOString(),
-        timezone: 'America/Los_Angeles',
+        timezone: DEFAULT_TIMEZONE,
       }
 
       const result = await generateCoaching(input)

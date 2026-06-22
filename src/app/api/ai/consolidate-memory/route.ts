@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
 import type { FamilyMemory } from '@/lib/types'
 import { logUsage } from '@/lib/ai'
+import { resolveTimezone } from '@/lib/time'
 
 const MODEL = 'claude-sonnet-4-6'
 
@@ -17,6 +18,7 @@ interface ConsolidateRequest {
   existingMemories: FamilyMemory[]
   members: MemberRef[]
   now?: string   // ISO date so relative time can be converted to absolute
+  timezone?: string
 }
 
 export interface ConsolidateResult {
@@ -31,10 +33,11 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'ANTHROPIC_API_KEY not configured' }, { status: 500 })
   }
 
-  const { newText, existingMemories, members, now }: ConsolidateRequest = await request.json()
+  const { newText, existingMemories, members, now, timezone }: ConsolidateRequest = await request.json()
   if (!newText) return NextResponse.json({ error: 'newText required' }, { status: 400 })
 
   const todayStr = new Date(now ?? Date.now()).toLocaleDateString('en-US', {
+    timeZone: resolveTimezone(timezone),
     weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
   })
 

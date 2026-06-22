@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
 import { logUsage } from '@/lib/ai'
+import { resolveTimezone } from '@/lib/time'
 
 // Extraction is structured pattern work and latency-sensitive (user is capturing
 // something quickly) — Haiku is fast, cheap, and more than capable here.
@@ -24,7 +25,7 @@ export async function POST(request: NextRequest) {
   const imageMediaType: string | undefined = body.imageMediaType
   const members: MemberLite[] = body.members ?? []
   const today: string = body.today ?? new Date().toISOString()
-  const timezone: string = body.timezone ?? 'UTC'
+  const timezone: string = resolveTimezone(body.timezone)
   const existingEventTitles: string[] = body.existingEventTitles ?? []
 
   // Format "now" in the user's local timezone so the AI understands relative dates correctly

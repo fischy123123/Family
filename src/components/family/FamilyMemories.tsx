@@ -32,7 +32,7 @@ export function FamilyMemories() {
       const res = await fetch('/api/ai/consolidate-memory', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ newText: text, existingMemories: memories, members: memberRefs(), now: new Date().toISOString() }),
+        body: JSON.stringify({ newText: text, existingMemories: memories, members: memberRefs(), now: new Date().toISOString(), timezone: Intl.DateTimeFormat().resolvedOptions().timeZone }),
       })
       const result = res.ok ? await res.json() : null
 

@@ -7,6 +7,7 @@ import type {
 } from '@/lib/types'
 import { memorySubjects, memoryConcernsMember } from '@/lib/types'
 import { resolveAssignee, memberById } from '@/lib/members'
+import { resolveTimezone, formatDate as fmtDate, formatDateTime as fmtDatetime } from '@/lib/time'
 
 // One actionable item the assistant noticed in the family's inbox. Folded into
 // the same reasoning as everything else — never shown as a separate silo.
@@ -45,64 +46,16 @@ export interface FamilyContextInput {
   currentUserName?: string
 }
 
-// Date-only strings ("YYYY-MM-DD") carry no time or zone. Parsing one with
-// `new Date()` yields UTC midnight, which any timezone behind UTC (e.g. Pacific)
-// then renders as the PREVIOUS calendar day — the classic off-by-one. Detect
-// these and render the literal calendar parts with NO timezone conversion.
-const DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/
-
-// Format a date/time in the user's local timezone for the AI.
-function fmtDatetime(iso: string, tz?: string): string {
-  // All-day / date-only values have no time component — render as a plain date
-  // so we never shift the day or invent a spurious time.
-  if (DATE_ONLY_RE.test(iso.trim())) return fmtDate(iso, tz)
-  try {
-    return new Date(iso).toLocaleString('en-US', {
-      timeZone: tz,
-      weekday: 'short',
-      month: 'short',
-      day: 'numeric',
-      hour: 'numeric',
-      minute: '2-digit',
-      timeZoneName: 'short',
-    })
-  } catch {
-    return new Date(iso).toISOString()
-  }
-}
-
-function fmtDate(iso: string, tz?: string): string {
-  const trimmed = iso.trim()
-  // Date-only: pin to UTC so the calendar parts render exactly as written,
-  // regardless of the server's runtime timezone (the server runs in UTC).
-  if (DATE_ONLY_RE.test(trimmed)) {
-    const [y, m, d] = trimmed.split('-').map(Number)
-    return new Date(Date.UTC(y, m - 1, d)).toLocaleDateString('en-US', {
-      timeZone: 'UTC',
-      weekday: 'short',
-      month: 'short',
-      day: 'numeric',
-      year: 'numeric',
-    })
-  }
-  try {
-    return new Date(trimmed).toLocaleDateString('en-US', {
-      timeZone: tz,
-      weekday: 'short',
-      month: 'short',
-      day: 'numeric',
-      year: 'numeric',
-    })
-  } catch {
-    return new Date(iso).toDateString()
-  }
-}
+// Date/time formatting lives in @/lib/time — the single source of truth that
+// guarantees an explicit timezone (never a silent UTC fallback) and handles
+// date-only values without the off-by-one shift. Imported above as fmtDate /
+// fmtDatetime.
 
 // Compact "noted Jun 5" date stamp for a memory, so the AI can judge how stale
 // any relative time reference ("this week", "next Tuesday") inside it might be.
 function notedOn(iso: string, tz?: string): string {
   try {
-    return new Date(iso).toLocaleDateString('en-US', { timeZone: tz, month: 'short', day: 'numeric' })
+    return new Date(iso).toLocaleDateString('en-US', { timeZone: resolveTimezone(tz), month: 'short', day: 'numeric' })
   } catch {
     return ''
   }
@@ -192,7 +145,7 @@ export function buildFamilyContextParts(input: FamilyContextInput): {
     members, events, tasks, chores, plans, lists, now, timezone, eventContext,
     profile, memories, inbox, currentUserEmail, currentUserName,
   } = input
-  const tz = timezone || undefined
+  const tz = resolveTimezone(timezone)
   const nowDate = new Date(now)
   const horizon = new Date(nowDate.getTime() + HORIZON_DAYS * 24 * 60 * 60 * 1000)
   const pastCutoff = new Date(nowDate.getTime() - PAST_WINDOW_HOURS * 60 * 60 * 1000)
@@ -288,6 +241,8 @@ export function buildFamilyContextParts(input: FamilyContextInput): {
     month: 'long',
     day: 'numeric',
   })
+  // tz is always a real IANA zone here (resolveTimezone), so the line below
+  // never renders the timezone label as undefined.
   const timeHeader =
     `CURRENT TIME: ${nowFormatted}${tz ? ` (timezone: ${tz})` : ''}\n` +
     `TODAY'S LOCAL DATE: ${localDateStr} — use this as the anchor for all relative date reasoning. ` +

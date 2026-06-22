@@ -8,6 +8,7 @@ import Anthropic from '@anthropic-ai/sdk'
 import { buildFamilyContextParts, type FamilyContextInput } from '@/lib/familyContext'
 import { logUsage } from '@/lib/ai'
 import { LIFE_AREAS } from '@/lib/types'
+import { resolveTimezone, formatDate as fmtDate, formatTimeOnly } from '@/lib/time'
 import type {
   FamilyGoal, Reflection, CoachingInsight, CalendarEvent, Task,
 } from '@/lib/types'
@@ -22,16 +23,6 @@ export interface CoachInput extends FamilyContextInput {
   completedTasks?: Task[]            // recently completed — momentum & follow-through
 }
 
-function fmtDate(iso: string, tz?: string): string {
-  try {
-    return new Date(iso).toLocaleDateString('en-US', {
-      timeZone: tz, weekday: 'short', month: 'short', day: 'numeric',
-    })
-  } catch {
-    return iso
-  }
-}
-
 // Builds the coaching-specific context, split into a static data block (members,
 // events, goals, reflections, history — eligible for prompt caching) and a
 // dynamic time header (current time — changes every run, never cached). All the
@@ -42,7 +33,7 @@ export function buildCoachingContextParts(input: CoachInput): {
   dataBlock: string
 } {
   const { goals, reflections, recentInsights, pastEvents, completedTasks, timezone, now } = input
-  const tz = timezone || undefined
+  const tz = resolveTimezone(timezone)
   const nowDate = new Date(now)
 
   const { timeHeader, dataBlock: baseData } = buildFamilyContextParts(input)
@@ -95,7 +86,7 @@ export function buildCoachingContextParts(input: CoachInput): {
     if (history.length) {
       sections.push(
         `RECENT CALENDAR HISTORY (the last several weeks — use this to spot PATTERNS over time: who's overloaded, what's been crowded out, whether commitments are actually happening):\n${history
-          .map((e) => `- ${fmtDate(e.start, tz)} ${e.isAllDay ? '(all day)' : new Date(e.start).toLocaleTimeString('en-US', { timeZone: tz, hour: 'numeric', minute: '2-digit' })}: ${e.title}${e.ownerEmail ? ` (${e.ownerEmail})` : ''}`)
+          .map((e) => `- ${fmtDate(e.start, tz)} ${e.isAllDay ? '(all day)' : formatTimeOnly(e.start, tz)}: ${e.title}${e.ownerEmail ? ` (${e.ownerEmail})` : ''}`)
           .join('\n')}`
       )
     }

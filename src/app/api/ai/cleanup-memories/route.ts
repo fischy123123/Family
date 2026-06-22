@@ -3,6 +3,7 @@ import Anthropic from '@anthropic-ai/sdk'
 import type { FamilyMemory } from '@/lib/types'
 import { logUsage } from '@/lib/ai'
 import { memorySubjects } from '@/lib/types'
+import { resolveTimezone } from '@/lib/time'
 
 const MODEL = 'claude-sonnet-4-6'
 
@@ -17,6 +18,7 @@ interface CleanupRequest {
   memories: FamilyMemory[]
   members: MemberRef[]
   now?: string
+  timezone?: string
 }
 
 interface MergeGroup {
@@ -41,10 +43,11 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'ANTHROPIC_API_KEY not configured' }, { status: 500 })
   }
 
-  const { memories, members, now }: CleanupRequest = await request.json()
+  const { memories, members, now, timezone }: CleanupRequest = await request.json()
   if (!memories?.length) return NextResponse.json({ toDelete: [], toMerge: [] })
 
   const todayStr = new Date(now ?? Date.now()).toLocaleDateString('en-US', {
+    timeZone: resolveTimezone(timezone),
     weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
   })
 

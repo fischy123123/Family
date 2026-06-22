@@ -2,6 +2,7 @@ import Anthropic from '@anthropic-ai/sdk'
 import { generateId } from '@/lib/utils'
 import { getEvents, getCalendars, createEvent as createGoogleEvent, updateEvent, deleteEvent } from '@/lib/google/calendar'
 import { resolveMemberRef } from '@/lib/members'
+import { resolveTimezone } from '@/lib/time'
 import type { FamilyMember, FamilyMemory, FamilyProfile } from '@/lib/types'
 import { memorySubjects } from '@/lib/types'
 
@@ -690,8 +691,11 @@ DELETING EVENTS: Call get_google_events first to get the event_id and calendar_i
     return { year: Number(p.year), month: Number(p.month) - 1, day: Number(p.day), weekday: WEEKDAY_SHORT[p.weekday] ?? 0 }
   }
 
+  // Always reason about "today" in a real IANA zone — never fall back to the
+  // server's UTC clock, which can roll the date a day early/late for the user.
+  const tz = resolveTimezone(timezone)
   const todayDate = new Date(today)
-  const { year: tYear, month: tMonth, day: tDay, weekday: tWeekday } = localParts(todayDate, timezone)
+  const { year: tYear, month: tMonth, day: tDay, weekday: tWeekday } = localParts(todayDate, tz)
   const todayDayName = DAY_NAMES[tWeekday]
   const todayLabel = `${todayDayName}, ${MONTH_NAMES[tMonth]} ${tDay}, ${tYear}`
 
@@ -702,13 +706,13 @@ DELETING EVENTS: Call get_google_events first to get the event_id and calendar_i
   for (let i = 0; i <= 14; i++) {
     const d = new Date(`${localTodayStr}T12:00:00Z`)
     d.setUTCDate(d.getUTCDate() + i)
-    const { year: y, month: m, day: dy, weekday: dw } = localParts(d, timezone)
+    const { year: y, month: m, day: dy, weekday: dw } = localParts(d, tz)
     upcomingDays.push(`${DAY_NAMES[dw]} = ${y}-${String(m + 1).padStart(2, '0')}-${String(dy).padStart(2, '0')}`)
   }
   const calendarRef = `DAY-DATE REFERENCE (authoritative — do not compute day names yourself, use this table):\n${upcomingDays.join(' | ')}`
 
   return `You are Copilot, the family's AI chief of staff.
-Today is ${todayLabel}${timezone ? ` (user timezone: ${timezone})` : ''}.
+Today is ${todayLabel} (user timezone: ${tz}).
 ${calendarRef}
 DATE VALIDATION RULE: Before quoting any date to the user — whether from memory, a reminder, or an event — look up the exact date in the DAY-DATE REFERENCE table above and use the day name from the table. Never trust a day name that was embedded in stored text; dates can outlive the day name that was written alongside them (e.g. a memory saying "Sunday, June 22" is wrong if the table shows June 22 is Monday). Always show the corrected day name.
 CONFLICT DETECTION RULE: If you notice two memories that directly contradict each other about the same fact (e.g., two different end dates for the same grounding, two different school schedules), do not pick one silently. Tell the user there are conflicting entries, show both, ask which is correct, then call remember with the "replaces" field set to the stale memory's id to overwrite it with the confirmed fact in one step (do NOT forget-then-remember, which risks leaving a duplicate behind).
