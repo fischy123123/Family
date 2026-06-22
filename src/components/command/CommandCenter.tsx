@@ -663,17 +663,18 @@ export function CommandCenter() {
     engineAbortRef.current = controller
     const myRunToken = ++runTokenRef.current
 
-    // isPending: result goes into pendingReport (buffered) — used for minor
-    // background refreshes where the user is mid-scroll and we don't want jumps.
-    // When isPending=false the result writes directly to report, so we also
-    // show the streaming view (progressive=true) regardless of the silent flag.
-    const isPending = !!(silent && report) && !forceDirectRef.current
+    // isPending: result goes into pendingReport (shows "Briefing updated" banner).
+    // isForced: bypasses pendingReport so the result writes directly to report
+    // (used by manual refresh and clearCaches so the update appears immediately
+    // without requiring a banner tap).
+    const isForced = forceDirectRef.current
+    const isPending = !!(silent && report) && !isForced
     forceDirectRef.current = false
 
-    // Use loading (foreground) whenever the result will write directly.
-    // Refreshing (background) only when result is buffered into pendingReport.
-    if (isPending) setRefreshing(true)
-    else setLoading(true)
+    // Never show the streaming skeleton when a cached report is on screen.
+    // Streaming only appears on cold starts (no report at all).
+    if (!silent || !report) setLoading(true)
+    else setRefreshing(true)
 
     const runAt = Date.now()
     lastRun.current = runAt
@@ -706,10 +707,8 @@ export function CommandCenter() {
         return
       }
 
-      // Show streaming whenever the result writes directly to report (not buffered).
-      // This covers cold starts, manual refreshes, AND silent runs where the
-      // cached report was stale enough that forceDirectRef bypassed the buffer.
-      const progressive = !isPending
+      // Streaming skeleton only on cold starts — never when a report already exists.
+      const progressive = !silent || !report
       if (progressive) setStreamingItems([])
       const reader = res.body.getReader()
       const decoder = new TextDecoder()
@@ -730,10 +729,14 @@ export function CommandCenter() {
           if (!line) continue
           let evt: { t?: string; d?: string; error?: string; item?: AttentionItem } & Partial<AttentionReport>
           try { evt = JSON.parse(line) } catch { continue }
-          if (evt.t === 'delta') {
+          if (evt.t === 'open') {
+            // Server sends this right after context is built, before the AI call.
+            const preAi = Math.round(performance.now() - engineStart)
+            console.log(`[perf:engine] server_open=${preAi}ms — request arrived + context built, AI call starting now`)
+          } else if (evt.t === 'delta') {
             if (engineTTFT === -1 && evt.d) {
               engineTTFT = Math.round(performance.now() - engineStart)
-              console.log(`[perf:engine] ttft=${engineTTFT}ms (first token reached the browser)`)
+              console.log(`[perf:engine] ttft=${engineTTFT}ms — first token from Anthropic reached browser`)
             }
             if (progressive && evt.d) {
               rawText += evt.d
@@ -741,9 +744,11 @@ export function CommandCenter() {
               if (g) setStreamingGreeting(g)
             }
           } else if (evt.t === 'item') {
-            // A card finished generating — show it right away on a cold start.
-            if (progressive && evt.item) {
-              const card = evt.item
+            const itemMs = Math.round(performance.now() - engineStart)
+            const itemEvt = evt as { t: string; index?: number; item?: AttentionItem }
+            console.log(`[perf:engine] item[${itemEvt.index ?? '?'}] at ${itemMs}ms — "${itemEvt.item?.title?.slice(0, 40) ?? '?'}"`)
+            if (progressive && itemEvt.item) {
+              const card = itemEvt.item
               setStreamingItems((prev) =>
                 prev.some((p) => p.id === card.id) ? prev : [...prev, card]
               )
@@ -752,8 +757,10 @@ export function CommandCenter() {
             const total = Math.round(performance.now() - engineStart)
             const stream = engineTTFT > 0 ? total - engineTTFT : total
             console.log(
-              `[perf:engine] END-TO-END total=${total}ms` +
-              ` (ttft=${engineTTFT}ms + stream=${stream}ms) — perceived load time from tap to full briefing`
+              `[perf:engine] DONE total=${total}ms` +
+              ` | breakdown: ttft=${engineTTFT}ms (prompt-read + first-token)` +
+              ` + stream=${stream}ms (output generation)` +
+              ` | items=${(evt as unknown as AttentionReport).items?.length ?? 0}`
             )
             finalReport = evt as AttentionReport
           } else if (evt.t === 'error') {
@@ -1362,7 +1369,7 @@ export function CommandCenter() {
           resolvedItems={resolvedItems}
           accent={color}
           allMembers={members}
-          onCompleteItem={(item) => completeTaskFromItem(item)}
+          onCompleteItem={async (item) => { await completeTaskFromItem(item); runEngine(undefined, true) }}
           onDismissItem={(title) => dismissItem(title)}
           onSaveTaskItem={(title, reason) => saveItemAsTask(title, reason)}
           onAssignItem={(item, f, r) => assignItem(item, f, r)}
@@ -1398,7 +1405,7 @@ export function CommandCenter() {
         forMembers={forMembers}
         backedByRealItem={backedByRealItem}
         isRecurring={isRecurring}
-        onComplete={() => completeTaskFromItem(item)}
+        onComplete={async () => { await completeTaskFromItem(item); runEngine(undefined, true) }}
         onDismiss={() => dismissItem(item.title)}
         onSaveTask={() => saveItemAsTask(item.title, item.reason)}
         onAssign={(f, r) => assignItem(item, f, r)}
@@ -1581,7 +1588,7 @@ export function CommandCenter() {
         </div>
         <div className="flex items-center gap-2">
           <button
-            onClick={() => { setPendingReport(null); runEngine(undefined, false) }}
+            onClick={() => { setPendingReport(null); forceDirectRef.current = true; runEngine(undefined, !!report) }}
             disabled={loading || calendarFetching}
             title={loading || calendarFetching ? 'Loading calendar…' : refreshing ? 'Updating — tap to refresh now' : 'Refresh briefing'}
             className={`mt-1 p-2.5 rounded-xl border shadow-card transition-all disabled:opacity-60 ${
@@ -2815,9 +2822,9 @@ function AssignPanel({
   )
 }
 
-// ── Card action sheet ────────────────────────────────────────
-// Slides up from the bottom when the user taps an AttentionCard.
-// Contains all per-card actions + inline assign / chat sub-views.
+// ── Card action modal ────────────────────────────────────────
+// Opens as a centered dialog when the user taps an AttentionCard.
+// Contains card summary + all per-card actions + inline assign / chat sub-views.
 
 function CardActionSheet({
   item, accent, allMembers, responsible, forMembers, backedByRealItem, isRecurring,
@@ -2849,47 +2856,39 @@ function CardActionSheet({
     ? new Date(item.startBy).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
     : null
 
-  // Prevent body from scrolling behind the sheet
   useEffect(() => {
     document.body.style.overflow = 'hidden'
     return () => { document.body.style.overflow = '' }
   }, [])
 
   return (
-    <>
-      {/* Backdrop */}
+    <div
+      className="fixed inset-0 z-40 flex items-center justify-center p-5 animate-fade-in"
+      style={{ background: 'rgba(0,0,0,0.45)' }}
+      onClick={(e) => { if (e.target === e.currentTarget) onClose() }}
+    >
       <div
-        className="fixed inset-0 z-40 bg-black/40 animate-fade-in"
-        onClick={onClose}
-      />
-      {/* Sheet */}
-      <div
-        className="fixed inset-x-0 bottom-0 z-50 bg-white rounded-t-2xl shadow-elevated flex flex-col animate-slide-up"
-        style={{ maxHeight: '85vh', paddingBottom: 'env(safe-area-inset-bottom, 16px)' }}
+        className="bg-white rounded-2xl shadow-elevated w-full max-w-sm flex flex-col animate-scale-in overflow-hidden"
+        style={{ maxHeight: '80vh' }}
       >
-        {/* Drag handle */}
-        <div className="flex justify-center pt-3 pb-2 shrink-0">
-          <div className="w-10 h-1 rounded-full bg-slate-200" />
-        </div>
-
         {/* Back nav for sub-views */}
         {view !== 'actions' && (
           <button
             onClick={() => setView('actions')}
-            className="flex items-center gap-1.5 px-5 py-2 text-sm text-blue-600 font-medium shrink-0"
+            className="flex items-center gap-1.5 px-4 py-3 text-sm text-blue-600 font-medium border-b border-slate-100 shrink-0"
           >
             ← Back
           </button>
         )}
 
-        {/* Card summary header (main actions view only) */}
+        {/* Card summary (actions view only) */}
         {view === 'actions' && (
-          <div className="px-5 pt-1 pb-4 border-b border-slate-100 shrink-0">
+          <div className="p-4 border-b border-slate-100 shrink-0">
             <div className="flex items-start gap-3">
-              <div className="w-1 self-stretch rounded-full shrink-0" style={{ background: accent }} />
+              <div className="w-1 self-stretch rounded-full shrink-0 mt-0.5" style={{ background: accent }} />
               <div className="flex-1 min-w-0">
-                <p className="text-[15px] font-semibold text-slate-900">{item.title}</p>
-                <p className="text-sm text-slate-500 mt-0.5 leading-relaxed">{item.reason}</p>
+                <p className="text-[15px] font-semibold text-slate-900 leading-snug">{item.title}</p>
+                <p className="text-sm text-slate-500 mt-1 leading-relaxed">{item.reason}</p>
                 {item.detail && (
                   <p className="text-xs text-slate-400 mt-1 leading-relaxed">{item.detail}</p>
                 )}
@@ -2930,36 +2929,33 @@ function CardActionSheet({
         {/* Scrollable content */}
         <div className="flex-1 overflow-y-auto">
           {view === 'actions' && (
-            <div className="py-2">
-              {isTask ? (
+            <div className="py-1.5">
+              {isTask && (
                 <SheetAction
                   icon={<Check size={18} className="text-green-600" />}
                   label="Mark as done"
                   onClick={onComplete}
                 />
-              ) : (
-                <SheetAction
-                  icon={<Bookmark size={18} className="text-slate-600" />}
-                  label="Save as task"
-                  onClick={onSaveTask}
-                />
               )}
               <SheetAction
                 icon={<Users size={18} className="text-slate-600" />}
-                label="Assign to someone"
+                label="Change assignment"
+                sub="Who's handling this and who it's for"
                 onClick={() => setView('assign')}
                 showChevron
               />
               <SheetAction
                 icon={<MessageCircle size={18} className="text-blue-500" />}
                 label="Ask about this…"
+                sub="Chat with your assistant about this card"
                 onClick={() => setView('chat')}
                 showChevron
               />
-              <div className="mx-5 my-1 border-t border-slate-100" />
+              <div className="mx-4 my-1 border-t border-slate-100" />
               <SheetAction
-                icon={<X size={18} className="text-red-400" />}
-                label="Dismiss"
+                icon={<X size={18} className="text-slate-400" />}
+                label="Hide from briefing"
+                sub="Removes this card — you can teach the assistant why"
                 onClick={onDismiss}
               />
               {debugMode && onTrace && (
@@ -2984,33 +2980,48 @@ function CardActionSheet({
           )}
 
           {view === 'chat' && (
-            <CardChat
-              cardContext={[
-                `Title: "${item.title}"`,
-                `Reason: "${item.reason}"`,
-                `Source type: ${item.sourceType}`,
-                item.dueAt ? `Due/scheduled: ${item.dueAt}` : '',
-                item.startBy ? `Start by: ${item.startBy}` : '',
-                item.sourceId ? `Source id: ${item.sourceId}` : '',
-              ].filter(Boolean).join('\n')}
-              quickPrompts={['Why is this showing up?', 'What should I do?', 'Where does this come from?']}
-              patchCards={groupItems ?? [item]}
-              currentGreeting={currentGreeting}
-              patchMembers={cardMembers}
-              onPatch={onPatch}
-            />
+            <div className="min-h-[300px]">
+              <CardChat
+                cardContext={[
+                  `Title: "${item.title}"`,
+                  `Reason: "${item.reason}"`,
+                  `Source type: ${item.sourceType}`,
+                  item.dueAt ? `Due/scheduled: ${item.dueAt}` : '',
+                  item.startBy ? `Start by: ${item.startBy}` : '',
+                  item.sourceId ? `Source id: ${item.sourceId}` : '',
+                ].filter(Boolean).join('\n')}
+                quickPrompts={['Why is this showing up?', 'What should I do?', 'Where does this come from?']}
+                patchCards={groupItems ?? [item]}
+                currentGreeting={currentGreeting}
+                patchMembers={cardMembers}
+                onPatch={onPatch}
+              />
+            </div>
           )}
         </div>
+
+        {/* Close button */}
+        {view === 'actions' && (
+          <div className="px-4 pb-4 pt-2 shrink-0 border-t border-slate-50">
+            <button
+              onClick={onClose}
+              className="w-full py-2.5 rounded-xl bg-slate-100 text-sm font-medium text-slate-600 hover:bg-slate-200 active:bg-slate-300 transition-colors"
+            >
+              Close
+            </button>
+          </div>
+        )}
       </div>
-    </>
+    </div>
   )
 }
 
 function SheetAction({
-  icon, label, onClick, disabled, showChevron,
+  icon, label, sub, onClick, disabled, showChevron,
 }: {
   icon: React.ReactNode
   label: string
+  sub?: string
   onClick: () => void
   disabled?: boolean
   showChevron?: boolean
@@ -3019,10 +3030,13 @@ function SheetAction({
     <button
       onClick={onClick}
       disabled={disabled}
-      className="w-full flex items-center gap-4 px-5 py-3.5 text-left hover:bg-slate-50 active:bg-slate-100 transition-colors disabled:opacity-40"
+      className="w-full flex items-center gap-3.5 px-4 py-3 text-left hover:bg-slate-50 active:bg-slate-100 transition-colors disabled:opacity-40"
     >
       <span className="shrink-0 w-7 flex justify-center">{icon}</span>
-      <span className="flex-1 text-sm font-medium text-slate-800">{label}</span>
+      <span className="flex-1 min-w-0">
+        <span className="block text-sm font-medium text-slate-800">{label}</span>
+        {sub && <span className="block text-xs text-slate-400 mt-0.5 leading-snug">{sub}</span>}
+      </span>
       {showChevron && <ChevronRight size={15} className="text-slate-300 shrink-0" />}
     </button>
   )

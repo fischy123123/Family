@@ -98,6 +98,7 @@ export async function POST(request: NextRequest) {
         controller.enqueue(encoder.encode(':' + ' '.repeat(2048) + '\n'))
         send({ t: 'open' })
       } catch { /* closed */ }
+      console.log(`[perf/attention] pre_ai=${Date.now() - reqStart}ms — request parsed + context built, starting Anthropic call`)
       try {
         const aiStart = Date.now()
         let ttft = -1
