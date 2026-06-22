@@ -245,6 +245,8 @@ export async function GET(request: NextRequest) {
       { merge: true },
     )
 
+    console.log(`[smart-notify] family=${familyId} tokens=${tokens.length} decision=${JSON.stringify(decision)}`)
+
     if (!decision.shouldNotify || !decision.body) { skipped++; continue }
 
     // ── Send ───────────────────────────────────────────────────────────────
@@ -265,11 +267,15 @@ export async function GET(request: NextRequest) {
         },
       })
       sent += res.successCount
+      console.log(`[smart-notify] FCM result: success=${res.successCount} failure=${res.failureCount}`)
 
       // Clean up stale device tokens.
       res.responses.forEach((r, i) => {
-        if (!r.success && r.error?.code === 'messaging/registration-token-not-registered') {
-          tokensSnap.docs[i].ref.delete().catch(() => {})
+        if (!r.success) {
+          console.log(`[smart-notify] FCM token[${i}] failed: ${r.error?.code} ${r.error?.message}`)
+          if (r.error?.code === 'messaging/registration-token-not-registered') {
+            tokensSnap.docs[i].ref.delete().catch(() => {})
+          }
         }
       })
 
