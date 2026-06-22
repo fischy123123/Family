@@ -42,13 +42,16 @@ const SYSTEM_PROMPT =
   `• Overdue tasks that are blocking something real or time-sensitive today.\n` +
   `• Health or medication routines that happen at a specific time.\n` +
   `• Anything the family has explicitly said they want to be reminded about.\n` +
-  `• Coach check-ins or insights that just became available and feel personally relevant.\n\n` +
+  `• Coach check-ins or insights that just became available and feel personally relevant.\n` +
+  `• Time-sensitive chores with real consequences if missed — trash/recycling day before ` +
+  `collection, anything that has to happen before a specific event or deadline today.\n\n` +
   `WHAT TO IGNORE:\n` +
-  `• Routine chores — these are already in the morning briefing.\n` +
+  `• Everyday routine chores with no deadline (dishes, laundry, tidying) — these can wait.\n` +
   `• Events happening tomorrow or later — only what's relevant in the next 3 hours.\n` +
   `• Quiet hours specified in the family profile — do NOT push during those times.\n` +
   `• Anything that was already sent recently (a dedupe note will be included if relevant).\n\n` +
-  `Be VERY selective. A push is an interruption. When in doubt, do NOT send.\n\n` +
+  `Be selective but not overly cautious. If something has a real consequence for missing it ` +
+  `today, that is worth a push. When genuinely nothing is time-sensitive, do NOT send.\n\n` +
   `Return ONLY valid JSON — no markdown, no explanation:\n` +
   `{"shouldNotify":true/false,"title":"...","body":"...","trigger":"event"|"task"|"coach"|"other"}\n` +
   `title ≤50 chars · body ≤160 chars · trigger drives the tap destination.`
