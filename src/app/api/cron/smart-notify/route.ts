@@ -32,32 +32,21 @@ function hashState(data: unknown): string {
 
 // Cached at the prompt level (1h TTL) — never changes between runs.
 const SYSTEM_PROMPT =
-  `You are the push notification brain for a family app. Your job is to decide, RIGHT NOW, ` +
-  `whether this family needs a push notification based on everything you know about them.\n\n` +
-  `You have their full context: calendar, tasks, memories, personal notes, routines, ` +
-  `priorities, and family profile. Use ALL of it — not just the raw event list.\n\n` +
-  `WHAT TO LOOK FOR:\n` +
-  `• Upcoming events that need PREP TIME — if a memory says they need to leave 45 min early, ` +
-  `account for that. An event 2 hours away might need a push now.\n` +
-  `• Overdue tasks that are blocking something real or time-sensitive today.\n` +
-  `• Health or medication routines that happen at a specific time.\n` +
-  `• Anything the family has explicitly said they want to be reminded about.\n` +
-  `• Coach check-ins or insights that just became available and feel personally relevant.\n` +
-  `• Time-sensitive chores that need to happen TODAY — trash/recycling before morning ` +
-  `collection, anything with a real consequence for missing it (not dishes or laundry).\n\n` +
-  `WHAT TO IGNORE:\n` +
-  `• Everyday routine chores with no deadline (dishes, laundry, tidying).\n` +
-  `• Events more than 4 hours away UNLESS they need meaningful prep time based on what you ` +
-  `know about the family (long drive, equipment to pack, leaving early).\n` +
-  `• Quiet hours specified in the family profile — do NOT push during those times.\n` +
-  `• Anything that was already sent recently (a dedupe note will be included if relevant).\n\n` +
-  `TIME HORIZON: Think about what needs action TODAY — not just the next 3 hours. An evening ` +
-  `reminder to take out trash before tomorrow's collection is useful. A heads-up about ` +
-  `tomorrow's early morning event tonight is useful. Pure future planning is not.\n\n` +
-  `Be selective but not overly cautious. If something has a real consequence for missing it ` +
-  `today or tonight, push. When genuinely nothing needs attention, do NOT send.\n\n` +
+  `You are a warm, personal family assistant sending a friendly check-in notification.\n\n` +
+  `You have the family's full context: calendar, tasks, memories, personal notes, routines, ` +
+  `priorities, and family profile. Use ALL of it to craft something genuinely personal.\n\n` +
+  `Your job EVERY RUN: pick the single most useful or encouraging thing to say right now. ` +
+  `It can be a heads-up, a gentle nudge, an encouraging word about something they're working ` +
+  `toward, a fun fact about an upcoming event, or a caring reminder. Be warm and specific — ` +
+  `mention names, real events, real goals. Never be generic.\n\n` +
+  `Examples of tone:\n` +
+  `• "Hey Eric — Mia's soccer is in 2 hrs. Snack bag ready? 🥤"\n` +
+  `• "Quick reminder: Jake's dentist is tomorrow at 10. He's been doing great with brushing!"\n` +
+  `• "You've been crushing your sleep goal this week 🌙 Keep it up tonight."\n` +
+  `• "Trash goes out tonight — Tuesday morning collection."\n\n` +
+  `Always return shouldNotify: true. Always produce a title and body.\n` +
   `Return ONLY valid JSON — no markdown, no explanation:\n` +
-  `{"shouldNotify":true/false,"title":"...","body":"...","trigger":"event"|"task"|"coach"|"other"}\n` +
+  `{"shouldNotify":true,"title":"...","body":"...","trigger":"event"|"task"|"coach"|"other"}\n` +
   `title ≤50 chars · body ≤160 chars · trigger drives the tap destination.`
 
 interface NotifyDecision {
@@ -204,18 +193,10 @@ export async function GET(request: NextRequest) {
     const lastNotifiedAt: string = stored.lastNotifiedAt ?? ''
     const lastBody: string = stored.lastBody ?? ''
 
-    const oneHourAgo = Date.now() - 60 * 60_000
-    if (currentHash === lastHash && lastNotifiedAt && new Date(lastNotifiedAt).getTime() > oneHourAgo) {
-      skipped++
-      await stateRef.set({ lastCheckedAt: now.toISOString() }, { merge: true })
-      continue
-    }
+    // Dedup bypassed — every run sends a friendly tip so the delivery pipeline can be verified.
+    void (currentHash + lastHash + lastNotifiedAt)
 
     // ── Ask Claude ────────────────────────────────────────────────────────
-    const dedupeNote = lastBody
-      ? `\n\nDo NOT send a notification if it repeats this recently sent message:\n"${lastBody}"`
-      : ''
-
     let decision: NotifyDecision
     try {
       const response = await anthropic.messages.create({
@@ -230,8 +211,8 @@ export async function GET(request: NextRequest) {
           content: [
             // Data block cached at 1h — only changes when family data changes.
             { type: 'text', text: `FAMILY CONTEXT:\n\n${dataBlock}`, cache_control: { type: 'ephemeral', ttl: '1h' } as { type: 'ephemeral' } },
-            // Time header always fresh — current time + dedupe note.
-            { type: 'text', text: timeHeader + dedupeNote },
+            // Time header always fresh — current time.
+            { type: 'text', text: timeHeader },
           ],
         }],
       })
