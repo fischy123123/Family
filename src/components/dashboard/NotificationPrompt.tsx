@@ -5,9 +5,7 @@ import { Bell, X } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { useFamily } from '@/contexts/FamilyContext'
 import { useToast } from '@/contexts/ToastContext'
-import { enableNotifications, notificationsSupported, onForegroundMessage } from '@/lib/messaging'
-
-const DISMISS_KEY = 'fcc_notif_dismissed'
+import { enableNotifications, getNotificationStatus, onForegroundMessage } from '@/lib/messaging'
 
 export function NotificationPrompt() {
   const { user } = useAuth()
@@ -19,15 +17,15 @@ export function NotificationPrompt() {
   useEffect(() => {
     let active = true
     async function check() {
-      if (!(await notificationsSupported())) return
-      if (typeof Notification === 'undefined') return
-      const dismissed = localStorage.getItem(DISMISS_KEY)
-      // Show only if permission hasn't been granted/denied and user hasn't dismissed.
-      if (Notification.permission === 'default' && !dismissed && active) {
-        setShow(true)
-      }
-      if (Notification.permission === 'granted') {
+      const status = await getNotificationStatus()
+      if (!active) return
+      if (status === 'granted') {
         onForegroundMessage((title, body) => toast(`${title}: ${body}`, 'info'))
+      } else if (status === 'default') {
+        // Show the banner whenever permission hasn't been decided yet.
+        // Dismissing is session-only — users can always come back to Settings
+        // to enable. We no longer permanently hide it via localStorage.
+        setShow(true)
       }
     }
     check()
@@ -51,7 +49,8 @@ export function NotificationPrompt() {
   }
 
   function dismiss() {
-    localStorage.setItem(DISMISS_KEY, '1')
+    // Session-only: hide the banner now but let it reappear next visit.
+    // Permanent management lives in Settings → Notifications.
     setShow(false)
   }
 

@@ -72,7 +72,13 @@ export async function onForegroundMessage(cb: (title: string, body: string) => v
   })
 }
 
-export async function notificationsSupported(): Promise<boolean> {
+async function notificationsSupported(): Promise<boolean> {
   if (typeof window === 'undefined') return false
   return (await isSupported()) && 'Notification' in window
+}
+
+/** Returns the current notification permission status. */
+export async function getNotificationStatus(): Promise<'unsupported' | 'granted' | 'denied' | 'default'> {
+  if (!(await notificationsSupported())) return 'unsupported'
+  return Notification.permission as 'granted' | 'denied' | 'default'
 }

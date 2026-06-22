@@ -7,12 +7,14 @@ import { useRouter } from 'next/navigation'
 import {
   LogOut, Trash2, UserMinus, ArrowLeft, ShieldAlert, RefreshCw,
   Loader2, RotateCcw, Sparkles, Brain, ChevronDown, Bug, BookMarked,
-  Plus, X,
+  Plus, X, Bell,
 } from 'lucide-react'
 import { isAiDebugEnabled, setAiDebugEnabled } from '@/lib/aiDebug'
+import { enableNotifications, getNotificationStatus, onForegroundMessage } from '@/lib/messaging'
 import { useAuth } from '@/contexts/AuthContext'
 import { useFamily } from '@/contexts/FamilyContext'
 import { useFirestore } from '@/hooks/useFirestore'
+import { useToast } from '@/contexts/ToastContext'
 import { auth } from '@/lib/firebase'
 import { isAdminEmail } from '@/lib/admin'
 import { generateId } from '@/lib/utils'
@@ -46,6 +48,7 @@ export default function SettingsPage() {
   const router = useRouter()
   const { user, signOut } = useAuth()
   const { familyId, inviteCode, resetFamily, deleteFamily } = useFamily()
+  const { toast } = useToast()
   const { data: memories, create, update, remove } = useFirestore<FamilyMemory>('memories')
   const { data: members, update: updateMember } = useFirestore<FamilyMember>('members')
   const { data: profileDocs, update: updateProfile, create: createProfile } = useFirestore<FamilyProfile>('profile')
@@ -62,6 +65,8 @@ export default function SettingsPage() {
   const [cleanResult, setCleanResult] = useState<string | null>(null)
   const [showMemories, setShowMemories] = useState(false)
   const [debugMode, setDebugMode] = useState(false)
+  const [notifStatus, setNotifStatus] = useState<'unsupported' | 'granted' | 'denied' | 'default' | 'loading'>('loading')
+  const [enablingNotif, setEnablingNotif] = useState(false)
   const [newRule, setNewRule] = useState('')
   const [addingRule, setAddingRule] = useState(false)
   const [retrofitting, setRetrofitting] = useState(false)
@@ -87,6 +92,28 @@ export default function SettingsPage() {
   useEffect(() => {
     setDebugMode(isAiDebugEnabled())
   }, [])
+
+  useEffect(() => {
+    getNotificationStatus().then(setNotifStatus)
+  }, [])
+
+  async function handleEnableNotifications() {
+    if (!familyId || !user?.email) return
+    setEnablingNotif(true)
+    try {
+      await enableNotifications(familyId, user.email)
+      setNotifStatus('granted')
+      onForegroundMessage((title, body) => toast(`${title}: ${body}`, 'info'))
+      toast('Notifications enabled! You\'ll get a daily agenda.', 'success')
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : 'Could not enable notifications'
+      // Re-read actual permission state after failure (could have been browser-denied)
+      getNotificationStatus().then(setNotifStatus)
+      toast(msg, 'error')
+    } finally {
+      setEnablingNotif(false)
+    }
+  }
 
   function toggleDebugMode() {
     const next = !debugMode
@@ -756,6 +783,48 @@ export default function SettingsPage() {
                 {addingRule ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
                 Add
               </button>
+            </div>
+          </div>
+        </section>
+
+        {/* Notifications */}
+        <section className="bg-white rounded-2xl border border-slate-200 divide-y divide-slate-100 mb-4">
+          <div className="px-5 py-4 flex items-center gap-2">
+            <Bell size={15} className="text-slate-400" />
+            <p className="text-xs font-semibold text-slate-400 uppercase tracking-widest">Notifications</p>
+          </div>
+          <div className="px-5 py-4">
+            <div className="flex items-start justify-between gap-4">
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-slate-700 mb-1">Daily agenda &amp; reminders</p>
+                <p className="text-xs text-slate-400 leading-relaxed">
+                  {notifStatus === 'denied'
+                    ? 'Notifications are blocked for this site. To enable them, open your browser\'s site settings and allow notifications, then reload.'
+                    : notifStatus === 'granted'
+                    ? 'Push notifications are active on this device. You\'ll receive a morning briefing and time-sensitive reminders.'
+                    : notifStatus === 'unsupported'
+                    ? 'This browser or device doesn\'t support push notifications.'
+                    : 'Get a daily agenda and reminders delivered to this device, even when the app is closed.'}
+                </p>
+              </div>
+              {notifStatus === 'loading' || notifStatus === 'unsupported' ? null
+                : notifStatus === 'granted' ? (
+                  <span className="shrink-0 text-xs font-medium text-emerald-600 bg-emerald-50 px-2.5 py-1 rounded-lg border border-emerald-100">
+                    On
+                  </span>
+                ) : notifStatus === 'denied' ? (
+                  <span className="shrink-0 text-xs font-medium text-red-500 bg-red-50 px-2.5 py-1 rounded-lg border border-red-100">
+                    Blocked
+                  </span>
+                ) : (
+                  <button
+                    onClick={handleEnableNotifications}
+                    disabled={enablingNotif}
+                    className="shrink-0 text-xs font-medium bg-blue-600 text-white rounded-lg px-3 py-1.5 hover:bg-blue-700 disabled:opacity-50"
+                  >
+                    {enablingNotif ? 'Enabling…' : 'Enable'}
+                  </button>
+                )}
             </div>
           </div>
         </section>

@@ -13,7 +13,7 @@ import { Select } from '@/components/ui/select'
 import { MEMBER_COLORS } from '@/lib/types'
 import type { FamilyMember } from '@/lib/types'
 import { generateId } from '@/lib/utils'
-import { enableNotifications, notificationsSupported } from '@/lib/messaging'
+import { enableNotifications, getNotificationStatus } from '@/lib/messaging'
 
 const EMOJIS = ['👨', '👩', '🧑', '👦', '👧', '👶', '🧓', '👴', '👵', '🧒']
 
@@ -51,7 +51,7 @@ export default function OnboardingPage() {
   }, [user, loading, router])
 
   useEffect(() => {
-    notificationsSupported().then(setNotifSupported)
+    getNotificationStatus().then((s) => setNotifSupported(s !== 'unsupported'))
   }, [])
 
   // Reset profile fields when moving to a new member
