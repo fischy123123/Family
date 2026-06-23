@@ -383,6 +383,10 @@ export function CommandCenter() {
   const [recommendations, setRecommendations] = useState<Recommendation[] | null>(null)
   const [problemsLoading, setProblemsLoading] = useState(false)
   const [recsLoading, setRecsLoading] = useState(false)
+  // Collapse toggles for the two lazy sections (mirrors collapsedSections for
+  // person sections). Default expanded; the user can fold them away once loaded.
+  const [problemsCollapsed, setProblemsCollapsed] = useState(false)
+  const [recsCollapsed, setRecsCollapsed] = useState(false)
   // Buffered result from a background run. Applied only when the user taps the
   // "Briefing updated" banner — prevents content jumping mid-scroll.
   const [pendingReport, setPendingReport] = useState<AttentionReport | null>(null)
@@ -1886,8 +1890,10 @@ export function CommandCenter() {
               loaded={problems !== null}
               loading={problemsLoading}
               onLoad={loadProblems}
+              collapsed={problemsCollapsed}
+              onToggleCollapse={() => setProblemsCollapsed((v) => !v)}
             />
-            {problems === null ? (
+            {problems !== null && problemsCollapsed ? null : problems === null ? (
               <LazySectionPrompt
                 loading={problemsLoading}
                 onLoad={loadProblems}
@@ -1937,8 +1943,10 @@ export function CommandCenter() {
               loaded={recommendations !== null}
               loading={recsLoading}
               onLoad={loadRecommendations}
+              collapsed={recsCollapsed}
+              onToggleCollapse={() => setRecsCollapsed((v) => !v)}
             />
-            {recommendations === null ? (
+            {recommendations !== null && recsCollapsed ? null : recommendations === null ? (
               <LazySectionPrompt
                 loading={recsLoading}
                 onLoad={loadRecommendations}
@@ -2206,16 +2214,32 @@ function SectionLabel({ icon: Icon, color, children }: { icon: typeof Clock; col
 
 // Header for a lazily-loaded section: title on the left, a Check/Refresh control
 // on the right that fires the section's own scoped AI request on demand.
-function LazySectionHeader({ icon: Icon, color, title, loaded, loading, onLoad }: {
+function LazySectionHeader({ icon: Icon, color, title, loaded, loading, onLoad, collapsed, onToggleCollapse }: {
   icon: typeof Clock; color: string; title: string
   loaded: boolean; loading: boolean; onLoad: () => void
+  collapsed?: boolean; onToggleCollapse?: () => void
 }) {
+  // Once the section is loaded, the title row becomes a collapse toggle (chevron
+  // mirrors the person-section pattern). Before load there's nothing to fold, so
+  // the title is static and only the Check button is interactive.
+  const canCollapse = loaded && !!onToggleCollapse
   return (
     <div className="flex items-center justify-between mb-3">
-      <div className="flex items-center gap-2">
+      <button
+        onClick={canCollapse ? onToggleCollapse : undefined}
+        disabled={!canCollapse}
+        className="flex items-center gap-2 text-left disabled:cursor-default"
+      >
         <Icon size={16} style={{ color }} />
         <h2 className="text-base font-bold text-slate-900">{title}</h2>
-      </div>
+        {canCollapse && (
+          <ChevronDown
+            size={15}
+            className="text-slate-400 shrink-0 transition-transform duration-200"
+            style={{ transform: collapsed ? 'rotate(-90deg)' : 'rotate(0deg)' }}
+          />
+        )}
+      </button>
       <button
         onClick={onLoad}
         disabled={loading}
