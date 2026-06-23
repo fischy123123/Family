@@ -2057,114 +2057,101 @@ function ProblemCard({
   onSaveTask: () => void
   onDismiss: () => void
   onCopilot: (text: string) => void
-  // Opens the Capture dialog (which has a per-calendar event picker) pre-filled
-  // with this problem, for "add to calendar" style actions.
   onCapture: (text: string) => void
   debugMode?: boolean
   onTrace?: () => void
 }) {
-  const [saved, setSaved] = useState(false)
-  const [chatOpen, setChatOpen] = useState(false)
-  const panelRef = useRef<HTMLDivElement>(null)
-  useEffect(() => {
-    if (chatOpen && panelRef.current) {
-      panelRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
-    }
-  }, [chatOpen])
+  const [sheetOpen, setSheetOpen] = useState(false)
+  const borderColor = p.severity === 'high' ? '#dc2626' : p.severity === 'medium' ? '#f97316' : '#eab308'
   const severityBg = p.severity === 'high' ? '#fee2e2' : p.severity === 'medium' ? '#ffedd5' : '#fef9c3'
   const severityColor = p.severity === 'high' ? '#dc2626' : p.severity === 'medium' ? '#ea580c' : '#a16207'
-  const borderColor = p.severity === 'high' ? '#dc2626' : p.severity === 'medium' ? '#f97316' : '#eab308'
+  const toCalendar = p.actionType === 'capture' || p.actionType === 'calendar'
+  const captureText = [p.title, p.detail, p.relatedDate ? `Date: ${new Date(p.relatedDate).toLocaleDateString()}` : ''].filter(Boolean).join('. ')
 
   return (
-    <div
-      className="rounded-2xl p-4 bg-white shadow-card animate-slide-up"
-      style={{ borderLeft: `3px solid ${borderColor}` }}
-    >
-      <div className="flex items-start gap-3">
-        <div className="flex-1 min-w-0">
-          <p className="text-sm font-semibold text-slate-900">{p.title}</p>
-          <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">{p.detail}</p>
-          {p.suggestedAction && (() => {
-            // "capture" / "calendar" actions (e.g. "Add to calendar") open the
-            // Capture dialog, which gives a real event view with a per-calendar
-            // picker. Everything else is conversational → Copilot.
-            const toCalendar = p.actionType === 'capture' || p.actionType === 'calendar'
-            const captureText = [
-              p.title,
-              p.detail,
-              p.relatedDate ? `Date: ${new Date(p.relatedDate).toLocaleDateString()}` : '',
-            ].filter(Boolean).join('. ')
-            return (
-              <button
-                onClick={() => toCalendar ? onCapture(captureText) : onCopilot(`${p.title}. ${p.detail} — ${p.suggestedAction}`)}
-                className="inline-flex items-center gap-1.5 text-xs text-blue-600 hover:text-blue-700 mt-2 font-medium"
-              >
-                {toCalendar
-                  ? <CalIcon size={11} className="shrink-0" />
-                  : <MessageCircle size={11} className="shrink-0" />}
-                {p.suggestedAction} →
+    <>
+      <button
+        onClick={() => setSheetOpen(true)}
+        className="w-full rounded-2xl bg-white shadow-card animate-slide-up text-left active:scale-[0.99] transition-all"
+        style={{ borderLeft: `3px solid ${borderColor}` }}
+      >
+        <div className="flex items-start gap-3 p-4">
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-semibold text-slate-900">{p.title}</p>
+            <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">{p.detail}</p>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded-full" style={{ background: severityBg, color: severityColor }}>
+              {p.severity}
+            </span>
+            <ChevronRight size={14} className="text-slate-200" />
+          </div>
+        </div>
+      </button>
+
+      {sheetOpen && (
+        <div
+          className="fixed inset-0 z-40 flex items-center justify-center p-5 animate-fade-in"
+          style={{ background: 'rgba(0,0,0,0.45)' }}
+          onClick={(e) => { if (e.target === e.currentTarget) setSheetOpen(false) }}
+        >
+          <div
+            className="bg-white rounded-2xl shadow-elevated w-full max-w-sm flex flex-col animate-scale-in overflow-hidden"
+            style={{ maxHeight: '80vh' }}
+          >
+            {/* Header */}
+            <div className="p-4 border-b border-slate-100 shrink-0">
+              <div className="flex items-start gap-3">
+                <div className="w-1 self-stretch rounded-full shrink-0 mt-0.5" style={{ background: borderColor }} />
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-start justify-between gap-2 mb-1">
+                    <p className="text-[15px] font-semibold text-slate-900 leading-snug">{p.title}</p>
+                    <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded-full shrink-0 mt-0.5" style={{ background: severityBg, color: severityColor }}>{p.severity}</span>
+                  </div>
+                  <p className="text-sm text-slate-500 leading-relaxed">{p.detail}</p>
+                </div>
+              </div>
+            </div>
+            {/* Actions */}
+            <div className="py-1.5 flex-1 overflow-y-auto">
+              {p.suggestedAction && (
+                <SheetAction
+                  icon={toCalendar ? <CalIcon size={18} className="text-blue-600" /> : <MessageCircle size={18} className="text-blue-500" />}
+                  label={p.suggestedAction}
+                  onClick={() => { setSheetOpen(false); toCalendar ? onCapture(captureText) : onCopilot(`${p.title}. ${p.detail} — ${p.suggestedAction}`) }}
+                />
+              )}
+              <SheetAction
+                icon={<MessageCircle size={18} className="text-blue-500" />}
+                label="Ask about this…"
+                sub="Chat with your assistant"
+                onClick={() => { setSheetOpen(false); onCopilot(`${p.title}. ${p.detail}`) }}
+              />
+              <SheetAction
+                icon={<Bookmark size={18} className="text-slate-600" />}
+                label="Save as task"
+                onClick={() => { setSheetOpen(false); onSaveTask() }}
+              />
+              <div className="mx-4 my-1 border-t border-slate-100" />
+              <SheetAction
+                icon={<X size={18} className="text-slate-400" />}
+                label="Hide from briefing"
+                sub="Removes this flagged item"
+                onClick={() => { setSheetOpen(false); onDismiss() }}
+              />
+              {debugMode && onTrace && (
+                <SheetAction icon={<Bug size={18} className="text-blue-400" />} label="Trace sources (debug)" onClick={() => { setSheetOpen(false); onTrace() }} />
+              )}
+            </div>
+            <div className="px-4 pb-4 pt-2 shrink-0 border-t border-slate-50">
+              <button onClick={() => setSheetOpen(false)} className="w-full py-2.5 rounded-xl bg-slate-100 text-sm font-medium text-slate-600 hover:bg-slate-200 transition-colors">
+                Close
               </button>
-            )
-          })()}
-        </div>
-        <div className="flex items-center gap-1 shrink-0">
-          <span
-            className="text-[10px] font-bold uppercase px-2 py-0.5 rounded-full"
-            style={{ background: severityBg, color: severityColor }}
-          >
-            {p.severity}
-          </span>
-          {debugMode && onTrace && (
-            <button
-              onClick={onTrace}
-              className="p-1.5 rounded-lg text-blue-400 hover:text-blue-600 hover:bg-blue-50 transition-colors"
-              title="Trace sources (debug)"
-            >
-              <Bug size={14} />
-            </button>
-          )}
-          <button
-            onClick={() => setChatOpen((v) => !v)}
-            className={cn(
-              'p-1.5 rounded-lg transition-colors',
-              chatOpen ? 'text-blue-600 bg-blue-50' : 'text-slate-300 hover:text-blue-500 hover:bg-blue-50',
-            )}
-            title="Ask AI"
-          >
-            <MessageCircle size={14} />
-          </button>
-          <button
-            onClick={() => { setSaved(true); onSaveTask() }}
-            disabled={saved}
-            className="p-1.5 rounded-lg transition-colors"
-            style={{ color: saved ? '#22c55e' : '#cbd5e1' }}
-            title={saved ? 'Saved as task' : 'Save as task'}
-          >
-            <Bookmark size={14} fill={saved ? 'currentColor' : 'none'} />
-          </button>
-          <button
-            onClick={onDismiss}
-            className="p-1.5 rounded-lg text-slate-300 hover:text-slate-500 hover:bg-slate-50 transition-colors"
-            title="Dismiss"
-          >
-            <X size={14} />
-          </button>
-        </div>
-      </div>
-      {chatOpen && (
-        <div ref={panelRef}>
-          <CardChat
-            cardContext={[
-              `Flagged problem: "${p.title}"`,
-              `Detail: "${p.detail}"`,
-              `Severity: ${p.severity}`,
-              p.relatedDate ? `Related date: ${p.relatedDate}` : '',
-            ].filter(Boolean).join('\n')}
-            quickPrompts={['Why is this flagged?', 'How do I fix this?', 'Is this actually a problem?']}
-          />
+            </div>
+          </div>
         </div>
       )}
-    </div>
+    </>
   )
 }
 
