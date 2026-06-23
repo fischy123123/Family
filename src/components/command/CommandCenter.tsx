@@ -1369,7 +1369,7 @@ export function CommandCenter() {
           resolvedItems={resolvedItems}
           accent={color}
           allMembers={members}
-          onCompleteItem={async (item) => { await completeTaskFromItem(item); runEngine(undefined, true) }}
+          onCompleteItem={(item) => completeTaskFromItem(item)}
           onDismissItem={(title) => dismissItem(title)}
           onSaveTaskItem={(title, reason) => saveItemAsTask(title, reason)}
           onAssignItem={(item, f, r) => assignItem(item, f, r)}
@@ -1405,7 +1405,7 @@ export function CommandCenter() {
         forMembers={forMembers}
         backedByRealItem={backedByRealItem}
         isRecurring={isRecurring}
-        onComplete={async () => { await completeTaskFromItem(item); runEngine(undefined, true) }}
+        onComplete={() => completeTaskFromItem(item)}
         onDismiss={() => dismissItem(item.title)}
         onSaveTask={() => saveItemAsTask(item.title, item.reason)}
         onAssign={(f, r) => assignItem(item, f, r)}

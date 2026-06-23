@@ -102,10 +102,10 @@ body {
   100% { transform: translateX(400%); }
 }
 
-.animate-fade-in { animation: fadeIn 0.3s ease-out; }
+.animate-fade-in { animation: fadeIn 0.2s ease-out both; }
 .animate-slide-up { animation: slideUp 0.3s ease-out both; }
 .animate-slide-down { animation: slideDown 0.3s ease-out; }
-.animate-scale-in { animation: scaleIn 0.2s ease-out; }
+.animate-scale-in { animation: scaleIn 0.15s ease-out both; }
 .animate-float { animation: float 3s ease-in-out infinite; }
 .animate-spin-slow { animation: spin-slow 8s linear infinite; }
 .animate-progress-slide { animation: progress-slide 1.1s ease-in-out infinite; }
