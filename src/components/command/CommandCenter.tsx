@@ -26,7 +26,7 @@ import type { PendingAction } from '@/components/copilot/ProposedActions'
 import type {
   FamilyMember, CalendarEvent, Task, Chore, Plan, SmartList,
   AttentionReport, AttentionItem, AttentionBucket, PotentialProblem,
-  FamilyMemory, FamilyProfile, FamilyReminder, EventAssignmentSuggestion,
+  FamilyMemory, FamilyProfile, FamilyReminder,
 } from '@/lib/types'
 
 type EventContext = {
@@ -354,9 +354,6 @@ export function CommandCenter() {
   const COMPLETED_PREFIX = 'fam-completed-'
   const completedKey = familyId ? COMPLETED_PREFIX + familyId : null
   const [completedTitles, setCompletedTitles] = useState<Set<string>>(new Set())
-  // Event assignment suggestions the user has skipped. Key = "title|YYYY-MM-DD".
-  const skipEaKey = familyId ? SKIP_EA_PREFIX + familyId : null
-  const [skippedAssignments, setSkippedAssignments] = useState<Set<string>>(new Set())
   // Person sections that the user has collapsed — stored by section key (person name or "Family").
   const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set())
   // When a user dismisses something, offer to teach the assistant once.
@@ -416,8 +413,6 @@ export function CommandCenter() {
     if (dism?.length) setDismissedTitles(new Set(dism))
     const comp = readCache<string[]>(completedKey)
     if (comp?.length) setCompletedTitles(new Set(comp))
-    const skipEa = readCache<string[]>(skipEaKey)
-    if (skipEa?.length) setSkippedAssignments(new Set(skipEa))
     // Restore the last context signature so Firestore delivering the same data
     // on remount doesn't look like "new context" and trigger an immediate re-run.
     const savedCtxSig = readCache<string>(ctxSigKey)
@@ -425,7 +420,7 @@ export function CommandCenter() {
     const savedRunSig = readCache<string>(lastRunSigKey)
     if (savedRunSig) lastRunSig.current = savedRunSig
     setHydrated(true)
-  }, [familyId, attnKey, gmailKey, dismissKey, lastRunKey, ctxSigKey, lastRunSigKey, skipEaKey])
+  }, [familyId, attnKey, gmailKey, dismissKey, lastRunKey, ctxSigKey, lastRunSigKey])
 
   // ── Firestore cold-start cache ──────────────────────────────────────────────
   // localStorage only survives on the same device + browser. On a new device,
@@ -1476,95 +1471,6 @@ export function CommandCenter() {
 
   const busy = loading || refreshing
 
-  // Which assignment card is showing the "pick the right person" member picker.
-  const [correctingKey, setCorrectingKey] = useState<string | null>(null)
-
-  // Event assignment suggestions: filter out already-skipped and already-assigned ones.
-  const pendingAssignments = useMemo<EventAssignmentSuggestion[]>(() => {
-    if (!report?.eventAssignments?.length) return []
-    return report.eventAssignments.filter((s) => {
-      // Only show suggestions where the AI named a specific person
-      if (!s.forNames?.length) return false
-      if (skippedAssignments.has(`${s.eventTitle}|${s.eventDate}`)) return false
-      const event = events.find(
-        (e) => e.title === s.eventTitle && e.start.startsWith(s.eventDate)
-      )
-      return !event?.forIds?.length
-    })
-  }, [report?.eventAssignments, skippedAssignments, events])
-
-  // Fuzzy-match a calendar event by title + date. The AI's generated title rarely
-  // exactly matches the real event title (spaces, casing, truncation). We try
-  // progressively looser matches before giving up.
-  function findMatchingCalendarEvent(title: string, date: string): CalendarEvent | undefined {
-    const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '')
-    const normTitle = norm(title)
-    const sameDay = events.filter((e) => e.start.startsWith(date))
-    if (!sameDay.length) return undefined
-    // 1. Exact title
-    const exact = sameDay.find((e) => e.title === title)
-    if (exact) return exact
-    // 2. Normalized ("Hair cut" → "haircut" vs "Haircut" → "haircut")
-    const byNorm = sameDay.find((e) => norm(e.title) === normTitle)
-    if (byNorm) return byNorm
-    // 3. One normalized title contains the other
-    const byContains = sameDay.find((e) => {
-      const et = norm(e.title)
-      return et.includes(normTitle) || normTitle.includes(et)
-    })
-    if (byContains) return byContains
-    // 4. Word overlap — ≥60% of the AI's significant words appear in the event title
-    const sigWords = (s: string) => s.toLowerCase().split(/\W+/).filter((w) => w.length > 2)
-    const aiWords = sigWords(title)
-    if (!aiWords.length) return undefined
-    return sameDay.find((e) => {
-      const evWords = new Set(sigWords(e.title))
-      return aiWords.filter((w) => evWords.has(w)).length / aiWords.length >= 0.6
-    })
-  }
-
-  // Confirm an event assignment — optionally with different names than the AI suggested.
-  // Applies optimistic removal immediately so the card disappears on tap.
-  const confirmEventAssignment = useCallback(async (s: EventAssignmentSuggestion, overrideNames?: string[]) => {
-    if (!familyId) return
-    const forNames = overrideNames ?? s.forNames
-    const event = findMatchingCalendarEvent(s.eventTitle, s.eventDate)
-    if (!event) {
-      toast(`Couldn't find "${s.eventTitle}" in calendar — it may have been removed`, 'error')
-      return
-    }
-    const resolvedIds = forNames
-      .map((name) => resolveMemberRef(members, name)?.id)
-      .filter((id): id is string => Boolean(id))
-    if (!resolvedIds.length) {
-      toast(`Couldn't match that name to a family member — tap "Pick someone else" to choose manually`, 'error')
-      return
-    }
-    // Optimistic: remove the card immediately without waiting for Firestore.
-    const key = `${s.eventTitle}|${s.eventDate}`
-    const next = new Set(Array.from(skippedAssignments).concat(key))
-    setSkippedAssignments(next)
-    setCorrectingKey(null)
-    try {
-      await updateDoc(doc(db, 'families', familyId, 'events', event.id), { forIds: resolvedIds })
-      toast(`"${event.title}" assigned to ${forNames.join(' & ')}`, 'success')
-      writeCache(skipEaKey, Array.from(next))
-    } catch (err) {
-      console.error('Failed to assign event:', err)
-      toast('Could not save — check your connection and try again', 'error')
-      // Reverse the optimistic removal so the card comes back.
-      setSkippedAssignments(skippedAssignments)
-    }
-  }, [familyId, events, members, skippedAssignments, skipEaKey])
-
-  // Permanently dismiss a suggestion (X button). Persists across sessions.
-  const dismissEventAssignment = useCallback((s: EventAssignmentSuggestion) => {
-    const key = `${s.eventTitle}|${s.eventDate}`
-    const next = new Set(Array.from(skippedAssignments).concat(key))
-    setSkippedAssignments(next)
-    writeCache(skipEaKey, Array.from(next))
-    setCorrectingKey(null)
-  }, [skippedAssignments, skipEaKey])
 
   return (
     <div className="max-w-3xl mx-auto px-4 sm:px-6 py-6 space-y-6">

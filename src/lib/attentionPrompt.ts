@@ -4,8 +4,8 @@
 
 export const ATTENTION_MODEL = 'claude-sonnet-4-6'
 
-// Busy families easily hit 5000 tokens (10 items × rich fields + problems +
-// eventAssignments). Raised to 7000 so a complex day never truncates mid-JSON.
+// Busy families easily hit 5000 tokens (10 items × rich fields + problems).
+// Raised to 7000 so a complex day never truncates mid-JSON.
 // The output-trimming instructions below keep typical output well under this.
 export const ATTENTION_MAX_TOKENS = 7000
 
@@ -57,7 +57,6 @@ Given the family context, produce a JSON report with this exact shape:
       "forEmails": ["who this is FOR or ABOUT — often the kids or a pet. Use each person's email if they have one, otherwise their EXACT name. Can differ from the responsible person. Optional array."],
       "sourceType": "event" | "task" | "chore" | "plan" | "reminder" | "inferred",
       "sourceId": "for event/task/reminder sourceType: the raw id from [id:xxx] in the events or tasks list (omit the 'id:' prefix). Omit for other types.",
-      "sourceEmailId": "if this item derives from an inbox signal with a [msgid:ID] label, copy that ID here verbatim (omit otherwise)",
       "priority": 0-100,
       "groupKey": "optional INTERNAL join key (never shown to the user) — set the SAME lowercase-hyphenated slug on 2+ items ONLY when they are about the SAME underlying event, appointment, outing, or logistical thread (e.g. a child's recital + the task to buy flowers for it + the email confirming arrival time = ONE topic). Items sharing a groupKey collapse into one card. NEVER group items just because they fall on the same day, weekend, or time window — closeness in time is NOT a shared topic. When unsure, OMIT groupKey and leave them as separate cards.",
       "groupTitle": "REQUIRED whenever groupKey is set — the human-readable card header shown to the user, in natural Title Case (e.g. 'Maddie's therapy', 'Wednesday at Rivendell'). NEVER a slug. Set the SAME groupTitle on every item that shares a groupKey. Omit when groupKey is omitted.",
@@ -70,8 +69,7 @@ Given the family context, produce a JSON report with this exact shape:
       "detail": "explanation",
       "severity": "low" | "medium" | "high",
       "suggestedAction": "what to do about it (optional)",
-      "relatedDate": "ISO date (optional)",
-      "sourceEmailId": "if this problem derives from an inbox signal with a [msgid:ID] label, copy that ID here verbatim (omit otherwise)"
+      "relatedDate": "ISO date (optional)"
     }
   ],
   "recommendations": [
@@ -82,28 +80,8 @@ Given the family context, produce a JSON report with this exact shape:
       "actionType": "capture" | "copilot",
       "forNames": ["name of each family member this recommendation is specifically for or about — omit if family-wide or unclear"]
     }
-  ],
-  "eventAssignments": [
-    {
-      "eventTitle": "exact title as it appears in UPCOMING EVENTS",
-      "eventDate": "YYYY-MM-DD date of the event",
-      "forNames": ["exact name(s) from FAMILY MEMBERS this event is for/about — MUST contain at least one specific named person; if you cannot identify a specific person, omit this entire entry"],
-      "confidence": "high" | "medium" | "low",
-      "reason": "one sentence: why you think this event belongs to these people"
-    }
   ]
 }
-
-EVENT OWNERSHIP INFERENCE (populate eventAssignments):
-For each event in UPCOMING EVENTS that does NOT already have a "[for: ...]" label, decide if you can reasonably infer who it is for:
-- Use the event title: if a member's name appears, or the activity is clearly associated with one person (e.g. "Maddie's recital", "Liam dentist", "Rowan swim meet")
-- Use task context: if an open task has [for: Name] and its title or notes reference this event, the event is for the same person
-- Use family member info: if a child's routines/summary mention an activity (soccer, theater, therapy), events matching that activity are for them
-- Set confidence: "high" = name in title or unambiguous task link; "medium" = activity clearly matches one member; "low" = plausible guess only
-- SKIP events already labeled "[for: ...]" — already assigned
-- SKIP events that are clearly family-wide ("Family dinner", "Vacation") or where you truly cannot infer
-- SKIP events owned by a parent email (ownerEmail) where the event is clearly the parent's own (e.g. "Eric Training" owned by Eric's email = for Eric; no need to suggest)
-- Return at most 5 suggestions. Prefer high/medium confidence. Include low-confidence ones only if no higher-confidence options fill the list.
 
 Bucket guidance — ALWAYS verify the actual date before assigning a bucket:
 - "now": happening or due within the next ~1 hour (must be confirmed as TODAY in UPCOMING EVENTS)

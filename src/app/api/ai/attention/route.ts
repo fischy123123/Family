@@ -209,7 +209,6 @@ export async function POST(request: NextRequest) {
           items?: Record<string, unknown>[]
           problems?: Record<string, unknown>[]
           recommendations?: Record<string, unknown>[]
-          eventAssignments?: Record<string, unknown>[]
         } = {}
         let parseOk = true
         if (match) {
@@ -228,13 +227,12 @@ export async function POST(request: NextRequest) {
         const items = (parsed.items ?? []).map((it, i) => ({ id: `att-${i}`, ...it }))
         const problems = (parsed.problems ?? []).map((p, i) => ({ id: `prob-${i}`, ...p }))
         const recommendations = (parsed.recommendations ?? []).map((r, i) => ({ id: `rec-${i}`, ...r }))
-        const eventAssignments = (parsed.eventAssignments ?? []).map((a, i) => ({ id: `ea-${i}`, ...a }))
 
         // ── PERF/OUTPUT: what the model produced and how long parsing took ───
         console.log(
           `[perf/attention] parse=${Date.now() - parseStart}ms parse_ok=${parseOk}` +
           ` → items=${items.length} problems=${problems.length}` +
-          ` recommendations=${recommendations.length} eventAssignments=${eventAssignments.length}` +
+          ` recommendations=${recommendations.length}` +
           ` greeting_chars=${(parsed.greeting ?? '').length}`
         )
 
@@ -246,7 +244,6 @@ export async function POST(request: NextRequest) {
           items,
           problems,
           recommendations,
-          eventAssignments,
         })
         try { controller.close() } catch { /* noop */ }
       } catch (e: unknown) {

@@ -255,22 +255,12 @@ export interface Recommendation {
   forNames?: string[]
 }
 
-export interface EventAssignmentSuggestion {
-  id?: string
-  eventTitle: string   // exact title as it appears in UPCOMING EVENTS
-  eventDate: string    // YYYY-MM-DD
-  forNames: string[]   // exact member names the AI thinks this event is for
-  confidence: 'high' | 'medium' | 'low'
-  reason: string       // one-sentence explanation
-}
-
 export interface AttentionReport {
   generatedAt: string
   greeting: string              // contextual one-liner
   items: AttentionItem[]
   problems: PotentialProblem[]
   recommendations: Recommendation[]
-  eventAssignments?: EventAssignmentSuggestion[]  // AI-inferred "who is this event for?" — pending confirmation
 }
 
 // ============================================================
