@@ -25,7 +25,7 @@ import { Markdown } from '@/components/ui/Markdown'
 import type { PendingAction } from '@/components/copilot/ProposedActions'
 import type {
   FamilyMember, CalendarEvent, Task, Chore, Plan, SmartList,
-  AttentionReport, AttentionItem, AttentionBucket, PotentialProblem,
+  AttentionReport, AttentionItem, AttentionBucket, PotentialProblem, Recommendation,
   FamilyMemory, FamilyProfile, FamilyReminder,
 } from '@/lib/types'
 
@@ -55,6 +55,77 @@ type ItemGroup = {
   groupTitle: string | null  // non-null when 2+ items share a groupKey
   items: AttentionItem[]
   bucket: AttentionBucket    // most-urgent bucket across items
+}
+
+// A single scoped call to the attention engine. Reads the NDJSON stream,
+// forwarding the first-token signal (used for cache-warming) and each completed
+// item card, and resolves with the authoritative final payload. Throws on a
+// server/stream error so the caller can fall back to its cached report.
+type EngineScope =
+  | { kind: 'items'; sections?: string[]; greeting?: boolean }
+  | { kind: 'problems' }
+  | { kind: 'recommendations' }
+
+interface EngineFinal {
+  greeting?: string
+  items?: AttentionItem[]
+  problems?: PotentialProblem[]
+  recommendations?: Recommendation[]
+}
+
+async function streamEngine(
+  body: unknown,
+  opts: {
+    signal: AbortSignal
+    onItem?: (item: AttentionItem) => void
+    onFirstToken?: () => void
+    onDelta?: (text: string) => void
+  },
+): Promise<EngineFinal> {
+  const res = await fetch('/api/ai/attention', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal: opts.signal,
+  })
+  if (!res.ok || !res.body) {
+    let msg = 'Something went wrong. Tap refresh to try again.'
+    try { const d = await res.json(); msg = d.error ?? msg } catch { /* keep default */ }
+    throw new Error(msg)
+  }
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buf = ''
+  let sawToken = false
+  let final: EngineFinal | null = null
+  let streamError: string | null = null
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buf += decoder.decode(value, { stream: true })
+    let nl: number
+    while ((nl = buf.indexOf('\n')) !== -1) {
+      const line = buf.slice(0, nl).trim()
+      buf = buf.slice(nl + 1)
+      if (!line) continue
+      let evt: { t?: string; d?: string; error?: string; item?: AttentionItem } & Partial<EngineFinal>
+      try { evt = JSON.parse(line) } catch { continue }
+      if (evt.t === 'delta') {
+        if (!sawToken) { sawToken = true; opts.onFirstToken?.() }
+        if (evt.d) opts.onDelta?.(evt.d)
+      } else if (evt.t === 'item') {
+        if (evt.item) opts.onItem?.(evt.item)
+      } else if (evt.t === 'final') {
+        final = evt as EngineFinal
+      } else if (evt.t === 'error') {
+        streamError = evt.error ?? 'Something went wrong. Tap refresh to try again.'
+      }
+    }
+  }
+  if (streamError) throw new Error(streamError)
+  if (!final) throw new Error('Could not load your briefing. Tap refresh to try again.')
+  return final
 }
 
 // Turn a lowercase-hyphenated groupKey slug into a readable title, as a fallback
@@ -150,6 +221,10 @@ const CTX_SIG_PREFIX = 'fam-ctxsig-'
 // auto-run throttle to detect "nothing changed — skip the AI call."
 const LAST_RUN_SIG_PREFIX = 'fam-lastrun-sig-'
 const SKIP_EA_PREFIX = 'fam-skip-ea-'
+// Lazily-loaded briefing sections — each fetched on demand via its own scoped
+// AI request, cached separately so they persist across visits.
+const PROBLEMS_PREFIX = 'fam-problems-'
+const RECS_PREFIX = 'fam-recs-'
 
 // 15-minute minimum between AI calls. Additionally, if the data signature hasn't
 // changed since the last run, we extend the effective throttle to 45 minutes:
@@ -298,8 +373,16 @@ export function CommandCenter() {
   const lastRunKey = familyId ? LAST_RUN_PREFIX + familyId : null
   const ctxSigKey = familyId ? CTX_SIG_PREFIX + familyId : null
   const lastRunSigKey = familyId ? LAST_RUN_SIG_PREFIX + familyId : null
+  const problemsKey = familyId ? PROBLEMS_PREFIX + familyId : null
+  const recsKey = familyId ? RECS_PREFIX + familyId : null
 
   const [report, setReport] = useState<AttentionReport | null>(null)
+  // Lazily-loaded sections. `null` = never loaded this session; an array (even
+  // empty) = loaded. Each has its own in-flight flag for the inline spinner.
+  const [problems, setProblems] = useState<PotentialProblem[] | null>(null)
+  const [recommendations, setRecommendations] = useState<Recommendation[] | null>(null)
+  const [problemsLoading, setProblemsLoading] = useState(false)
+  const [recsLoading, setRecsLoading] = useState(false)
   // Buffered result from a background run. Applied only when the user taps the
   // "Briefing updated" banner — prevents content jumping mid-scroll.
   const [pendingReport, setPendingReport] = useState<AttentionReport | null>(null)
@@ -326,6 +409,9 @@ export function CommandCenter() {
   const forceDirectRef = useRef(false)
   const deepToken = useRef<number>(0)
   const engineAbortRef = useRef<AbortController | null>(null)
+  // In-flight aborts for the lazily-loaded problems / recommendations sections.
+  const problemsAbortRef = useRef<AbortController | null>(null)
+  const recsAbortRef = useRef<AbortController | null>(null)
   // Pending debounced engine run (see scheduleEngine + ENGINE_COALESCE_MS).
   const engineDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   // Each runEngine call gets a monotonically-increasing token. The finally block
@@ -407,6 +493,11 @@ export function CommandCenter() {
       setReport(r)
       if (reportAge > REPORT_TTL_MS) forceDirectRef.current = true
     }
+    // Restore lazily-loaded sections if they were fetched in a prior visit.
+    const cachedProblems = readCache<PotentialProblem[]>(problemsKey)
+    if (cachedProblems) setProblems(cachedProblems)
+    const cachedRecs = readCache<Recommendation[]>(recsKey)
+    if (cachedRecs) setRecommendations(cachedRecs)
     const em = readCache<EmailSuggestion[]>(gmailKey)
     if (em?.length) setEmailSuggestions(em)
     const dism = readCache<string[]>(dismissKey)
@@ -420,7 +511,7 @@ export function CommandCenter() {
     const savedRunSig = readCache<string>(lastRunSigKey)
     if (savedRunSig) lastRunSig.current = savedRunSig
     setHydrated(true)
-  }, [familyId, attnKey, gmailKey, dismissKey, lastRunKey, ctxSigKey, lastRunSigKey])
+  }, [familyId, attnKey, gmailKey, dismissKey, lastRunKey, ctxSigKey, lastRunSigKey, problemsKey, recsKey])
 
   // ── Firestore cold-start cache ──────────────────────────────────────────────
   // localStorage only survives on the same device + browser. On a new device,
@@ -674,120 +765,129 @@ export function CommandCenter() {
     const runAt = Date.now()
     lastRun.current = runAt
     const engineStart = performance.now()
-    let engineTTFT = -1
-    console.log(`[perf:engine] start events=${events.length} tasks=${tasks.length + reminders.length} members=${members.length}`)
     const myToken = ++deepToken.current
 
     try {
       const eventContext = overrideContext ??
         eventContexts.map((e) => ({ eventTitle: e.eventTitle, context: e.context }))
 
-      const body = JSON.stringify(buildEngineBody(eventContext, 'fast'))
-      console.log(`[perf:engine] request payload=${(body.length / 1024).toFixed(1)}KB`)
-      const fetchStart = performance.now()
-      const res = await fetch('/api/ai/attention', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body,
-        signal: controller.signal,
-      })
-      console.log(`[perf:engine] response headers in ${Math.round(performance.now() - fetchStart)}ms (network + server start)`)
+      const baseBody = buildEngineBody(eventContext, 'fast')
 
-      // Pre-stream failures (bad request, missing key) still come back as JSON.
-      if (!res.ok || !res.body) {
-        let msg = 'Something went wrong. Tap refresh to try again.'
-        try { const d = await res.json(); msg = d.error ?? msg } catch { /* keep default */ }
-        setEngineError(msg)
+      // Partition the briefing's sections (each family member + "Family") into a
+      // bounded number of shards, then generate each shard concurrently. The full
+      // context (cached) goes to every shard, so the model still reasons over the
+      // whole family — each call just emits the items for its own sections. This
+      // collapses wall-time from "sum of all output" to "the slowest shard".
+      const sectionNames = [...members.map((m) => m.name), 'Family']
+      const SHARD_TARGET = 3
+      const shardCount = Math.min(4, Math.max(1, Math.ceil(sectionNames.length / SHARD_TARGET)))
+      const shards: string[][] = Array.from({ length: shardCount }, () => [])
+      sectionNames.forEach((s, i) => shards[i % shardCount].push(s))
+      console.log(`[perf:engine] start members=${members.length} → ${shardCount} parallel shard(s)`)
+
+      // Progressive cards (cold start only): show each card the instant any shard
+      // finishes writing it. Dedup across shards by section+title.
+      const progressive = !report
+      if (progressive) setStreamingItems([])
+      const seenStream = new Set<string>()
+      let sid = 0
+      const onStreamItem = (it: AttentionItem) => {
+        if (!progressive) return
+        const k = `${it.section ?? ''}|${it.title ?? ''}`
+        if (seenStream.has(k)) return
+        seenStream.add(k)
+        setStreamingItems((prev) => [...prev, { ...it, id: `sid-${sid++}` }])
+      }
+
+      // Cache-warming: fire shard 0 first; the moment its first token arrives the
+      // shared prompt cache is written, so the remaining shards (fired next) read
+      // it at ~1/10th cost instead of every shard racing to write a cold cache.
+      let rawGreeting = ''
+      let fanout!: () => void
+      const warm = new Promise<void>((resolve) => { fanout = resolve })
+      const shard0 = streamEngine(
+        { ...baseBody, scope: { kind: 'items', sections: shards[0], greeting: true } },
+        {
+          signal: controller.signal,
+          onFirstToken: () => { fanout() },
+          onItem: onStreamItem,
+          onDelta: progressive ? (d) => {
+            rawGreeting += d
+            const g = extractPartialGreeting(rawGreeting)
+            if (g) setStreamingGreeting(g)
+          } : undefined,
+        },
+      )
+      // If shard 0 settles without ever emitting a token, release the gate anyway.
+      shard0.then(() => fanout(), () => fanout())
+      await warm
+
+      const restPromises = shards.slice(1).map((secs) =>
+        streamEngine(
+          { ...baseBody, scope: { kind: 'items', sections: secs, greeting: false } },
+          { signal: controller.signal, onItem: onStreamItem },
+        ),
+      )
+      const settled = await Promise.allSettled([shard0, ...restPromises])
+
+      // A background abort (iOS) cancels everything mid-flight — bail quietly so
+      // the visibilitychange handler can retry without surfacing an error.
+      if (controller.signal.aborted) return
+
+      const oks = settled.filter(
+        (s): s is PromiseFulfilledResult<EngineFinal> => s.status === 'fulfilled',
+      )
+      if (oks.length === 0) {
+        const firstErr = settled.find((s) => s.status === 'rejected') as PromiseRejectedResult | undefined
+        setEngineError(firstErr?.reason?.message ?? 'Could not load your briefing. Tap refresh to try again.')
         lastRun.current = 0
         return
       }
 
-      // Streaming skeleton only on cold starts — never when a report already exists.
-      const progressive = !report
-      if (progressive) setStreamingItems([])
-      const reader = res.body.getReader()
-      const decoder = new TextDecoder()
-      let buf = ''
-      let rawText = ''
-      let finalReport: (AttentionReport & { error?: string }) | null = null
-      let streamError: string | null = null
-
-      // eslint-disable-next-line no-constant-condition
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        buf += decoder.decode(value, { stream: true })
-        let nl: number
-        while ((nl = buf.indexOf('\n')) !== -1) {
-          const line = buf.slice(0, nl).trim()
-          buf = buf.slice(nl + 1)
-          if (!line) continue
-          let evt: { t?: string; d?: string; error?: string; item?: AttentionItem } & Partial<AttentionReport>
-          try { evt = JSON.parse(line) } catch { continue }
-          if (evt.t === 'open') {
-            // Server sends this right after context is built, before the AI call.
-            const preAi = Math.round(performance.now() - engineStart)
-            console.log(`[perf:engine] server_open=${preAi}ms — request arrived + context built, AI call starting now`)
-          } else if (evt.t === 'delta') {
-            if (engineTTFT === -1 && evt.d) {
-              engineTTFT = Math.round(performance.now() - engineStart)
-              console.log(`[perf:engine] ttft=${engineTTFT}ms — first token from Anthropic reached browser`)
-            }
-            if (progressive && evt.d) {
-              rawText += evt.d
-              const g = extractPartialGreeting(rawText)
-              if (g) setStreamingGreeting(g)
-            }
-          } else if (evt.t === 'item') {
-            const itemMs = Math.round(performance.now() - engineStart)
-            const itemEvt = evt as { t: string; index?: number; item?: AttentionItem }
-            console.log(`[perf:engine] item[${itemEvt.index ?? '?'}] at ${itemMs}ms — "${itemEvt.item?.title?.slice(0, 40) ?? '?'}"`)
-            if (progressive && itemEvt.item) {
-              const card = itemEvt.item
-              setStreamingItems((prev) =>
-                prev.some((p) => p.id === card.id) ? prev : [...prev, card]
-              )
-            }
-          } else if (evt.t === 'final') {
-            const total = Math.round(performance.now() - engineStart)
-            const stream = engineTTFT > 0 ? total - engineTTFT : total
-            console.log(
-              `[perf:engine] DONE total=${total}ms` +
-              ` | breakdown: ttft=${engineTTFT}ms (prompt-read + first-token)` +
-              ` + stream=${stream}ms (output generation)` +
-              ` | items=${(evt as unknown as AttentionReport).items?.length ?? 0}`
-            )
-            finalReport = evt as AttentionReport
-          } else if (evt.t === 'error') {
-            streamError = evt.error ?? 'Something went wrong. Tap refresh to try again.'
-          }
+      // Merge items from every successful shard, dedup, re-key, sort by priority.
+      const merged: AttentionItem[] = []
+      const seen = new Set<string>()
+      for (const r of oks) {
+        for (const it of (r.value.items ?? [])) {
+          const k = `${it.section ?? ''}|${it.title ?? ''}`
+          if (seen.has(k)) continue
+          seen.add(k)
+          merged.push(it)
         }
       }
+      merged.sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0))
+      const items = merged.map((it, i) => ({ ...it, id: `att-${i}` }))
 
-      if (streamError) {
-        // Keep the last good report on screen; just surface the retry affordance.
-        setEngineError(streamError)
-        lastRun.current = 0
-      } else if (finalReport) {
-        const data = finalReport
-        if (isPending) {
-          setPendingReport(data)
-        } else {
-          setReport(data)
-          setPendingReport(null)
-        }
-        setEngineError(null)
-        writeCache(attnKey, data)
-        writeCache(lastRunKey, runAt)
-        // Record which data snapshot produced this briefing. If the same
-        // snapshot is still current when the next throttle fires, skip the AI.
-        lastRunSig.current = lastCtxSig.current
-        if (lastRunSigKey) writeCache(lastRunSigKey, lastRunSig.current)
+      // Greeting comes from shard 0 (the only shard asked to produce it).
+      const shard0Result = settled[0].status === 'fulfilled' ? settled[0].value : null
+      const greeting = shard0Result?.greeting ?? report?.greeting ?? 'Here is what needs your attention.'
+
+      const total = Math.round(performance.now() - engineStart)
+      console.log(`[perf:engine] DONE total=${total}ms | shards_ok=${oks.length}/${settled.length} | items=${items.length}`)
+
+      // Problems + recommendations are no longer part of this payload — they load
+      // lazily via their own on-demand requests. Keep empty arrays so cached
+      // consumers and the type contract are satisfied.
+      const data: AttentionReport = {
+        generatedAt: new Date().toISOString(),
+        greeting,
+        items,
+        problems: [],
+        recommendations: [],
+      }
+      if (isPending) {
+        setPendingReport(data)
       } else {
-        // Stream ended without a final payload — treat as a soft failure.
-        setEngineError('Could not load your briefing. Tap refresh to try again.')
-        lastRun.current = 0
+        setReport(data)
+        setPendingReport(null)
       }
+      setEngineError(null)
+      writeCache(attnKey, data)
+      writeCache(lastRunKey, runAt)
+      // Record which data snapshot produced this briefing. If the same snapshot
+      // is still current when the next throttle fires, skip the AI.
+      lastRunSig.current = lastCtxSig.current
+      if (lastRunSigKey) writeCache(lastRunSigKey, lastRunSig.current)
     } catch (err) {
       // iOS Safari aborts in-flight fetches when the app goes to the background.
       // Don't show an error for intentional aborts — the visibilitychange handler
@@ -806,6 +906,57 @@ export function CommandCenter() {
       }
     }
   }, [buildEngineBody, eventContexts, attnKey, report])
+
+  // On-demand load of the "Potential Problems" section. Fires its own scoped AI
+  // request (sharing the cached prompt prefix) only when the user expands or
+  // refreshes the section — so it never adds to the briefing's load time and is
+  // only paid for when actually viewed.
+  const loadProblems = useCallback(async () => {
+    problemsAbortRef.current?.abort()
+    const controller = new AbortController()
+    problemsAbortRef.current = controller
+    setProblemsLoading(true)
+    try {
+      const eventContext = eventContexts.map((e) => ({ eventTitle: e.eventTitle, context: e.context }))
+      const body = { ...buildEngineBody(eventContext, 'fast'), scope: { kind: 'problems' as const } }
+      const t0 = performance.now()
+      const final = await streamEngine(body, { signal: controller.signal })
+      const list = (final.problems ?? []).map((p, i) => ({ ...p, id: p.id ?? `prob-${i}` }))
+      console.log(`[perf:engine] problems loaded in ${Math.round(performance.now() - t0)}ms → ${list.length}`)
+      setProblems(list)
+      writeCache(problemsKey, list)
+    } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') return
+      // Don't blow away an existing list on a failed refresh; show empty only if
+      // nothing was loaded yet.
+      setProblems((prev) => prev ?? [])
+    } finally {
+      setProblemsLoading(false)
+    }
+  }, [buildEngineBody, eventContexts, problemsKey])
+
+  // On-demand load of the "Copilot Recommendations" section — same pattern.
+  const loadRecommendations = useCallback(async () => {
+    recsAbortRef.current?.abort()
+    const controller = new AbortController()
+    recsAbortRef.current = controller
+    setRecsLoading(true)
+    try {
+      const eventContext = eventContexts.map((e) => ({ eventTitle: e.eventTitle, context: e.context }))
+      const body = { ...buildEngineBody(eventContext, 'fast'), scope: { kind: 'recommendations' as const } }
+      const t0 = performance.now()
+      const final = await streamEngine(body, { signal: controller.signal })
+      const list = (final.recommendations ?? []).map((r, i) => ({ ...r, id: r.id ?? `rec-${i}` }))
+      console.log(`[perf:engine] recommendations loaded in ${Math.round(performance.now() - t0)}ms → ${list.length}`)
+      setRecommendations(list)
+      writeCache(recsKey, list)
+    } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') return
+      setRecommendations((prev) => prev ?? [])
+    } finally {
+      setRecsLoading(false)
+    }
+  }, [buildEngineBody, eventContexts, recsKey])
 
   // Debounced wrapper around runEngine. Multiple triggers firing within
   // ENGINE_COALESCE_MS of each other (the cold-load cascade: hydration →
@@ -1583,11 +1734,11 @@ export function CommandCenter() {
       )}
 
 
-      {/* Empty state — shown when the engine ran but found nothing for this person */}
+      {/* Empty state — shown when the engine ran but found nothing for this person.
+          Problems/recommendations are lazy sections below, so only the items array
+          gates the "all clear" message. */}
       {report && !loading &&
-        (report.items ?? []).filter((i) => !dismissedTitles.has(i.title) && !completedTitles.has(i.title)).length === 0 &&
-        (report.problems ?? []).filter((p) => !dismissedTitles.has(p.title)).length === 0 &&
-        (report.recommendations ?? []).length === 0 && (
+        (report.items ?? []).filter((i) => !dismissedTitles.has(i.title) && !completedTitles.has(i.title)).length === 0 && (
         <div className="rounded-2xl p-5 bg-slate-50 border border-slate-200 text-center animate-slide-up">
           <p className="text-2xl mb-2">✓</p>
           <p className="text-sm font-semibold text-slate-700">All clear</p>
@@ -1722,98 +1873,135 @@ export function CommandCenter() {
         </div>
       )}
 
-      {/* POTENTIAL PROBLEMS */}
-      {!loading && report && (report.problems?.length ?? 0) > 0 && (
-        <section>
-          <SectionLabel icon={AlertTriangle} color="#dc2626">Potential Problems</SectionLabel>
-          <div className="space-y-2 stagger-children">
-            {report.problems
-              .filter((p) => showInList(p.title))
-              .map((p) =>
-                teachPrompt?.title === p.title ? (
-                  <TeachPrompt
-                    key={p.id}
-                    title={p.title}
-                    onTeach={(feedback) => teachAssistant(p.title, feedback)}
-                    onDismiss={() => setTeachPrompt(null)}
-                    onUndo={() => undoDismiss(p.title)}
-                  />
-                ) : (
-                  <ProblemCard
-                    key={p.id}
-                    problem={p}
-                    onSaveTask={() => saveItemAsTask(p.title, p.detail)}
-                    onDismiss={() => dismissItem(p.title)}
-                    onCopilot={(text) => openBriefingInCopilot(text)}
-                    onCapture={(text) => openCapture({ text, autoAnalyze: true })}
-                    debugMode={debugMode}
-                    onTrace={() => traceProblem(p)}
-                  />
-                ),
-              )}
-          </div>
-        </section>
-      )}
+      {/* POTENTIAL PROBLEMS — lazy on-demand section. Off the briefing's critical
+          path: only generated (and only paid for) when the user taps Check/Refresh. */}
+      {!loading && report && (() => {
+        const visible = (problems ?? []).filter((p) => showInList(p.title))
+        return (
+          <section>
+            <LazySectionHeader
+              icon={AlertTriangle}
+              color="#dc2626"
+              title="Potential Problems"
+              loaded={problems !== null}
+              loading={problemsLoading}
+              onLoad={loadProblems}
+            />
+            {problems === null ? (
+              <LazySectionPrompt
+                loading={problemsLoading}
+                onLoad={loadProblems}
+                hint="Scan for conflicts, gaps, and risks"
+              />
+            ) : visible.length === 0 ? (
+              <div className="rounded-2xl p-4 bg-white shadow-card text-sm text-slate-400">Nothing flagged right now.</div>
+            ) : (
+              <div className="space-y-2 stagger-children">
+                {visible.map((p) =>
+                  teachPrompt?.title === p.title ? (
+                    <TeachPrompt
+                      key={p.id}
+                      title={p.title}
+                      onTeach={(feedback) => teachAssistant(p.title, feedback)}
+                      onDismiss={() => setTeachPrompt(null)}
+                      onUndo={() => undoDismiss(p.title)}
+                    />
+                  ) : (
+                    <ProblemCard
+                      key={p.id}
+                      problem={p}
+                      onSaveTask={() => saveItemAsTask(p.title, p.detail)}
+                      onDismiss={() => dismissItem(p.title)}
+                      onCopilot={(text) => openBriefingInCopilot(text)}
+                      onCapture={(text) => openCapture({ text, autoAnalyze: true })}
+                      debugMode={debugMode}
+                      onTrace={() => traceProblem(p)}
+                    />
+                  ),
+                )}
+              </div>
+            )}
+          </section>
+        )
+      })()}
 
-      {/* COPILOT RECOMMENDATIONS */}
-      {!loading && report && (report.recommendations?.length ?? 0) > 0 && (
-        <section>
-          <SectionLabel icon={Lightbulb} color="#7c3aed">Copilot Recommendations</SectionLabel>
-          <div className="space-y-2 stagger-children">
-            {report.recommendations
-              .filter((r) => showInList(r.title))
-              .map((r) =>
-                teachPrompt?.title === r.title ? (
-                  <TeachPrompt
-                    key={r.id}
-                    title={r.title}
-                    onTeach={(feedback) => teachAssistant(r.title, feedback)}
-                    onDismiss={() => setTeachPrompt(null)}
-                    onUndo={() => undoDismiss(r.title)}
-                  />
-                ) : (
-                <div key={r.id} className="rounded-2xl p-4 bg-white shadow-card animate-slide-up flex items-start gap-3">
-                  <div className="w-8 h-8 rounded-lg bg-purple-50 flex items-center justify-center shrink-0">
-                    <Lightbulb size={15} className="text-purple-500" />
+      {/* COPILOT RECOMMENDATIONS — lazy on-demand section (same pattern). */}
+      {!loading && report && (() => {
+        const visible = (recommendations ?? []).filter((r) => showInList(r.title))
+        return (
+          <section>
+            <LazySectionHeader
+              icon={Lightbulb}
+              color="#7c3aed"
+              title="Copilot Recommendations"
+              loaded={recommendations !== null}
+              loading={recsLoading}
+              onLoad={loadRecommendations}
+            />
+            {recommendations === null ? (
+              <LazySectionPrompt
+                loading={recsLoading}
+                onLoad={loadRecommendations}
+                hint="Get proactive ideas that reduce future stress"
+              />
+            ) : visible.length === 0 ? (
+              <div className="rounded-2xl p-4 bg-white shadow-card text-sm text-slate-400">No suggestions right now.</div>
+            ) : (
+              <div className="space-y-2 stagger-children">
+                {visible.map((r) =>
+                  teachPrompt?.title === r.title ? (
+                    <TeachPrompt
+                      key={r.id}
+                      title={r.title}
+                      onTeach={(feedback) => teachAssistant(r.title, feedback)}
+                      onDismiss={() => setTeachPrompt(null)}
+                      onUndo={() => undoDismiss(r.title)}
+                    />
+                  ) : (
+                  <div key={r.id} className="rounded-2xl p-4 bg-white shadow-card animate-slide-up flex items-start gap-3">
+                    <div className="w-8 h-8 rounded-lg bg-purple-50 flex items-center justify-center shrink-0">
+                      <Lightbulb size={15} className="text-purple-500" />
+                    </div>
+                    <div className="flex-1">
+                      <p className="text-sm font-medium text-slate-900">{r.title}</p>
+                      <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">{r.rationale}</p>
+                      {r.actionLabel && (() => {
+                        // Most recommendations are a concrete to-do — tapping the
+                        // action creates it directly with a confirmation toast and
+                        // clears the card. Only genuinely conversational ones
+                        // (actionType 'copilot') hand off to Copilot.
+                        const toCopilot = r.actionType === 'copilot'
+                        const Icon = toCopilot ? MessageCircle : Plus
+                        return (
+                          <button
+                            onClick={() => toCopilot
+                              ? openBriefingInCopilot(`${r.actionLabel}: ${r.title}. ${r.rationale}`)
+                              : addRecommendationAsTask(r.title, r.rationale, r.forNames)}
+                            className="mt-2 inline-flex items-center gap-1 text-xs font-medium text-purple-600 hover:text-purple-800"
+                          >
+                            <Icon size={11} />
+                            {r.actionLabel} →
+                          </button>
+                        )
+                      })()}
+                    </div>
+                    <div className="flex items-start gap-1 shrink-0">
+                      <button
+                        onClick={() => dismissItem(r.title)}
+                        className="p-1.5 rounded-lg text-slate-300 hover:text-slate-500 hover:bg-slate-100 transition-colors"
+                        title="Dismiss"
+                      >
+                        <X size={14} />
+                      </button>
+                    </div>
                   </div>
-                  <div className="flex-1">
-                    <p className="text-sm font-medium text-slate-900">{r.title}</p>
-                    <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">{r.rationale}</p>
-                    {r.actionLabel && (() => {
-                      // Most recommendations are a concrete to-do — tapping the
-                      // action creates it directly with a confirmation toast and
-                      // clears the card. Only genuinely conversational ones
-                      // (actionType 'copilot') hand off to Copilot.
-                      const toCopilot = r.actionType === 'copilot'
-                      const Icon = toCopilot ? MessageCircle : Plus
-                      return (
-                        <button
-                          onClick={() => toCopilot
-                            ? openBriefingInCopilot(`${r.actionLabel}: ${r.title}. ${r.rationale}`)
-                            : addRecommendationAsTask(r.title, r.rationale, r.forNames)}
-                          className="mt-2 inline-flex items-center gap-1 text-xs font-medium text-purple-600 hover:text-purple-800"
-                        >
-                          <Icon size={11} />
-                          {r.actionLabel} →
-                        </button>
-                      )
-                    })()}
-                  </div>
-                  <div className="flex items-start gap-1 shrink-0">
-                    <button
-                      onClick={() => dismissItem(r.title)}
-                      className="p-1.5 rounded-lg text-slate-300 hover:text-slate-500 hover:bg-slate-100 transition-colors"
-                      title="Dismiss"
-                    >
-                      <X size={14} />
-                    </button>
-                  </div>
-                </div>
-                ),
-              )}
-          </div>
-        </section>
-      )}
+                  ),
+                )}
+              </div>
+            )}
+          </section>
+        )
+      })()}
 
 
       {/* TODAY */}
@@ -1861,7 +2049,7 @@ export function CommandCenter() {
       </div>
 
       {/* Empty-state nudge */}
-      {report && (report.items?.length ?? 0) === 0 && (report.problems?.length ?? 0) === 0 && (
+      {report && (report.items?.length ?? 0) === 0 && (
         <div className="rounded-2xl p-8 bg-white shadow-card text-center">
           <div className="text-4xl mb-3">🌤️</div>
           <p className="text-sm font-medium text-slate-700">You&apos;re all clear.</p>
@@ -2013,6 +2201,50 @@ function SectionLabel({ icon: Icon, color, children }: { icon: typeof Clock; col
       <Icon size={16} style={{ color }} />
       <h2 className="text-base font-bold text-slate-900">{children}</h2>
     </div>
+  )
+}
+
+// Header for a lazily-loaded section: title on the left, a Check/Refresh control
+// on the right that fires the section's own scoped AI request on demand.
+function LazySectionHeader({ icon: Icon, color, title, loaded, loading, onLoad }: {
+  icon: typeof Clock; color: string; title: string
+  loaded: boolean; loading: boolean; onLoad: () => void
+}) {
+  return (
+    <div className="flex items-center justify-between mb-3">
+      <div className="flex items-center gap-2">
+        <Icon size={16} style={{ color }} />
+        <h2 className="text-base font-bold text-slate-900">{title}</h2>
+      </div>
+      <button
+        onClick={onLoad}
+        disabled={loading}
+        className="flex items-center gap-1 text-xs font-medium text-slate-500 hover:text-slate-700 disabled:opacity-50 transition-colors"
+      >
+        <RefreshCw size={12} className={loading ? 'animate-spin' : ''} />
+        {loading ? 'Checking…' : loaded ? 'Refresh' : 'Check'}
+      </button>
+    </div>
+  )
+}
+
+// The "tap to load" placeholder shown before a lazy section has been fetched.
+function LazySectionPrompt({ loading, onLoad, hint }: { loading: boolean; onLoad: () => void; hint: string }) {
+  if (loading) {
+    return (
+      <div className="rounded-2xl p-4 bg-white shadow-card">
+        <div className="skeleton h-4 w-40 rounded mb-2.5" />
+        <div className="skeleton h-3 w-full rounded" />
+      </div>
+    )
+  }
+  return (
+    <button
+      onClick={onLoad}
+      className="w-full rounded-2xl p-4 bg-white shadow-card text-left text-sm text-slate-400 hover:text-slate-600 transition-colors"
+    >
+      {hint} →
+    </button>
   )
 }
 

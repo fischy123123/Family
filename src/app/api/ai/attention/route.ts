@@ -6,6 +6,35 @@ import { ATTENTION_MODEL, ATTENTION_MAX_TOKENS, ATTENTION_SYSTEM_PROMPT } from '
 
 const MODEL = ATTENTION_MODEL
 
+// A scoped request asks the model for ONLY one slice of the report. This keeps
+// the cached prefix (system prompt + data block) byte-identical across every
+// slice, so all the parallel calls share one cache entry — the suffix below is
+// appended to the dynamic (uncached) tail. Splitting the work this way lets the
+// client fan out concurrent requests and collapse the briefing's wall-time from
+// the sum of all output to the length of the single slowest slice.
+type EngineScope =
+  | { kind: 'items'; sections?: string[]; greeting?: boolean }
+  | { kind: 'problems' }
+  | { kind: 'recommendations' }
+
+function buildScopeSuffix(scope?: EngineScope): string {
+  if (!scope) return ''
+  if (scope.kind === 'problems') {
+    return `\n\nSCOPE OVERRIDE (highest priority — overrides the output shape above): Output ONLY the "problems" array. Your entire response must be a JSON object of exactly this shape: {"problems":[ ... ]}. Do NOT include "greeting", "items", or "recommendations". Apply every "problems" rule from above. If there are no genuine problems, return {"problems":[]}.`
+  }
+  if (scope.kind === 'recommendations') {
+    return `\n\nSCOPE OVERRIDE (highest priority — overrides the output shape above): Output ONLY the "recommendations" array. Your entire response must be a JSON object of exactly this shape: {"recommendations":[ ... ]}. Do NOT include "greeting", "items", or "problems". Apply every "recommendations" rule from above. If nothing is genuinely helpful, return {"recommendations":[]}.`
+  }
+  // items
+  const list = (scope.sections ?? []).map((s) => `"${s}"`).join(', ')
+  const sectionsClause = list
+    ? ` Include ONLY items whose "section" is one of: [${list}]. Omit every item whose section would be any name not in that list — another concurrent request is responsible for those.`
+    : ''
+  const greetingClause = scope.greeting ? `"greeting" (following the greeting rules) and ` : ''
+  const shape = scope.greeting ? `{"greeting":"...","items":[ ... ]}` : `{"items":[ ... ]}`
+  return `\n\nSCOPE OVERRIDE (highest priority — overrides the output shape above): Output ONLY ${greetingClause}the "items" array.${sectionsClause} Your entire response must be a JSON object of exactly this shape: ${shape}. Do NOT include "problems" or "recommendations".`
+}
+
 // Incrementally pull COMPLETE item objects out of the still-streaming JSON so we
 // can emit each card the instant the model finishes writing it — instead of
 // making the user wait for the entire document to parse. Returns every
@@ -54,7 +83,13 @@ export async function POST(request: NextRequest) {
   }
 
   const reqStart = Date.now()
-  const ctx: FamilyContextInput & { tier?: 'fast' | 'deep'; suppressedTitles?: string[] } = await request.json()
+  const ctx: FamilyContextInput & {
+    tier?: 'fast' | 'deep'
+    suppressedTitles?: string[]
+    scope?: EngineScope
+  } = await request.json()
+  const scope = ctx.scope
+  const scopeSuffix = buildScopeSuffix(scope)
   // Build context as two parts: the static data block (cacheable) and the
   // dynamic time header (changes every run — not cached).
   const ctxStart = Date.now()
@@ -127,8 +162,10 @@ export async function POST(request: NextRequest) {
                 // family's actual data changes — cache it (1h) so unchanged data
                 // re-reads at 10% cost across the throttle window and between users.
                 { type: 'text', text: `FAMILY CONTEXT:\n\n${dataBlock}`, cache_control: { type: 'ephemeral', ttl: '1h' } },
-                // Time header: always fresh — current time + today's date anchor + suppressed items.
-                { type: 'text', text: timeHeader + suppressionBlock },
+                // Time header: always fresh — current time + today's date anchor +
+                // suppressed items + (optional) scope override. All of this is the
+                // uncached tail, so the cached prefix stays identical across scopes.
+                { type: 'text', text: timeHeader + suppressionBlock + scopeSuffix },
               ],
             }],
           },
@@ -186,8 +223,13 @@ export async function POST(request: NextRequest) {
           ` stop=${finalMsg.stop_reason}`
         )
         // Final summary line — kept last so it's the row preview in Vercel logs.
+        const scopeLabel = scope
+          ? scope.kind === 'items'
+            ? `items[${(scope.sections ?? []).join(',') || 'all'}${scope.greeting ? '+greeting' : ''}]`
+            : scope.kind
+          : 'full'
         console.log(
-          `[perf/attention] SUMMARY wall=${aiDone - reqStart}ms ai=${totalAi}ms` +
+          `[perf/attention] SUMMARY scope=${scopeLabel} wall=${aiDone - reqStart}ms ai=${totalAi}ms` +
           ` model=${MODEL} cache=${cacheStatus}` +
           ` in=${inTokens} cr=${cacheRead} cw=${cacheWrite} out=${outTokens} max=${ATTENTION_MAX_TOKENS}` +
           ` cost=${estimateCost(MODEL, uMap)}`
