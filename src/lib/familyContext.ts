@@ -156,7 +156,20 @@ export function buildFamilyContextParts(input: FamilyContextInput): {
       return s >= pastCutoff && s <= horizon
     })
     .sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime())
-  const upcomingEvents = eventsInWindow.slice(0, EVENT_CAP)
+  // Recurring-series dedup: a weekly therapy/lesson expands into many instances
+  // inside the horizon. The briefing only cares about the SOONEST occurrence —
+  // later occurrences of the same series are noise that clutter the cards. Keep
+  // the first (earliest, since already sorted ascending) instance per
+  // recurringEventId; events without a series id are always kept.
+  const seenSeries = new Set<string>()
+  const recurringCollapsed = eventsInWindow.filter((e) => {
+    if (!e.recurringEventId) return true
+    if (seenSeries.has(e.recurringEventId)) return false
+    seenSeries.add(e.recurringEventId)
+    return true
+  })
+  const droppedRecurring = eventsInWindow.length - recurringCollapsed.length
+  const upcomingEvents = recurringCollapsed.slice(0, EVENT_CAP)
 
   const openTasksAll = (tasks ?? []).filter((t) => !t.isCompleted)
   const openTasks = openTasksAll.slice(0, TASK_CAP)
@@ -182,7 +195,8 @@ export function buildFamilyContextParts(input: FamilyContextInput): {
     ` → dropped_ended=${endedEvents.length} (start < ${PAST_WINDOW_HOURS}h ago)` +
     ` dropped_beyond_horizon=${beyondHorizon.length} (start > ${HORIZON_DAYS}d out)` +
     ` → in_window=${eventsInWindow.length}` +
-    ` → dropped_over_cap=${Math.max(0, eventsInWindow.length - upcomingEvents.length)} (cap=${EVENT_CAP})` +
+    ` → dropped_recurring_dupes=${droppedRecurring} (kept soonest per series)` +
+    ` → dropped_over_cap=${Math.max(0, recurringCollapsed.length - upcomingEvents.length)} (cap=${EVENT_CAP})` +
     ` → SENT=${upcomingEvents.length}`
   )
 
