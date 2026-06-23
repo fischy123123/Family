@@ -673,7 +673,7 @@ export function CommandCenter() {
 
     // Never show the streaming skeleton when a cached report is on screen.
     // Streaming only appears on cold starts (no report at all).
-    if (!silent || !report) setLoading(true)
+    if (!report) setLoading(true)
     else setRefreshing(true)
 
     const runAt = Date.now()
@@ -708,7 +708,7 @@ export function CommandCenter() {
       }
 
       // Streaming skeleton only on cold starts — never when a report already exists.
-      const progressive = !silent || !report
+      const progressive = !report
       if (progressive) setStreamingItems([])
       const reader = res.body.getReader()
       const decoder = new TextDecoder()
@@ -818,7 +818,7 @@ export function CommandCenter() {
   // On a cold start (no report yet) we show the skeleton immediately so the quiet
   // window isn't a blank screen, even though the actual run starts a beat later.
   const scheduleEngine = useCallback((silent: boolean) => {
-    if (!silent) setLoading(true)
+    if (!reportRef.current) setLoading(true)
     if (engineDebounceRef.current) clearTimeout(engineDebounceRef.current)
     engineDebounceRef.current = setTimeout(() => {
       engineDebounceRef.current = null
