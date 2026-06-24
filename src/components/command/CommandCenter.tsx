@@ -244,32 +244,6 @@ const ENGINE_DATA_UNCHANGED_TTL_MS = 45 * 60 * 1000
 // however long the sources take to settle.
 const ENGINE_COALESCE_MS = 1000
 
-// Pull the (possibly still-streaming) greeting out of the raw JSON the attention
-// engine is generating, so we can show it live before the full briefing lands.
-// Returns the greeting text decoded so far, or null if it hasn't started yet.
-function extractPartialGreeting(raw: string): string | null {
-  const key = raw.indexOf('"greeting"')
-  if (key === -1) return null
-  const colon = raw.indexOf(':', key)
-  if (colon === -1) return null
-  const open = raw.indexOf('"', colon + 1)
-  if (open === -1) return null
-  let out = ''
-  for (let i = open + 1; i < raw.length; i++) {
-    const c = raw[i]
-    if (c === '\\') {
-      const n = raw[i + 1]
-      if (n === undefined) break // incomplete escape at the stream edge — stop here
-      out += n === 'n' ? '\n' : n === 't' ? '\t' : n
-      i++
-      continue
-    }
-    if (c === '"') return out // closing quote — greeting complete
-    out += c
-  }
-  return out // still streaming
-}
-
 // Open a Gmail message in the system browser (SFSafariViewController on iOS).
 //
 // The target="_blank" programmatic click is the correct mechanism — window.open()
@@ -394,9 +368,6 @@ export function CommandCenter() {
   const [loading, setLoading] = useState(false)        // true cold start only (no report yet)
   const [refreshing, setRefreshing] = useState(false)  // silent background update
   const [calendarFetching, setCalendarFetching] = useState(false) // Google Calendar fetch in progress
-  // Greeting text as it streams in during a cold start, shown in place of the
-  // skeleton so the user reads the headline ~2s in rather than waiting ~20s.
-  const [streamingGreeting, setStreamingGreeting] = useState('')
   // Cards as they stream in during a cold start — each appears the instant the
   // model finishes writing it, so the briefing fills in like Copilot's prose
   // instead of all cards popping in at once when the full JSON parses.
@@ -806,20 +777,14 @@ export function CommandCenter() {
       // Cache-warming: fire shard 0 first; the moment its first token arrives the
       // shared prompt cache is written, so the remaining shards (fired next) read
       // it at ~1/10th cost instead of every shard racing to write a cold cache.
-      let rawGreeting = ''
       let fanout!: () => void
       const warm = new Promise<void>((resolve) => { fanout = resolve })
       const shard0 = streamEngine(
-        { ...baseBody, scope: { kind: 'items', sections: shards[0], greeting: true } },
+        { ...baseBody, scope: { kind: 'items', sections: shards[0], greeting: false } },
         {
           signal: controller.signal,
           onFirstToken: () => { fanout() },
           onItem: onStreamItem,
-          onDelta: progressive ? (d) => {
-            rawGreeting += d
-            const g = extractPartialGreeting(rawGreeting)
-            if (g) setStreamingGreeting(g)
-          } : undefined,
         },
       )
       // If shard 0 settles without ever emitting a token, release the gate anyway.
@@ -862,10 +827,6 @@ export function CommandCenter() {
       merged.sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0))
       const items = merged.map((it, i) => ({ ...it, id: `att-${i}` }))
 
-      // Greeting comes from shard 0 (the only shard asked to produce it).
-      const shard0Result = settled[0].status === 'fulfilled' ? settled[0].value : null
-      const greeting = shard0Result?.greeting ?? report?.greeting ?? 'Here is what needs your attention.'
-
       const total = Math.round(performance.now() - engineStart)
       console.log(`[perf:engine] DONE total=${total}ms | shards_ok=${oks.length}/${settled.length} | items=${items.length}`)
 
@@ -874,7 +835,7 @@ export function CommandCenter() {
       // consumers and the type contract are satisfied.
       const data: AttentionReport = {
         generatedAt: new Date().toISOString(),
-        greeting,
+        greeting: '',
         items,
         problems: [],
         recommendations: [],
@@ -905,7 +866,6 @@ export function CommandCenter() {
       if (myRunToken === runTokenRef.current) {
         setLoading(false)
         setRefreshing(false)
-        setStreamingGreeting('')
         setStreamingItems([])
       }
     }
@@ -1756,16 +1716,6 @@ export function CommandCenter() {
           existing report never jumps while the user is scrolling. */}
       {loading && (
         <div className="space-y-6 animate-fade-in">
-          {streamingGreeting ? (
-            <div className="rounded-2xl p-5 bg-gradient-to-br from-blue-600 to-purple-700 text-white shadow-elevated animate-scale-in">
-              <div className="flex items-start gap-3">
-                <Sparkles size={18} className="mt-0.5 shrink-0 opacity-90" />
-                <p className="text-[15px] leading-relaxed font-medium">{streamingGreeting}</p>
-              </div>
-            </div>
-          ) : (
-            <div className="skeleton h-20 w-full rounded-2xl" />
-          )}
           {streamingItems.length > 0 ? (
             // Cards stream in one-by-one as the model writes them. These are slim
             // previews (title + reason); the full grouped/assignable cards render
@@ -1794,19 +1744,6 @@ export function CommandCenter() {
             </div>
           )}
         </div>
-      )}
-
-      {/* GREETING — shown once briefing finishes loading. Tap to open in Copilot. */}
-      {!loading && report?.greeting && (
-        <button
-          onClick={() => openBriefingInCopilot(report.greeting)}
-          className="w-full rounded-2xl p-5 bg-gradient-to-br from-blue-600 to-purple-700 text-white shadow-elevated text-left hover:opacity-95 active:opacity-90 transition-opacity animate-scale-in"
-        >
-          <div className="flex items-start gap-3">
-            <Sparkles size={18} className="mt-0.5 shrink-0 opacity-90" />
-            <p className="text-[15px] leading-relaxed font-medium">{report.greeting}</p>
-          </div>
-        </button>
       )}
 
       {/* PERSON SECTIONS — hidden while streaming is active (loading=true). */}
