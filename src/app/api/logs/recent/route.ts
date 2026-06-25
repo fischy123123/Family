@@ -7,7 +7,7 @@ import type { AttentionDiagRun } from '@/lib/diagnostics'
 // requiring user auth, while still being locked down from public access.
 export async function GET(req: NextRequest) {
   const token = req.nextUrl.searchParams.get('token')
-  const secret = process.env.CRON_SECRET
+  const secret = process.env.DIAGNOSTICS_TOKEN
   if (!secret || token !== secret) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
