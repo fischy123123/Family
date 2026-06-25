@@ -813,6 +813,12 @@ export function CommandCenter() {
         return
       }
 
+      // Partial run: some shards were killed (iOS background abort) before finishing.
+      // Show the items we have, but don't record this as a successful completed run —
+      // leave lastRunSig stale so the next visibilitychange trigger retries the full
+      // briefing rather than skipping it as "already up to date."
+      const isPartialRun = oks.length < settled.length
+
       // Merge items from every successful shard, dedup, re-key, sort by priority.
       const merged: AttentionItem[] = []
       const seen = new Set<string>()
@@ -848,11 +854,13 @@ export function CommandCenter() {
       }
       setEngineError(null)
       writeCache(attnKey, data)
-      writeCache(lastRunKey, runAt)
-      // Record which data snapshot produced this briefing. If the same snapshot
-      // is still current when the next throttle fires, skip the AI.
-      lastRunSig.current = lastCtxSig.current
-      if (lastRunSigKey) writeCache(lastRunSigKey, lastRunSig.current)
+      if (!isPartialRun) {
+        // Only mark the run as complete when ALL shards finished. A partial run
+        // leaves lastRunSig stale so the next foreground trigger retries.
+        writeCache(lastRunKey, runAt)
+        lastRunSig.current = lastCtxSig.current
+        if (lastRunSigKey) writeCache(lastRunSigKey, lastRunSig.current)
+      }
     } catch (err) {
       // iOS Safari aborts in-flight fetches when the app goes to the background.
       // Don't show an error for intentional aborts — the visibilitychange handler
