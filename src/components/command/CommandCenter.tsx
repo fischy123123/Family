@@ -393,6 +393,19 @@ export function CommandCenter() {
   // only clears loading state if it's still the current run — prevents an aborted
   // run's finally from clearing state owned by the newer run that aborted it.
   const runTokenRef = useRef(0)
+  // True while a cold-start (no report yet) engine run is mid-flight. Lets the
+  // context-change effect DEFER instead of aborting it when late data (a calendar
+  // sync landing a new event) arrives — aborting would throw away a run that was
+  // seconds from done and restart from scratch, doubling perceived load time.
+  const coldRunInFlight = useRef(false)
+  // Set when a context change arrives during a cold-start run. After that run
+  // finishes, runEngine reads this and schedules ONE silent refresh to fold in
+  // the late data, instead of aborting mid-flight.
+  const deferredRerun = useRef(false)
+  // Holds the latest scheduleEngine so runEngine's finally can trigger a deferred
+  // refresh without a circular useCallback dependency (scheduleEngine is declared
+  // after runEngine).
+  const scheduleEngineRef = useRef<((silent: boolean) => void) | null>(null)
   // Refs so the visibilitychange handler can read current state without stale closures.
   const engineErrorRef = useRef<string | null>(null)
   const reportRef = useRef<AttentionReport | null>(null)
@@ -742,6 +755,10 @@ export function CommandCenter() {
     const engineStart = performance.now()
     const myToken = ++deepToken.current
 
+    // Mark cold-start runs so a late context change defers instead of aborting.
+    const isColdRun = !report
+    if (isColdRun) { coldRunInFlight.current = true; deferredRerun.current = false }
+
     try {
       const eventContext = overrideContext ??
         eventContexts.map((e) => ({ eventTitle: e.eventTitle, context: e.context }))
@@ -783,7 +800,7 @@ export function CommandCenter() {
       let fanout!: () => void
       const warm = new Promise<void>((resolve) => { fanout = resolve })
       const shard0 = streamEngine(
-        { ...baseBody, scope: { kind: 'items', sections: shards[0], greeting: false, maxItems: shards[0].length + 2 } },
+        { ...baseBody, scope: { kind: 'items', sections: shards[0], greeting: false, maxItems: shards[0].length + 1 } },
         {
           signal: controller.signal,
           onFirstToken: () => { fanout() },
@@ -796,7 +813,7 @@ export function CommandCenter() {
 
       const restPromises = shards.slice(1).map((secs) =>
         streamEngine(
-          { ...baseBody, scope: { kind: 'items', sections: secs, greeting: false, maxItems: secs.length + 2 } },
+          { ...baseBody, scope: { kind: 'items', sections: secs, greeting: false, maxItems: secs.length + 1 } },
           { signal: controller.signal, onItem: onStreamItem },
         ),
       )
@@ -879,6 +896,17 @@ export function CommandCenter() {
         setRefreshing(false)
         setStreamingItems([])
       }
+      // Cold-start run finished. If late data arrived while it was in flight, do
+      // ONE silent refresh now to fold it in — instead of having aborted this run
+      // mid-flight and restarting from scratch. Called via a ref because
+      // scheduleEngine is declared after runEngine (would be a TDZ dep here).
+      if (isColdRun) {
+        coldRunInFlight.current = false
+        if (deferredRerun.current && myRunToken === runTokenRef.current) {
+          deferredRerun.current = false
+          scheduleEngineRef.current?.(true)
+        }
+      }
     }
   }, [buildEngineBody, eventContexts, attnKey, report])
 
@@ -946,6 +974,7 @@ export function CommandCenter() {
       runEngine(undefined, silent)
     }, ENGINE_COALESCE_MS)
   }, [runEngine])
+  useEffect(() => { scheduleEngineRef.current = scheduleEngine }, [scheduleEngine])
 
   // Cancel any pending debounced run if the component unmounts.
   useEffect(() => () => {
@@ -1012,6 +1041,15 @@ export function CommandCenter() {
     const inboxJustArrived = prevEmailCount === 0 && emailSuggestions.length > 0
     const eventsJustArrived = prevEventCount === 0 && events.length > 0
     if (!inboxJustArrived && !eventsJustArrived && Date.now() - lastRun.current < ENGINE_THROTTLE_MS) return
+    // A cold-start run is mid-flight (no report yet) and late data just arrived —
+    // typically the Google Calendar sync landing a new event a few seconds in.
+    // DON'T abort the in-flight run to restart; that throws away a nearly-done
+    // briefing and doubles perceived load time. Mark a deferred refresh instead;
+    // runEngine fires one silent re-run when the cold-start run completes.
+    if (coldRunInFlight.current && !reportRef.current) {
+      deferredRerun.current = true
+      return
+    }
     // Data arrived mid-session — stay silent (buffered) so content doesn't jump
     // while the user is reading. Only inbox/event first-arrivals bypass the throttle.
     scheduleEngine(!!report)
