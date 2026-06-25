@@ -41,7 +41,7 @@ CRITICAL — NET-NEW ONLY: The family already SEES their calendar, their open ta
     const cap = scope.maxItems
       ? ` Return at most ${scope.maxItems} items — prioritise ruthlessly and cut anything below that limit.`
       : ''
-    const brevity = ` Your entire response must be a JSON object of exactly this shape: {"items":[ ... ]}. Do NOT include "greeting", "problems", or "recommendations". BREVITY IS CRITICAL: keep each item compact — short title, short reason, omit detail unless essential, omit optional fields when they add no value.`
+    const brevity = ` Your entire response must be a JSON object of exactly this shape: {"items":[ ... ]}. Do NOT include "greeting", "problems", or "recommendations". OUTPUT THE JSON OBJECT AND NOTHING ELSE — no preamble, no reasoning, no bucket self-check narration, no commentary before or after it. Your very first character must be "{". Do any reasoning silently. BREVITY IS CRITICAL: keep each item compact — short title, short reason, omit detail unless essential, omit optional fields when they add no value.`
     if (scope.owner === 'self') {
       return `\n\nSCOPE OVERRIDE (highest priority — overrides the output shape above): Output ONLY items that belong on THE SIGNED-IN USER'S PLATE — the things this specific person is RESPONSIBLE for, plus their own appointments and events.
 
@@ -196,9 +196,11 @@ export async function POST(request: NextRequest) {
         ? ATTENTION_MAX_TOKENS
         : scope.kind === 'items'
           ? 2000  // 3-5 items at ~100-150 tok each = 300-750 tok; 2000 is a safe ceiling
-          : scope.kind === 'problems'
-            ? 1200  // max 4 problems at ~200 tok each
-            : 800   // max 3 recommendations at ~150 tok each
+          : scope.kind === 'plate'
+            ? 2400  // self plate up to 8 items (~130 tok each ≈ 1040) + headroom; others' 6 fit easily
+            : scope.kind === 'problems'
+              ? 1200  // max 4 problems at ~200 tok each
+              : 800   // max 3 recommendations at ~150 tok each
 
       try {
         const aiStart = Date.now()
@@ -292,18 +294,11 @@ export async function POST(request: NextRequest) {
         console.log(
           `[perf/attention] SUMMARY scope=${scopeLabel} wall=${aiDone - reqStart}ms ai=${totalAi}ms` +
           ` model=${MODEL} cache=${cacheStatus}` +
-          ` in=${inTokens} cr=${cacheRead} cw=${cacheWrite} out=${outTokens} max=${ATTENTION_MAX_TOKENS}` +
+          ` in=${inTokens} cr=${cacheRead} cw=${cacheWrite} out=${outTokens} max=${scopeMaxTokens}` +
           ` cost=${estimateCost(MODEL, uMap)}`
         )
 
-        // A truncated JSON isn't useful and shouldn't overwrite the client's
-        // existing good report — surface an error so it offers a retry instead.
-        if (finalMsg.stop_reason === 'max_tokens') {
-          send({ t: 'error', error: 'Briefing was cut short — tap retry to try again.' })
-          try { controller.close() } catch { /* noop */ }
-          return
-        }
-
+        const truncated = finalMsg.stop_reason === 'max_tokens'
         const parseStart = Date.now()
         const text = finalMsg.content[0]?.type === 'text' ? finalMsg.content[0].text : '{}'
         const match = text.match(/\{[\s\S]*\}/)
@@ -319,10 +314,19 @@ export async function POST(request: NextRequest) {
             parsed = JSON.parse(match[0])
           } catch {
             parseOk = false
-            // Unexpected parse failure (not a token limit issue — already checked).
-            // Salvage the greeting so something appears rather than a blank screen.
-            const greetingMatch = match[0].match(/"greeting"\s*:\s*"((?:[^"\\]|\\[\s\S])*)"/)
-            parsed = { greeting: greetingMatch?.[1] ?? 'Here is what needs your attention.', items: [], problems: [], recommendations: [] }
+            // The whole JSON didn't parse — usually because the response was cut
+            // off at max_tokens mid-document. Salvage every COMPLETE item object
+            // that was fully written before the cutoff (same partial-parser used
+            // for progressive streaming), plus the greeting if present. This
+            // turns a truncated run into a usable partial briefing instead of a
+            // dead error — and lets diagnostics still record what happened.
+            const greetingMatch = text.match(/"greeting"\s*:\s*"((?:[^"\\]|\\[\s\S])*)"/)
+            parsed = {
+              greeting: greetingMatch?.[1],
+              items: extractCompleteItems(text),
+              problems: [],
+              recommendations: [],
+            }
           }
         }
 
@@ -358,17 +362,27 @@ export async function POST(request: NextRequest) {
 
         // ── PERF/OUTPUT: what the model produced and how long parsing took ───
         console.log(
-          `[perf/attention] parse=${Date.now() - parseStart}ms parse_ok=${parseOk}` +
+          `[perf/attention] parse=${Date.now() - parseStart}ms parse_ok=${parseOk} truncated=${truncated}` +
           ` → items=${items.length} (assigned=${assignedCount} actions=${actionCount})` +
           ` problems=${problems.length} recommendations=${recommendations.length}` +
           ` greeting_chars=${(parsed.greeting ?? '').length}`
         )
 
+        // Only a HARD failure — truncated with nothing salvageable — becomes an
+        // error. A truncated run that still yielded complete items is delivered
+        // as a normal (partial) briefing; the client shows those cards instead of
+        // a scary banner, and diagnostics above already recorded the truncation.
+        if (truncated && items.length === 0) {
+          send({ t: 'error', error: 'Briefing was cut short — tap retry to try again.' })
+          try { controller.close() } catch { /* noop */ }
+          return
+        }
+
         send({
           t: 'final',
           generatedAt: new Date().toISOString(),
           tier: ctx.tier ?? 'fast',
-          greeting: parsed.greeting ?? 'Here is what needs your attention.',
+          greeting: parsed.greeting ?? '',
           items,
           problems,
           recommendations,
