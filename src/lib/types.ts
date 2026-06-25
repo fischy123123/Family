@@ -227,6 +227,7 @@ export interface AttentionItem {
   section?: string              // person's first name exactly, or "Family" for shared items
   detail?: string               // optional 1-2 sentence expanded context, shown on tap
   kind?: 'action' | 'awareness' // action = something to do/decide; awareness = logistics/info
+  plate?: 'self' | 'others'     // which ownership tier produced it — tagged client-side from the scoped call that returned it
 }
 
 export interface PotentialProblem {

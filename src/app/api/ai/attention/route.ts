@@ -15,6 +15,11 @@ const MODEL = ATTENTION_MODEL
 // the sum of all output to the length of the single slowest slice.
 type EngineScope =
   | { kind: 'items'; sections?: string[]; greeting?: boolean; maxItems?: number }
+  // Ownership-scoped slice: route by WHO IS RESPONSIBLE (assigneeEmail), not by
+  // who the item is about. 'self' = the signed-in user's plate (things they must
+  // handle + their own events); 'others' = everyone else's, surfaced for the
+  // user's visibility only. Two of these replace the old per-person shards.
+  | { kind: 'plate'; owner: 'self' | 'others'; maxItems?: number }
   | { kind: 'problems' }
   | { kind: 'recommendations' }
 
@@ -32,6 +37,34 @@ CRITICAL — RECOMMENDATIONS ARE NOT PROBLEMS: A recommendation is an OPTIONAL, 
 
 CRITICAL — NET-NEW ONLY: The family already SEES their calendar, their open tasks, and the main briefing. A recommendation that restates or "reminds" them of something already on their radar is worthless. Surface only things they have NOT thought of — a second-order consequence, an opportunity hiding in the data, a stress they'd feel later but can defuse now. Quality over quantity: returning {"recommendations":[]} is far better than padding with restated tasks or rephrased problems. Return 0-3, and 0 is the right answer unless you have a genuinely non-obvious, non-problem insight.`
   }
+  if (scope.kind === 'plate') {
+    const cap = scope.maxItems
+      ? ` Return at most ${scope.maxItems} items — prioritise ruthlessly and cut anything below that limit.`
+      : ''
+    const brevity = ` Your entire response must be a JSON object of exactly this shape: {"items":[ ... ]}. Do NOT include "greeting", "problems", or "recommendations". BREVITY IS CRITICAL: keep each item compact — short title, short reason, omit detail unless essential, omit optional fields when they add no value.`
+    if (scope.owner === 'self') {
+      return `\n\nSCOPE OVERRIDE (highest priority — overrides the output shape above): Output ONLY items that belong on THE SIGNED-IN USER'S PLATE — the things this specific person is RESPONSIBLE for, plus their own appointments and events.
+
+An item is on the signed-in user's plate when ANY of these is true:
+- The signed-in user is the responsible person (the one who must DO it, drive, prepare, decide, attend, or follow up). Set "assigneeEmail" to the signed-in user.
+- It is a prep/action the signed-in user must do FOR an upcoming event, EVEN IF that event is about a child or another person (e.g. "iron Maddie's costume tonight", "buy the gift before the ceremony"). These belong on the user's plate because the USER does them — set forEmails to the child but keep this on the user's plate.
+- It is the signed-in user's OWN appointment, meeting, or event.
+- No responsible adult is clearly assigned and the obligation would fall to the signed-in user by default (an unassigned household obligation defaults to the viewer's plate).
+
+Do NOT include items that another adult or an independent older child is responsible for handling themselves — those go on the OTHER plate (a separate request). When unsure whether the user is truly responsible, INCLUDE it here (better the user sees something they own than misses it).${cap}${brevity}`
+    }
+    // owner === 'others'
+    return `\n\nSCOPE OVERRIDE (highest priority — overrides the output shape above): Output ONLY items that belong on SOMEONE ELSE'S PLATE — things another family member is responsible for, surfaced for the signed-in user's VISIBILITY (awareness, not action).
+
+An item belongs here when the responsible person is SOMEONE OTHER than the signed-in user:
+- The other parent/adult is handling it (a pickup, an appointment they drive, a task assigned to them). Set "assigneeEmail" to that responsible person.
+- An older child manages it themselves (their own homework, audition video, practice, social plan).
+
+Each item must make the OWNER obvious via "assigneeEmail" (the responsible person) and "section"/"forEmails" (who it's about). Keep these compact and awareness-oriented — the user is scanning to confirm everyone is covered, not to act.
+
+Do NOT include anything the signed-in user must personally do or prepare — that is on the user's own plate, a separate request. Do NOT duplicate the user's own appointments here. If everyone else has nothing noteworthy, return {"items":[]}.${cap}${brevity}`
+  }
+
   // items
   const list = (scope.sections ?? []).map((s) => `"${s}"`).join(', ')
   const sectionsClause = list
@@ -150,7 +183,9 @@ export async function POST(request: NextRequest) {
       const scopeLabel = scope
         ? scope.kind === 'items'
           ? `items[${(scope.sections ?? []).join(',') || 'all'}${scope.greeting ? '+greeting' : ''}]`
-          : scope.kind
+          : scope.kind === 'plate'
+            ? `plate[${scope.owner}]`
+            : scope.kind
         : 'full'
       // Per-scope token budget. Items shards need far fewer tokens than a full run
       // (they generate 3-5 compact items, not the entire report). Capping prevents
@@ -296,6 +331,15 @@ export async function POST(request: NextRequest) {
         const problems = (parsed.problems ?? []).map((p, i) => ({ id: `prob-${i}`, ...p }))
         const recommendations = (parsed.recommendations ?? []).map((r, i) => ({ id: `rec-${i}`, ...r }))
 
+        // Routing-quality signals: how many items carry a responsible person
+        // (assigneeEmail) and how many are actions. These reveal from the logs
+        // alone whether the self/others plate split is being driven correctly.
+        const assignedCount = items.filter((it) => {
+          const a = (it as Record<string, unknown>).assigneeEmail
+          return typeof a === 'string' && a.trim().length > 0
+        }).length
+        const actionCount = items.filter((it) => (it as Record<string, unknown>).kind === 'action').length
+
         // Persist structured diagnostics to Firestore — fire-and-forget.
         writeDiagnostic({
           ts: aiDone, scope: scopeLabel,
@@ -308,14 +352,15 @@ export async function POST(request: NextRequest) {
           cache_read: cacheRead, cache_write: cacheWrite,
           cache_status: cacheStatus, tok_per_sec: tokPerSec,
           items: items.length, problems: problems.length, recs: recommendations.length,
+          assigned: assignedCount, actions: actionCount,
           parse_ok: parseOk, stop_reason: finalMsg.stop_reason ?? 'unknown',
         })
 
         // ── PERF/OUTPUT: what the model produced and how long parsing took ───
         console.log(
           `[perf/attention] parse=${Date.now() - parseStart}ms parse_ok=${parseOk}` +
-          ` → items=${items.length} problems=${problems.length}` +
-          ` recommendations=${recommendations.length}` +
+          ` → items=${items.length} (assigned=${assignedCount} actions=${actionCount})` +
+          ` problems=${problems.length} recommendations=${recommendations.length}` +
           ` greeting_chars=${(parsed.greeting ?? '').length}`
         )
 
@@ -346,7 +391,7 @@ export async function POST(request: NextRequest) {
           ttft_ms: -1, ai_ms: -1, wall_ms: Date.now() - reqStart,
           in_tokens: 0, out_tokens: 0, cache_read: 0, cache_write: 0,
           cache_status: 'MISS', tok_per_sec: 0,
-          items: 0, problems: 0, recs: 0, parse_ok: false,
+          items: 0, problems: 0, recs: 0, assigned: 0, actions: 0, parse_ok: false,
           stop_reason: 'error', error: errMsg,
         })
         send({ t: 'error', error: errMsg })

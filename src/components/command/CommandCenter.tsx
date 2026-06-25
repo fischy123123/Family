@@ -62,7 +62,8 @@ type ItemGroup = {
 // item card, and resolves with the authoritative final payload. Throws on a
 // server/stream error so the caller can fall back to its cached report.
 type EngineScope =
-  | { kind: 'items'; sections?: string[]; greeting?: boolean }
+  | { kind: 'items'; sections?: string[]; greeting?: boolean; maxItems?: number }
+  | { kind: 'plate'; owner: 'self' | 'others'; maxItems?: number }
   | { kind: 'problems' }
   | { kind: 'recommendations' }
 
@@ -158,56 +159,74 @@ function groupItems(items: AttentionItem[]): ItemGroup[] {
   })
 }
 
-type BriefingSection = {
-  key: string               // section name ("Maddie", "Eric", "Family")
-  member: FamilyMember | null
-  groups: ItemGroup[]
+// Resolve which ownership tier an item belongs to. The plate tag set at merge
+// time is authoritative (the scoped call that produced it was told to emit only
+// that tier). For older cached items that predate the tag, fall back to
+// resolving the responsible person (assigneeEmail) against the signed-in user.
+function isOnSelfPlate(
+  item: AttentionItem,
+  members: FamilyMember[],
+  currentUserEmail: string | null | undefined,
+): boolean {
+  if (item.plate) return item.plate === 'self'
+  const who = item.assigneeEmail
+  if (!who) return true // unassigned obligation defaults to the viewer's plate
+  const email = (currentUserEmail ?? '').toLowerCase()
+  if (who.toLowerCase() === email) return true
+  const m = resolveMemberRef(members, who)
+  return !!m && m.email?.toLowerCase() === email
 }
 
-const ROLE_ORDER: Record<FamilyMember['role'], number> = { parent: 0, other: 1, child: 2, pet: 3 }
+// The human-readable owner of an item on the "others" plate — the responsible
+// person, resolved to a member for the name + color chip. Falls back to who the
+// item is about (section / forEmails) when no explicit assignee resolves.
+function resolveOwner(
+  item: AttentionItem,
+  members: FamilyMember[],
+): { name: string; member: FamilyMember | null } {
+  const refs = [item.assigneeEmail, item.section, item.forEmails?.[0]].filter(Boolean) as string[]
+  for (const ref of refs) {
+    const m = resolveMemberRef(members, ref) ?? members.find((x) => x.name === ref)
+    if (m) return { name: m.name, member: m }
+  }
+  return { name: item.section || 'Family', member: null }
+}
 
-function buildSections(
+type Plates = {
+  yours: ItemGroup[]
+  others: { name: string; member: FamilyMember | null; groups: ItemGroup[] }[]
+}
+
+function buildPlates(
   items: AttentionItem[],
   members: FamilyMember[],
   currentUserEmail: string | null | undefined,
-): BriefingSection[] {
-  function itemSection(item: AttentionItem): string {
-    if (item.section) return item.section
-    const ref = item.forEmails?.[0]
-    if (ref) {
-      const m = resolveMemberRef(members, ref)
-      if (m) return m.name
-    }
-    return 'Family'
-  }
-
-  const bySection = new Map<string, AttentionItem[]>()
+): Plates {
+  const yours: AttentionItem[] = []
+  const others: AttentionItem[] = []
   for (const item of items) {
-    const s = itemSection(item)
-    bySection.set(s, [...(bySection.get(s) ?? []), item])
+    (isOnSelfPlate(item, members, currentUserEmail) ? yours : others).push(item)
   }
 
-  const list: BriefingSection[] = Array.from(bySection.entries()).map(([key, sItems]) => ({
-    key,
-    member: key === 'Family' ? null : (members.find((m) => m.name === key) ?? null),
-    groups: groupItems(sItems),
-  }))
+  // Others' plate: one compact feed, grouped by owner so each person's items sit
+  // together under their chip. Heaviest owner first; people with nothing simply
+  // never appear.
+  const byOwner = new Map<string, { member: FamilyMember | null; items: AttentionItem[] }>()
+  for (const item of others) {
+    const { name, member } = resolveOwner(item, members)
+    const cur = byOwner.get(name) ?? { member, items: [] }
+    cur.items.push(item)
+    byOwner.set(name, cur)
+  }
+  const othersList = Array.from(byOwner.entries())
+    .map(([name, v]) => ({ name, member: v.member, groups: groupItems(v.items) }))
+    .sort((a, b) => {
+      const an = a.groups.reduce((n, g) => n + g.items.length, 0)
+      const bn = b.groups.reduce((n, g) => n + g.items.length, 0)
+      return bn - an
+    })
 
-  const selfMember = currentUserEmail
-    ? members.find((m) => m.email?.toLowerCase() === currentUserEmail.toLowerCase())
-    : null
-
-  list.sort((a, b) => {
-    if (a.key === 'Family') return 1
-    if (b.key === 'Family') return -1
-    if (selfMember) {
-      if (a.key === selfMember.name) return -1
-      if (b.key === selfMember.name) return 1
-    }
-    return (ROLE_ORDER[a.member?.role ?? 'other'] ?? 1) - (ROLE_ORDER[b.member?.role ?? 'other'] ?? 1)
-  })
-
-  return list
+  return { yours: groupItems(yours), others: othersList }
 }
 
 // ── Local cache (stale-while-revalidate) ────────────────────
@@ -357,8 +376,8 @@ export function CommandCenter() {
   const [recommendations, setRecommendations] = useState<Recommendation[] | null>(null)
   const [problemsLoading, setProblemsLoading] = useState(false)
   const [recsLoading, setRecsLoading] = useState(false)
-  // Collapse toggles for the two lazy sections (mirrors collapsedSections for
-  // person sections). Default expanded; the user can fold them away once loaded.
+  // Collapse toggles for the two lazy sections (Problems / Recommendations).
+  // Default expanded; the user can fold them away once loaded.
   const [problemsCollapsed, setProblemsCollapsed] = useState(false)
   const [recsCollapsed, setRecsCollapsed] = useState(false)
   // Buffered result from a background run. Applied only when the user taps the
@@ -428,8 +447,6 @@ export function CommandCenter() {
   const COMPLETED_PREFIX = 'fam-completed-'
   const completedKey = familyId ? COMPLETED_PREFIX + familyId : null
   const [completedTitles, setCompletedTitles] = useState<Set<string>>(new Set())
-  // Person sections that the user has collapsed — stored by section key (person name or "Family").
-  const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set())
   // When a user dismisses something, offer to teach the assistant once.
   const [teachPrompt, setTeachPrompt] = useState<{ title: string; reason: string } | null>(null)
   // Optimistic assignment overrides keyed by item title, so the "for" / responsible
@@ -765,59 +782,56 @@ export function CommandCenter() {
 
       const baseBody = buildEngineBody(eventContext, 'fast')
 
-      // Partition the briefing's sections (each family member + "Family") into a
-      // bounded number of shards, then generate each shard concurrently. The full
-      // context (cached) goes to every shard, so the model still reasons over the
-      // whole family — each call just emits the items for its own sections. This
-      // collapses wall-time from "sum of all output" to "the slowest shard".
-      const sectionNames = [...members.map((m) => m.name), 'Family']
-      // Target 2 sections per shard (was 3) so each shard generates fewer items
-      // and the slowest shard completes faster. Cap at 6 concurrent shards to
-      // avoid overwhelming Anthropic's rate limits for large families.
-      const SHARD_TARGET = 2
-      const shardCount = Math.min(6, Math.max(1, Math.ceil(sectionNames.length / SHARD_TARGET)))
-      const shards: string[][] = Array.from({ length: shardCount }, () => [])
-      sectionNames.forEach((s, i) => shards[i % shardCount].push(s))
-      console.log(`[perf:engine] start members=${members.length} → ${shardCount} parallel shard(s)`)
+      // Two ownership-scoped calls replace the old per-person shards. Each call
+      // sees the full (cached) family context but emits only its tier:
+      //   • "self"   — what the signed-in user is responsible for + their own
+      //                events. The hero. Fired first; streams progressively.
+      //   • "others" — what everyone ELSE is handling, for visibility only.
+      // Routing by responsibility (not by who an item is about) means the split
+      // is meaningful instead of positional — no arbitrary person groupings, and
+      // empty people simply produce nothing rather than a wasted call.
+      const SELF_MAX = 8    // your plate is the hero — allow a fuller list
+      const OTHERS_MAX = 6  // others' plate is a compact visibility feed
+      console.log(`[perf:engine] start members=${members.length} → 2 plate calls (self, others)`)
 
-      // Progressive cards (cold start only): show each card the instant any shard
-      // finishes writing it. Dedup across shards by section+title.
+      // Progressive cards (cold start only): show each card the instant either
+      // call finishes writing it. Tag with the plate that produced it so the
+      // streaming preview and final merge can keep the two tiers apart.
       const progressive = !report
       if (progressive) setStreamingItems([])
       const seenStream = new Set<string>()
       let sid = 0
-      const onStreamItem = (it: AttentionItem) => {
+      const onStreamItem = (plate: 'self' | 'others') => (it: AttentionItem) => {
         if (!progressive) return
         const k = `${it.section ?? ''}|${it.title ?? ''}`
         if (seenStream.has(k)) return
         seenStream.add(k)
-        setStreamingItems((prev) => [...prev, { ...it, id: `sid-${sid++}` }])
+        setStreamingItems((prev) => [...prev, { ...it, plate, id: `sid-${sid++}` }])
       }
 
-      // Cache-warming: fire shard 0 first; the moment its first token arrives the
-      // shared prompt cache is written, so the remaining shards (fired next) read
-      // it at ~1/10th cost instead of every shard racing to write a cold cache.
+      // Cache-warming: fire the "self" call first; the moment its first token
+      // arrives the shared prompt cache is written, so the "others" call reads it
+      // at ~1/10th cost instead of both racing to write a cold cache.
       let fanout!: () => void
       const warm = new Promise<void>((resolve) => { fanout = resolve })
-      const shard0 = streamEngine(
-        { ...baseBody, scope: { kind: 'items', sections: shards[0], greeting: false, maxItems: shards[0].length + 1 } },
+      const selfCall = streamEngine(
+        { ...baseBody, scope: { kind: 'plate', owner: 'self', maxItems: SELF_MAX } },
         {
           signal: controller.signal,
           onFirstToken: () => { fanout() },
-          onItem: onStreamItem,
+          onItem: onStreamItem('self'),
         },
       )
-      // If shard 0 settles without ever emitting a token, release the gate anyway.
-      shard0.then(() => fanout(), () => fanout())
+      // If the self call settles without ever emitting a token, release the gate.
+      selfCall.then(() => fanout(), () => fanout())
       await warm
 
-      const restPromises = shards.slice(1).map((secs) =>
-        streamEngine(
-          { ...baseBody, scope: { kind: 'items', sections: secs, greeting: false, maxItems: secs.length + 1 } },
-          { signal: controller.signal, onItem: onStreamItem },
-        ),
+      const othersCall = streamEngine(
+        { ...baseBody, scope: { kind: 'plate', owner: 'others', maxItems: OTHERS_MAX } },
+        { signal: controller.signal, onItem: onStreamItem('others') },
       )
-      const settled = await Promise.allSettled([shard0, ...restPromises])
+      // settled[0] = self, settled[1] = others — order matters for plate tagging.
+      const settled = await Promise.allSettled([selfCall, othersCall])
 
       // A background abort (iOS) cancels everything mid-flight — bail quietly so
       // the visibilitychange handler can retry without surfacing an error.
@@ -833,28 +847,37 @@ export function CommandCenter() {
         return
       }
 
-      // Partial run: some shards were killed (iOS background abort) before finishing.
-      // Show the items we have, but don't record this as a successful completed run —
-      // leave lastRunSig stale so the next visibilitychange trigger retries the full
-      // briefing rather than skipping it as "already up to date."
+      // Partial run: one of the two calls was killed (iOS background abort) before
+      // finishing. Show what we have, but don't record this as a completed run —
+      // leave lastRunSig stale so the next visibilitychange trigger retries rather
+      // than skipping it as "already up to date."
       const isPartialRun = oks.length < settled.length
 
-      // Merge items from every successful shard, dedup, re-key, sort by priority.
+      // Tag each call's items with its plate ('self' from settled[0], 'others'
+      // from settled[1]) — that tag is the authoritative ownership signal, since
+      // each call was told to emit only its own tier. Dedup by section+title,
+      // preferring the self tier when the model accidentally returns an item in
+      // both (your plate wins — you'd rather see it as yours than as FYI).
+      const tagged: AttentionItem[] = []
+      const plateOf: ('self' | 'others')[] = ['self', 'others']
+      settled.forEach((s, i) => {
+        if (s.status !== 'fulfilled') return
+        for (const it of (s.value.items ?? [])) tagged.push({ ...it, plate: plateOf[i] })
+      })
       const merged: AttentionItem[] = []
       const seen = new Set<string>()
-      for (const r of oks) {
-        for (const it of (r.value.items ?? [])) {
-          const k = `${it.section ?? ''}|${it.title ?? ''}`
-          if (seen.has(k)) continue
-          seen.add(k)
-          merged.push(it)
-        }
+      for (const it of tagged) {
+        const k = `${it.section ?? ''}|${it.title ?? ''}`
+        if (seen.has(k)) continue
+        seen.add(k)
+        merged.push(it)
       }
       merged.sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0))
       const items = merged.map((it, i) => ({ ...it, id: `att-${i}` }))
 
       const total = Math.round(performance.now() - engineStart)
-      console.log(`[perf:engine] DONE total=${total}ms | shards_ok=${oks.length}/${settled.length} | items=${items.length}`)
+      const selfCount = items.filter((i) => i.plate === 'self').length
+      console.log(`[perf:engine] DONE total=${total}ms | calls_ok=${oks.length}/${settled.length} | items=${items.length} (self=${selfCount} others=${items.length - selfCount})`)
 
       // Problems + recommendations are no longer part of this payload — they load
       // lazily via their own on-demand requests. Keep empty arrays so cached
@@ -1577,8 +1600,9 @@ export function CommandCenter() {
     )
   }
 
-  // Render the Family section with a "Needs Attention" / "Logistics" split when both kinds exist.
-  function renderFamilySectionContent(groups: ItemGroup[], color: string) {
+  // Render a plate's groups with a "Needs Attention" (action) / "Logistics"
+  // (awareness) split when both kinds exist, each internally bucketed by time.
+  function renderPlateContent(groups: ItemGroup[], color: string) {
     const actionGroups = groups.filter((g) => g.items.some((i) => i.kind === 'action'))
     const logisticsGroups = groups.filter((g) => g.items.every((i) => i.kind !== 'action'))
     const hasBothKinds = actionGroups.length > 0 && logisticsGroups.length > 0
@@ -1626,12 +1650,19 @@ export function CommandCenter() {
     )
   }
 
-  // Visible items partitioned into person-first sections, each section internally grouped by groupKey.
-  const sections = useMemo(() => {
+  // Visible items split into two ownership tiers: your plate (what you handle)
+  // and others' plates (what everyone else is handling, for visibility).
+  const plates = useMemo(() => {
     const visible = (report?.items ?? []).filter((i) => showInList(i.title))
-    return buildSections(visible, members, user?.email)
+    return buildPlates(visible, members, user?.email)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [report?.items, dismissedTitles, completedTitles, members, user?.email])
+
+  const selfMember = useMemo(
+    () => members.find((m) => m.email?.toLowerCase() === user?.email?.toLowerCase()) ?? null,
+    [members, user?.email],
+  )
+  const selfColor = selfMember?.colorHex ?? '#3B82F6'
 
   const busy = loading || refreshing
 
@@ -1795,71 +1826,64 @@ export function CommandCenter() {
         </div>
       )}
 
-      {/* PERSON SECTIONS — hidden while streaming is active (loading=true). */}
-      {!loading && report && sections.length > 0 && (
-        <div className="space-y-6">
-          {sections.map((section) => {
-            const collapsed = collapsedSections.has(section.key)
-            const color = section.member?.colorHex ?? '#64748B'
-            const totalItems = section.groups.reduce((n, g) => n + g.items.length, 0)
-
-            return (
-              <section key={section.key}>
-                {/* Section header — tap to collapse/expand */}
-                <button
-                  onClick={() =>
-                    setCollapsedSections((prev) => {
-                      const next = new Set(prev)
-                      if (next.has(section.key)) next.delete(section.key)
-                      else next.add(section.key)
-                      return next
-                    })
-                  }
-                  className="w-full flex items-center gap-3 mb-3"
+      {/* PLATES — hidden while streaming is active (loading=true). Two tiers:
+          YOUR PLATE (what you handle — the hero) and OTHERS' PLATES (what
+          everyone else is handling, for visibility). */}
+      {!loading && report && (plates.yours.length > 0 || plates.others.length > 0) && (
+        <div className="space-y-8">
+          {/* YOUR PLATE */}
+          {plates.yours.length > 0 && (
+            <section>
+              <div className="flex items-center gap-2.5 mb-4">
+                <div
+                  className="w-8 h-8 rounded-xl flex items-center justify-center shrink-0"
+                  style={{ background: `${selfColor}20` }}
                 >
-                  <div
-                    className="w-8 h-8 rounded-xl flex items-center justify-center text-base shrink-0"
-                    style={{ background: `${color}20` }}
-                  >
-                    {section.member?.emoji ?? '👨‍👩‍👧'}
-                  </div>
-                  <h2 className="flex-1 text-base font-bold text-slate-900 text-left">{section.key}</h2>
-                  <span className="text-[11px] font-medium text-slate-400 shrink-0 mr-0.5">{totalItems}</span>
-                  <ChevronDown
-                    size={15}
-                    className="text-slate-400 shrink-0 transition-transform duration-200"
-                    style={{ transform: collapsed ? 'rotate(-90deg)' : 'rotate(0deg)' }}
-                  />
-                </button>
+                  {selfMember?.emoji ?? '🫵'}
+                </div>
+                <h2 className="text-lg font-bold text-slate-900">Your plate</h2>
+              </div>
+              <div className="space-y-4">
+                {renderPlateContent(plates.yours, selfColor)}
+              </div>
+            </section>
+          )}
 
-                {!collapsed && (
-                  <div className="space-y-4">
-                    {section.key === 'Family'
-                      ? renderFamilySectionContent(section.groups, color)
-                      : BUCKET_ORDER.map((bucket) => {
-                          const groups = section.groups.filter((g) => g.bucket === bucket)
-                          if (groups.length === 0) return null
-                          const meta = BUCKET_META[bucket]
-                          return (
-                            <div key={bucket}>
-                              <div className="flex items-center gap-2 mb-2">
-                                <span className="w-2 h-2 rounded-full" style={{ background: meta.color }} />
-                                <span className="text-xs font-semibold uppercase tracking-wider" style={{ color: meta.color }}>
-                                  {meta.label}
-                                </span>
-                              </div>
-                              <div className="space-y-2 stagger-children">
-                                {groups.map((group) => renderGroup(group, color))}
-                              </div>
-                            </div>
-                          )
-                        })
-                    }
-                  </div>
-                )}
-              </section>
-            )
-          })}
+          {/* OTHERS' PLATES — compact visibility feed, grouped by owner. */}
+          {plates.others.length > 0 && (
+            <section>
+              <div className="flex items-baseline gap-2 mb-4">
+                <h2 className="text-base font-bold text-slate-500">Others’ plates</h2>
+                <span className="text-[11px] font-medium text-slate-400">for visibility</span>
+              </div>
+              <div className="space-y-5">
+                {plates.others.map((owner) => {
+                  const color = owner.member?.colorHex ?? '#94A3B8'
+                  return (
+                    <div key={owner.name}>
+                      <div className="flex items-center gap-2 mb-2">
+                        <span
+                          className="w-5 h-5 rounded-lg flex items-center justify-center text-[11px] shrink-0"
+                          style={{ background: `${color}20` }}
+                        >
+                          {owner.member?.emoji ?? '•'}
+                        </span>
+                        <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+                          {owner.name}
+                        </span>
+                      </div>
+                      <div className="space-y-2 stagger-children pl-1">
+                        {owner.groups
+                          .slice()
+                          .sort((a, b) => BUCKET_PRIORITY[a.bucket] - BUCKET_PRIORITY[b.bucket])
+                          .map((group) => renderGroup(group, color))}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </section>
+          )}
         </div>
       )}
 

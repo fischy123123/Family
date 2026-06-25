@@ -2,7 +2,7 @@ import { getAdminDb } from './firebaseAdmin'
 
 export interface AttentionDiagRun {
   ts: number          // epoch ms
-  scope: string       // e.g. "items[Eric,Liam,Family]" | "problems" | "recommendations"
+  scope: string       // e.g. "plate[self]" | "plate[others]" | "problems" | "recommendations"
   email: string       // currentUserEmail from context (identifies the family)
   // context sizes sent to the model
   events: number
@@ -26,6 +26,12 @@ export interface AttentionDiagRun {
   items: number
   problems: number
   recs: number
+  // routing-quality signals (key to the self/others plate split):
+  // assigned = emitted items carrying an assigneeEmail (responsibility set);
+  // actions  = items with kind 'action'. Lets us see straight from the logs
+  // whether the model is routing by responsibility and emphasising actions.
+  assigned: number
+  actions: number
   parse_ok: boolean
   stop_reason: string
   error?: string
