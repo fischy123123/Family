@@ -32,7 +32,7 @@ export interface AttentionDiagRun {
 }
 
 const DOC = '_diagnostics/attention'
-const MAX_RUNS = 30
+const MAX_RUNS = 50
 
 // Fire-and-forget — never awaited so it doesn't add latency to streaming responses.
 export function writeDiagnostic(run: AttentionDiagRun): void {

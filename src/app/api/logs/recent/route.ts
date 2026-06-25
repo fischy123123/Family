@@ -17,7 +17,7 @@ export async function GET(req: NextRequest) {
     const snap = await db.doc('_diagnostics/attention').get()
     const runs: AttentionDiagRun[] = snap.exists ? (snap.data()?.runs ?? []) : []
     // Return newest first, limit to last 20
-    const recent = [...runs].reverse().slice(0, 20)
+    const recent = [...runs].reverse().slice(0, 50)
     return NextResponse.json({ runs: recent, count: recent.length })
   } catch (e) {
     return NextResponse.json(
