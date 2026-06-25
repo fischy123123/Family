@@ -14,7 +14,7 @@ const MODEL = ATTENTION_MODEL
 // client fan out concurrent requests and collapse the briefing's wall-time from
 // the sum of all output to the length of the single slowest slice.
 type EngineScope =
-  | { kind: 'items'; sections?: string[]; greeting?: boolean }
+  | { kind: 'items'; sections?: string[]; greeting?: boolean; maxItems?: number }
   | { kind: 'problems' }
   | { kind: 'recommendations' }
 
@@ -39,7 +39,10 @@ CRITICAL — NET-NEW ONLY: The family already SEES their calendar, their open ta
     : ''
   const greetingClause = scope.greeting ? `"greeting" (following the greeting rules) and ` : ''
   const shape = scope.greeting ? `{"greeting":"...","items":[ ... ]}` : `{"items":[ ... ]}`
-  return `\n\nSCOPE OVERRIDE (highest priority — overrides the output shape above): Output ONLY ${greetingClause}the "items" array.${sectionsClause} Your entire response must be a JSON object of exactly this shape: ${shape}. Do NOT include "problems" or "recommendations".`
+  const maxItemsClause = scope.maxItems
+    ? ` Return at most ${scope.maxItems} items total across all sections in this request — prioritise ruthlessly and cut anything below that limit.`
+    : ''
+  return `\n\nSCOPE OVERRIDE (highest priority — overrides the output shape above): Output ONLY ${greetingClause}the "items" array.${sectionsClause}${maxItemsClause} Your entire response must be a JSON object of exactly this shape: ${shape}. Do NOT include "problems" or "recommendations". BREVITY IS CRITICAL: keep each item's JSON compact — short title, short reason, omit detail unless essential, omit optional fields when they add no value.`
 }
 
 // Incrementally pull COMPLETE item objects out of the still-streaming JSON so we
@@ -149,6 +152,19 @@ export async function POST(request: NextRequest) {
           ? `items[${(scope.sections ?? []).join(',') || 'all'}${scope.greeting ? '+greeting' : ''}]`
           : scope.kind
         : 'full'
+      // Per-scope token budget. Items shards need far fewer tokens than a full run
+      // (they generate 3-5 compact items, not the entire report). Capping prevents
+      // runaway verbose responses (which caused 117s generation in one observed run)
+      // and signals to the model to be concise. Problems and recs are even smaller.
+      // For a full (unscoped) run, use the shared constant as-is.
+      const scopeMaxTokens = !scope
+        ? ATTENTION_MAX_TOKENS
+        : scope.kind === 'items'
+          ? 2000  // 3-5 items at ~100-150 tok each = 300-750 tok; 2000 is a safe ceiling
+          : scope.kind === 'problems'
+            ? 1200  // max 4 problems at ~200 tok each
+            : 800   // max 3 recommendations at ~150 tok each
+
       try {
         const aiStart = Date.now()
         let ttft = -1
@@ -161,7 +177,7 @@ export async function POST(request: NextRequest) {
         const ai = anthropic.messages.stream(
           {
             model: MODEL,
-            max_tokens: ATTENTION_MAX_TOKENS,
+            max_tokens: scopeMaxTokens,
             // System prompt: static → cache it (saves ~1800 tokens per cache hit).
             // 1-hour TTL (not the 5-min default): briefings run ~15 min apart per
             // the client throttle, and multiple family members load within the

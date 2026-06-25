@@ -754,8 +754,11 @@ export function CommandCenter() {
       // whole family — each call just emits the items for its own sections. This
       // collapses wall-time from "sum of all output" to "the slowest shard".
       const sectionNames = [...members.map((m) => m.name), 'Family']
-      const SHARD_TARGET = 3
-      const shardCount = Math.min(4, Math.max(1, Math.ceil(sectionNames.length / SHARD_TARGET)))
+      // Target 2 sections per shard (was 3) so each shard generates fewer items
+      // and the slowest shard completes faster. Cap at 6 concurrent shards to
+      // avoid overwhelming Anthropic's rate limits for large families.
+      const SHARD_TARGET = 2
+      const shardCount = Math.min(6, Math.max(1, Math.ceil(sectionNames.length / SHARD_TARGET)))
       const shards: string[][] = Array.from({ length: shardCount }, () => [])
       sectionNames.forEach((s, i) => shards[i % shardCount].push(s))
       console.log(`[perf:engine] start members=${members.length} → ${shardCount} parallel shard(s)`)
@@ -780,7 +783,7 @@ export function CommandCenter() {
       let fanout!: () => void
       const warm = new Promise<void>((resolve) => { fanout = resolve })
       const shard0 = streamEngine(
-        { ...baseBody, scope: { kind: 'items', sections: shards[0], greeting: false } },
+        { ...baseBody, scope: { kind: 'items', sections: shards[0], greeting: false, maxItems: shards[0].length + 2 } },
         {
           signal: controller.signal,
           onFirstToken: () => { fanout() },
@@ -793,7 +796,7 @@ export function CommandCenter() {
 
       const restPromises = shards.slice(1).map((secs) =>
         streamEngine(
-          { ...baseBody, scope: { kind: 'items', sections: secs, greeting: false } },
+          { ...baseBody, scope: { kind: 'items', sections: secs, greeting: false, maxItems: secs.length + 2 } },
           { signal: controller.signal, onItem: onStreamItem },
         ),
       )
