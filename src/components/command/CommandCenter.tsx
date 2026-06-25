@@ -791,7 +791,7 @@ export function CommandCenter() {
       // is meaningful instead of positional — no arbitrary person groupings, and
       // empty people simply produce nothing rather than a wasted call.
       const SELF_MAX = 8    // your plate is the hero — allow a fuller list
-      const OTHERS_MAX = 6  // others' plate is a compact visibility feed
+      const OTHERS_MAX = 4  // others' plate is a compact visibility feed — 4 keeps wall-time under 10s
       console.log(`[perf:engine] start members=${members.length} → 2 plate calls (self, others)`)
 
       // Progressive cards (cold start only): show each card the instant either

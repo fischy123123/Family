@@ -60,7 +60,7 @@ An item belongs here when the responsible person is SOMEONE OTHER than the signe
 - The other parent/adult is handling it (a pickup, an appointment they drive, a task assigned to them). Set "assigneeEmail" to that responsible person.
 - An older child manages it themselves (their own homework, audition video, practice, social plan).
 
-Each item must make the OWNER obvious via "assigneeEmail" (the responsible person) and "section"/"forEmails" (who it's about). Keep these compact and awareness-oriented — the user is scanning to confirm everyone is covered, not to act.
+Each item must make the OWNER obvious via "assigneeEmail" (the responsible person) and "section"/"forEmails" (who it's about). ULTRA-COMPACT — title ≤ 8 words, reason ≤ 10 words, NO optional fields unless truly essential. The user is scanning to confirm everyone is covered, not to act.
 
 Do NOT include anything the signed-in user must personally do or prepare — that is on the user's own plate, a separate request. Do NOT duplicate the user's own appointments here. If everyone else has nothing noteworthy, return {"items":[]}.${cap}${brevity}`
   }
@@ -197,7 +197,9 @@ export async function POST(request: NextRequest) {
         : scope.kind === 'items'
           ? 2000  // 3-5 items at ~100-150 tok each = 300-750 tok; 2000 is a safe ceiling
           : scope.kind === 'plate'
-            ? 2400  // self plate up to 8 items (~130 tok each ≈ 1040) + headroom; others' 6 fit easily
+            ? scope.owner === 'self'
+              ? 2400  // self plate: up to 8 items, some detail allowed (~130 tok/item × 8 ≈ 1040 + headroom)
+              : 1000  // others plate: ≤4 ultra-compact items at ~50 tok/item ≈ 200 + overhead; hard ceiling forces brevity
             : scope.kind === 'problems'
               ? 1200  // max 4 problems at ~200 tok each
               : 800   // max 3 recommendations at ~150 tok each
