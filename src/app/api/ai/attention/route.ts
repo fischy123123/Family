@@ -3,6 +3,7 @@ import Anthropic from '@anthropic-ai/sdk'
 import { buildFamilyContextParts, type FamilyContextInput } from '@/lib/familyContext'
 import { logUsage, estimateCost } from '@/lib/ai'
 import { ATTENTION_MODEL, ATTENTION_MAX_TOKENS, ATTENTION_SYSTEM_PROMPT } from '@/lib/attentionPrompt'
+import { writeDiagnostic } from '@/lib/diagnostics'
 
 const MODEL = ATTENTION_MODEL
 
@@ -100,11 +101,13 @@ export async function POST(request: NextRequest) {
   // dynamic time header (changes every run — not cached).
   const ctxStart = Date.now()
   const { timeHeader, dataBlock } = buildFamilyContextParts(ctx)
+  const ctxMs = Date.now() - ctxStart
+  const promptChars = (timeHeader + dataBlock).length
   console.log(
-    `[perf/attention] ctx_build=${Date.now() - ctxStart}ms` +
+    `[perf/attention] ctx_build=${ctxMs}ms` +
     ` events=${ctx.events?.length ?? 0} tasks=${ctx.tasks?.length ?? 0}` +
     ` members=${ctx.members?.length ?? 0} inbox=${ctx.inbox?.length ?? 0}` +
-    ` prompt_chars=${(timeHeader + dataBlock).length}`
+    ` prompt_chars=${promptChars}`
   )
 
   // Build suppression block from titles the user has explicitly dismissed.
@@ -140,6 +143,12 @@ export async function POST(request: NextRequest) {
         send({ t: 'open' })
       } catch { /* closed */ }
       console.log(`[perf/attention] pre_ai=${Date.now() - reqStart}ms — request parsed + context built, starting Anthropic call`)
+      // scopeLabel is also used in the catch block for error diagnostics.
+      const scopeLabel = scope
+        ? scope.kind === 'items'
+          ? `items[${(scope.sections ?? []).join(',') || 'all'}${scope.greeting ? '+greeting' : ''}]`
+          : scope.kind
+        : 'full'
       try {
         const aiStart = Date.now()
         let ttft = -1
@@ -193,11 +202,11 @@ export async function POST(request: NextRequest) {
           // it so the client can render that card immediately. The greeting comes
           // first in the JSON, so by the time items appear it has already streamed.
           rawSoFar += delta
-          const items = extractCompleteItems(rawSoFar)
-          for (let i = emittedItems; i < items.length; i++) {
-            send({ t: 'item', index: i, item: { id: `att-${i}`, ...items[i] } })
+          const streamedItems = extractCompleteItems(rawSoFar)
+          for (let i = emittedItems; i < streamedItems.length; i++) {
+            send({ t: 'item', index: i, item: { id: `att-${i}`, ...streamedItems[i] } })
           }
-          emittedItems = items.length
+          emittedItems = streamedItems.length
         })
 
         const finalMsg = await ai.finalMessage()
@@ -229,11 +238,6 @@ export async function POST(request: NextRequest) {
           ` stop=${finalMsg.stop_reason}`
         )
         // Final summary line — kept last so it's the row preview in Vercel logs.
-        const scopeLabel = scope
-          ? scope.kind === 'items'
-            ? `items[${(scope.sections ?? []).join(',') || 'all'}${scope.greeting ? '+greeting' : ''}]`
-            : scope.kind
-          : 'full'
         console.log(
           `[perf/attention] SUMMARY scope=${scopeLabel} wall=${aiDone - reqStart}ms ai=${totalAi}ms` +
           ` model=${MODEL} cache=${cacheStatus}` +
@@ -276,6 +280,21 @@ export async function POST(request: NextRequest) {
         const problems = (parsed.problems ?? []).map((p, i) => ({ id: `prob-${i}`, ...p }))
         const recommendations = (parsed.recommendations ?? []).map((r, i) => ({ id: `rec-${i}`, ...r }))
 
+        // Persist structured diagnostics to Firestore — fire-and-forget.
+        writeDiagnostic({
+          ts: aiDone, scope: scopeLabel,
+          email: ctx.currentUserEmail ?? 'unknown',
+          events: ctx.events?.length ?? 0, tasks: ctx.tasks?.length ?? 0,
+          members: ctx.members?.length ?? 0, inbox: ctx.inbox?.length ?? 0,
+          prompt_chars: promptChars, ctx_ms: ctxMs,
+          ttft_ms: ttft, ai_ms: totalAi, wall_ms: aiDone - reqStart,
+          in_tokens: inTokens, out_tokens: outTokens,
+          cache_read: cacheRead, cache_write: cacheWrite,
+          cache_status: cacheStatus, tok_per_sec: tokPerSec,
+          items: items.length, problems: problems.length, recs: recommendations.length,
+          parse_ok: parseOk, stop_reason: finalMsg.stop_reason ?? 'unknown',
+        })
+
         // ── PERF/OUTPUT: what the model produced and how long parsing took ───
         console.log(
           `[perf/attention] parse=${Date.now() - parseStart}ms parse_ok=${parseOk}` +
@@ -301,7 +320,20 @@ export async function POST(request: NextRequest) {
           try { controller.close() } catch { /* noop */ }
           return
         }
-        send({ t: 'error', error: e instanceof Error ? e.message : 'Attention engine failed' })
+        const errMsg = e instanceof Error ? e.message : 'Attention engine failed'
+        writeDiagnostic({
+          ts: Date.now(), scope: scopeLabel ?? 'unknown',
+          email: ctx.currentUserEmail ?? 'unknown',
+          events: ctx.events?.length ?? 0, tasks: ctx.tasks?.length ?? 0,
+          members: ctx.members?.length ?? 0, inbox: ctx.inbox?.length ?? 0,
+          prompt_chars: promptChars, ctx_ms: ctxMs,
+          ttft_ms: -1, ai_ms: -1, wall_ms: Date.now() - reqStart,
+          in_tokens: 0, out_tokens: 0, cache_read: 0, cache_write: 0,
+          cache_status: 'MISS', tok_per_sec: 0,
+          items: 0, problems: 0, recs: 0, parse_ok: false,
+          stop_reason: 'error', error: errMsg,
+        })
+        send({ t: 'error', error: errMsg })
         try { controller.close() } catch { /* noop */ }
       }
     },
