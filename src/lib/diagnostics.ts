@@ -40,8 +40,6 @@ export function writeDiagnostic(run: AttentionDiagRun): void {
     try {
       const db = getAdminDb()
       const ref = db.doc(DOC)
-      // Read → append → write (capped at MAX_RUNS). Uses a transaction to be safe
-      // under concurrent shard writes.
       await db.runTransaction(async (tx) => {
         const snap = await tx.get(ref)
         const existing: AttentionDiagRun[] = snap.exists ? (snap.data()?.runs ?? []) : []
