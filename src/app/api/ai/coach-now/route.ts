@@ -1,0 +1,152 @@
+import { NextRequest, NextResponse } from 'next/server'
+import Anthropic from '@anthropic-ai/sdk'
+import { buildFamilyContextParts, type FamilyContextInput } from '@/lib/familyContext'
+import { logUsage } from '@/lib/ai'
+import {
+  MOMENT_COACH_MODEL, MOMENT_COACH_MAX_TOKENS, MOMENT_COACH_SYSTEM_PROMPT,
+} from '@/lib/momentCoachPrompt'
+import type {
+  PersonalProfile, MomentEnergy, MomentMood, MomentGuidance, MomentMove,
+} from '@/lib/types'
+
+const MODEL = MOMENT_COACH_MODEL
+
+// The Moment Coach engine. Takes the same family context as the attention engine
+// (so it sees the real calendar, tasks, and people) PLUS the signed-in person's
+// personal profile and their current energy/mood check-in, and returns ONE
+// in-the-moment move tuned to how they feel right now.
+type CoachNowInput = FamilyContextInput & {
+  personalProfile?: PersonalProfile | null
+  energy?: MomentEnergy
+  mood?: MomentMood
+  // Titles of tasks the user has already completed today — momentum to build on.
+  completedToday?: string[]
+}
+
+// Render the "ABOUT ME" block from the user's personal profile. This is the
+// highest-priority personalization signal for the coach — kept compact.
+function buildAboutMe(p?: PersonalProfile | null): string {
+  if (!p) return ''
+  const lines: string[] = []
+  if (p.goals?.length) lines.push(`What I'm working toward: ${p.goals.join('; ')}`)
+  if (p.biggestStruggle) lines.push(`What most gets in my way: ${p.biggestStruggle}`)
+  if (p.hasAdhd) lines.push(`I have ADHD — task initiation is hard; tiny first steps and momentum help me a lot.`)
+  if (p.startStrategies?.length) lines.push(`Things that actually help me start: ${p.startStrategies.join('; ')}`)
+  if (p.energizers?.length) lines.push(`What energizes me: ${p.energizers.join('; ')}`)
+  if (p.drainers?.length) lines.push(`What drains me: ${p.drainers.join('; ')}`)
+  if (p.avoiding?.length) lines.push(`Things I keep putting off: ${p.avoiding.join('; ')}`)
+  if (p.freeform) lines.push(`Also: ${p.freeform}`)
+  if (!lines.length) return ''
+  return `\n\nABOUT ME (the signed-in person — highest-priority personalization. Tune every suggestion to this person; use a start-strategy they told you works):\n${lines.join('\n')}`
+}
+
+// Render the current-state check-in. This is decisive for the coach — it sizes
+// and shapes the move to how the person actually feels in this moment.
+function buildCheckIn(energy?: MomentEnergy, mood?: MomentMood, completedToday?: string[]): string {
+  const parts: string[] = []
+  if (energy) parts.push(`Energy right now: ${energy}`)
+  if (mood) parts.push(`Mood right now: ${mood}`)
+  const done = (completedToday ?? []).filter(Boolean)
+  if (done.length) {
+    parts.push(`Already done today (momentum to build on / celebrate): ${done.slice(0, 8).join('; ')}`)
+  } else {
+    parts.push(`Nothing checked off yet today.`)
+  }
+  if (!parts.length) return ''
+  return `\n\nRIGHT-NOW CHECK-IN (decisive — match the move to this state; a drained person should not be handed the hardest task):\n${parts.join('\n')}`
+}
+
+// Coerce one move object from the model into a typed MomentMove, dropping junk.
+function coerceMove(raw: unknown): MomentMove | undefined {
+  if (!raw || typeof raw !== 'object') return undefined
+  const r = raw as Record<string, unknown>
+  const title = typeof r.title === 'string' ? r.title.trim() : ''
+  if (!title) return undefined
+  const kinds = ['family', 'personal', 'rest', 'admin', 'connection']
+  const kind = typeof r.kind === 'string' && kinds.includes(r.kind) ? (r.kind as MomentMove['kind']) : undefined
+  const minutes = typeof r.minutes === 'number' && r.minutes > 0 && r.minutes < 600 ? Math.round(r.minutes) : undefined
+  return {
+    title,
+    why: typeof r.why === 'string' ? r.why.trim() : '',
+    firstStep: typeof r.firstStep === 'string' ? r.firstStep.trim() : '',
+    minutes,
+    kind,
+  }
+}
+
+export async function POST(request: NextRequest) {
+  if (!process.env.ANTHROPIC_API_KEY) {
+    return NextResponse.json({ error: 'ANTHROPIC_API_KEY not configured' }, { status: 500 })
+  }
+
+  const reqStart = Date.now()
+  let ctx: CoachNowInput
+  try {
+    ctx = (await request.json()) as CoachNowInput
+  } catch {
+    return NextResponse.json({ error: 'Invalid request body' }, { status: 400 })
+  }
+
+  // The static, cacheable family context — identical to what the attention
+  // engine builds, so this call shares the family-context cache entry.
+  const { timeHeader, dataBlock } = buildFamilyContextParts(ctx)
+  const aboutMe = buildAboutMe(ctx.personalProfile)
+  const checkIn = buildCheckIn(ctx.energy, ctx.mood, ctx.completedToday)
+
+  const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
+
+  try {
+    const msg = await anthropic.messages.create(
+      {
+        model: MODEL,
+        max_tokens: MOMENT_COACH_MAX_TOKENS,
+        system: [
+          { type: 'text', text: MOMENT_COACH_SYSTEM_PROMPT, cache_control: { type: 'ephemeral', ttl: '1h' } },
+        ],
+        messages: [{
+          role: 'user',
+          content: [
+            // Reuse the same cached family data block as the attention engine.
+            { type: 'text', text: `FAMILY CONTEXT:\n\n${dataBlock}`, cache_control: { type: 'ephemeral', ttl: '1h' } },
+            // Fresh tail: time anchor + this person + how they feel right now.
+            { type: 'text', text: timeHeader + aboutMe + checkIn },
+          ],
+        }],
+      },
+      { signal: request.signal },
+    )
+
+    logUsage('coach-now', MODEL, msg.usage)
+
+    const text = msg.content[0]?.type === 'text' ? msg.content[0].text : '{}'
+    const match = text.match(/\{[\s\S]*\}/)
+    let parsed: Record<string, unknown> = {}
+    try { if (match) parsed = JSON.parse(match[0]) } catch { /* fall through to error below */ }
+
+    const primary = coerceMove(parsed.primary)
+    if (!primary) {
+      return NextResponse.json({ error: 'Coach could not form a suggestion — tap to try again.' }, { status: 502 })
+    }
+
+    const guidance: MomentGuidance = {
+      pep: typeof parsed.pep === 'string' ? parsed.pep.trim() : '',
+      primary,
+      fallback: coerceMove(parsed.fallback),
+      bigPicture: typeof parsed.bigPicture === 'string' && parsed.bigPicture.trim() ? parsed.bigPicture.trim() : undefined,
+      generatedAt: new Date().toISOString(),
+      energy: ctx.energy,
+      mood: ctx.mood,
+    }
+
+    console.log(`[coach-now] wall=${Date.now() - reqStart}ms energy=${ctx.energy ?? '-'} mood=${ctx.mood ?? '-'} kind=${primary.kind ?? '-'} stop=${msg.stop_reason}`)
+
+    return NextResponse.json(guidance)
+  } catch (e: unknown) {
+    if (e instanceof Error && e.name === 'AbortError') {
+      return NextResponse.json({ error: 'aborted' }, { status: 499 })
+    }
+    const errMsg = e instanceof Error ? e.message : 'Moment Coach failed'
+    console.error('[coach-now] error', errMsg)
+    return NextResponse.json({ error: errMsg }, { status: 500 })
+  }
+}

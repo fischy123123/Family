@@ -168,6 +168,62 @@ export interface Reflection {
   createdAt: string
 }
 
+// ============================================================
+// MOMENT COACH — in-the-moment, ADHD-aware personal guidance
+// ============================================================
+// The attention engine answers "what's on the family's plate." The coaching
+// layer answers "are we becoming who we want to be." The Moment Coach answers a
+// THIRD, more immediate question, for the signed-in person alone: "given how I
+// feel right this second, what is the single best thing for me to do NOW — and
+// how do I start it?" It's built for executive-function support: one move, a
+// trivially small first step, a gentler fallback, and a warm, non-shaming voice.
+
+// The signed-in user's personal "about me" model — distinct from the household
+// FamilyProfile. Powers the Moment Coach so its guidance is tuned to this
+// specific person: what they're working toward, what trips them up, and what
+// actually helps them start. A few fields are captured up front; the rest
+// accrete over time from use and feedback. One document per person.
+export interface PersonalProfile {
+  id: string                    // sanitized signed-in email — one per person
+  email: string
+  // Captured up front (the few essentials):
+  goals?: string[]              // what they're working toward / want more of
+  biggestStruggle?: string      // the thing that most gets in their way
+  // Refined over time (all optional):
+  energizers?: string[]         // activities/states that give them energy
+  drainers?: string[]           // what depletes them
+  startStrategies?: string[]    // tactics that actually help THEM begin a task
+  avoiding?: string[]           // things they keep meaning to do but put off
+  freeform?: string             // anything else they want the coach to know
+  hasAdhd?: boolean             // tunes the coach toward initiation support
+  updatedAt?: string
+}
+
+// The 2-tap check-in that tailors guidance to the user's current state.
+export type MomentEnergy = 'wired' | 'okay' | 'drained'
+export type MomentMood = 'good' | 'meh' | 'low' | 'anxious'
+
+// One concrete in-the-moment recommendation.
+export interface MomentMove {
+  title: string                 // the one thing to do now (short, concrete)
+  why: string                   // why this, why now — ties to their goals/state
+  firstStep: string             // a trivially small way to begin (lowers activation energy)
+  minutes?: number              // rough size, so it feels bounded not infinite
+  kind?: 'family' | 'personal' | 'rest' | 'admin' | 'connection'
+}
+
+// The Moment Coach's response: meet-them-where-they-are opener, the single best
+// move, an easier fallback, and an optional tie to the bigger picture.
+export interface MomentGuidance {
+  pep: string                   // warm, validating opener — names how they feel
+  primary: MomentMove           // the single best move right now
+  fallback?: MomentMove         // "if that feels like too much, do this instead"
+  bigPicture?: string           // optional one-liner connecting now to what matters
+  generatedAt: string
+  energy?: MomentEnergy
+  mood?: MomentMood
+}
+
 export type GroceryCategory = 'produce' | 'dairy' | 'meat' | 'bakery' | 'pantry' | 'frozen' | 'household' | 'other'
 
 export interface GroceryItem {
@@ -614,6 +670,27 @@ export const LIFE_AREAS: { area: LifeArea; label: string; emoji: string; color: 
   { area: 'work-life',     label: 'Work–Life',     emoji: '⚖️', color: '#3B82F6' },
   { area: 'fun',           label: 'Fun',           emoji: '🎉', color: '#EF4444' },
 ]
+
+export const MOMENT_ENERGY_META: Record<MomentEnergy, { label: string; emoji: string; color: string }> = {
+  wired:   { label: 'Wired',   emoji: '⚡️', color: '#F59E0B' },
+  okay:    { label: 'Okay',    emoji: '🙂', color: '#22C55E' },
+  drained: { label: 'Drained', emoji: '🥱', color: '#6366F1' },
+}
+
+export const MOMENT_MOOD_META: Record<MomentMood, { label: string; emoji: string; color: string }> = {
+  good:    { label: 'Good',    emoji: '😊', color: '#22C55E' },
+  meh:     { label: 'Meh',     emoji: '😐', color: '#94A3B8' },
+  low:     { label: 'Low',     emoji: '😔', color: '#6366F1' },
+  anxious: { label: 'Anxious', emoji: '😰', color: '#EF4444' },
+}
+
+export const MOMENT_KIND_META: Record<NonNullable<MomentMove['kind']>, { label: string; emoji: string; color: string }> = {
+  family:     { label: 'Family',     emoji: '👨‍👩‍👧', color: '#F59E0B' },
+  personal:   { label: 'You',        emoji: '🧘', color: '#6366F1' },
+  rest:       { label: 'Rest',       emoji: '☕️', color: '#14B8A6' },
+  admin:      { label: 'Admin',      emoji: '🗂️', color: '#3B82F6' },
+  connection: { label: 'Connection', emoji: '❤️', color: '#EC4899' },
+}
 
 export const INSIGHT_META: Record<InsightType, { label: string; color: string; emoji: string }> = {
   celebration: { label: 'Going well', color: '#22C55E', emoji: '✨' },

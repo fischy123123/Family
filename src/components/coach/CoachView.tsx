@@ -7,6 +7,7 @@ import {
   ChevronDown, ChevronUp, Wand2, Bot, Loader2,
 } from 'lucide-react'
 import { InsightCardWithThread } from './InsightCardWithThread'
+import { MomentCoach } from './MomentCoach'
 import { Markdown } from '@/components/ui/Markdown'
 import { useCoaching } from '@/hooks/useCoaching'
 import { useFirestore } from '@/hooks/useFirestore'
@@ -210,6 +211,16 @@ export function CoachView() {
 
   return (
     <div className="max-w-2xl mx-auto px-4 sm:px-6 py-6 space-y-6">
+      {/* In-the-moment personal coach — the hero. Answers "what do I do right
+          now," tuned to how you feel. The family-reflection layer sits below. */}
+      <MomentCoach />
+
+      <div className="flex items-center gap-3 pt-2">
+        <div className="h-px flex-1 bg-slate-200" />
+        <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">The bigger picture</span>
+        <div className="h-px flex-1 bg-slate-200" />
+      </div>
+
       {/* Header */}
       <div className="flex items-start justify-between">
         <div className="flex items-center gap-2.5">
