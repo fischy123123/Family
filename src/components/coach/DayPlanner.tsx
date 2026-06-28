@@ -104,16 +104,16 @@ export function DayPlanner() {
     setReply(r)
   }
 
-  // On-the-fly feedback on a locked-in plan. For today, this re-plans ONLY the
-  // remaining (not-done) items around the current time — completed items are
-  // kept exactly as they are. For a future committed day (nothing done yet,
-  // no "now"), it's a normal refine of the whole plan.
+  // On-the-fly feedback on a locked-in plan — a SURGICAL edit. It changes only
+  // what you ask, leaves every other item (and its time) alone, never moves
+  // anchors, and never touches what's already done. For a bigger reset, the
+  // separate "Re-plan the rest" button rebuilds the remaining day.
   async function sendFeedback() {
     const msg = feedback.trim()
     if (!msg || working) return
     setFeedback('')
     setReply(null)
-    const r = isToday ? await replanRest(msg) : await refinePlan(msg)
+    const r = await refinePlan(msg)
     setReply(r)
   }
 
@@ -464,7 +464,7 @@ export function DayPlanner() {
                 value={feedback}
                 onChange={(e) => setFeedback(e.target.value)}
                 onKeyDown={(e) => { if (e.key === 'Enter') sendFeedback() }}
-                placeholder={isToday ? 'Something change? Tell me — I’ll redo the rest…' : 'Want to adjust this plan? Tell me…'}
+                placeholder="Tweak it — “add: put clothes away”, “move the gym later”…"
                 disabled={working}
                 className="flex-1 text-sm rounded-lg px-3 py-2 border border-slate-200 focus:outline-none focus:border-indigo-300 bg-slate-50"
               />

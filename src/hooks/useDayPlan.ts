@@ -220,14 +220,21 @@ export function useDayPlan() {
     } finally { setWorking(false) }
   }, [baseBody, savePlan])
 
-  // Refine the current draft from a chat instruction. Returns the AI's reply.
+  // Refine the current plan from a chat/feedback instruction — a surgical edit.
+  // Completed items are preserved verbatim (the model never gets to rewrite what
+  // you've already done); the model's output supplies the not-done items.
   const refinePlan = useCallback(async (message: string): Promise<string | null> => {
     if (!todayPlan) return null
     setWorking(true); setError(null)
     try {
       const data = await callEngine({ ...baseBody(), mode: 'refine', currentItems: todayPlan.items, message, energy: todayPlan.energy, structure: todayPlan.structure })
       if (!data) return null
-      const items = sortByTime(data.items.map((it) => ({ ...it, id: generateId() })))
+      const done = todayPlan.items.filter((i) => i.done)
+      const doneTitles = new Set(done.map((i) => i.title.toLowerCase()))
+      const fresh = data.items
+        .filter((i) => !doneTitles.has(i.title.toLowerCase()))
+        .map((it) => ({ ...it, id: generateId() }))
+      const items = sortByTime([...done, ...fresh])
       await savePlan(items, { headline: data.headline || todayPlan.headline })
       return data.reply ?? 'Updated.'
     } catch (e) {
