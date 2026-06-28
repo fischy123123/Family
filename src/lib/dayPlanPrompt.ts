@@ -83,7 +83,7 @@ OUTPUT — respond with ONLY a JSON object of exactly this shape, no markdown, n
       "title": "short, concrete",
       "why": "1 short clause — why it's on today (omit for obvious anchors)",
       "kind": "anchor | move",
-      "startTime": "ISO datetime. FLEXIBLE mode: anchors only, omit for moves. STRUCTURED mode: set on EVERY item including moves.",
+      "startTime": "LOCAL wall-clock time for the target day, ISO form WITHOUT any timezone suffix or 'Z' (e.g. 2025-06-28T15:15:00 means 3:15 PM that day). FLEXIBLE mode: anchors only, omit for moves. STRUCTURED mode: set on EVERY item including moves.",
       "minutes": 30,
       "category": "family | personal | rest | admin | connection",
       "firstStep": "a trivially small way to begin — moves only; omit for anchors",

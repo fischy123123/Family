@@ -154,6 +154,20 @@ export function useDayPlan() {
       })),
   ], [tasks, reminders])
 
+  // Anchors are calendar events — their time is owned by the calendar, NOT the
+  // model. The model regularly re-emits an anchor's startTime wrong (re-timing
+  // it or mangling the timezone), so after every engine response we force each
+  // anchor's startTime back to its real CalendarEvent.start, matched by id (or
+  // title as a fallback). This makes calendar times authoritative and immovable.
+  const fixAnchorTimes = useCallback((list: DayPlanItem[]): DayPlanItem[] => {
+    return list.map((it) => {
+      if (it.kind !== 'anchor') return it
+      const ev = (it.sourceId ? events.find((e) => e.id === it.sourceId) : undefined)
+        ?? events.find((e) => e.title.trim().toLowerCase() === it.title.trim().toLowerCase())
+      return ev?.start ? { ...it, startTime: ev.start } : it
+    })
+  }, [events])
+
   // Shared context payload for the planning engine.
   const baseBody = useCallback(() => ({
     members, events, tasks: allTasks.filter((t) => !t.isCompleted), chores, plans, lists,
@@ -213,12 +227,12 @@ export function useDayPlan() {
     try {
       const data = await callEngine({ ...baseBody(), mode: 'draft', energy, intention: intention?.trim() || undefined, structure })
       if (!data) return
-      const items = sortByTime(data.items.map((it) => ({ ...it, id: generateId() })))
+      const items = sortByTime(fixAnchorTimes(data.items.map((it) => ({ ...it, id: generateId() }))))
       await savePlan(items, { status: 'draft', headline: data.headline, energy, intention: intention?.trim() || undefined, structure })
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Planner failed')
     } finally { setWorking(false) }
-  }, [baseBody, savePlan])
+  }, [baseBody, savePlan, fixAnchorTimes])
 
   // Refine the current plan from a chat/feedback instruction — a surgical edit.
   // Completed items are preserved verbatim (the model never gets to rewrite what
@@ -231,17 +245,24 @@ export function useDayPlan() {
       if (!data) return null
       const done = todayPlan.items.filter((i) => i.done)
       const doneTitles = new Set(done.map((i) => i.title.toLowerCase()))
+      // A surgical edit must not drift the times of items that already existed.
+      // Preserve each returned item's ORIGINAL startTime (matched by title) —
+      // both anchors and moves — so only genuinely new items get a fresh time.
+      const origByTitle = new Map(todayPlan.items.map((o) => [o.title.trim().toLowerCase(), o]))
       const fresh = data.items
         .filter((i) => !doneTitles.has(i.title.toLowerCase()))
-        .map((it) => ({ ...it, id: generateId() }))
-      const items = sortByTime([...done, ...fresh])
+        .map((it) => {
+          const orig = origByTitle.get(it.title.trim().toLowerCase())
+          return { ...it, id: generateId(), startTime: orig?.startTime ?? it.startTime }
+        })
+      const items = sortByTime(fixAnchorTimes([...done, ...fresh]))
       await savePlan(items, { headline: data.headline || todayPlan.headline })
       return data.reply ?? 'Updated.'
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Planner failed')
       return null
     } finally { setWorking(false) }
-  }, [baseBody, savePlan, todayPlan])
+  }, [baseBody, savePlan, todayPlan, fixAnchorTimes])
 
   // Replan only the remaining (not-done) part of the day around the current
   // time. Completed items are preserved; the rest is rebuilt.
@@ -256,13 +277,13 @@ export function useDayPlan() {
       const fresh = data.items
         .filter((i) => !i.done && !doneTitles.has(i.title.toLowerCase()))
         .map((it) => ({ ...it, id: generateId() }))
-      await savePlan(sortByTime([...done, ...fresh]), { status: 'active', headline: data.headline || todayPlan.headline })
+      await savePlan(sortByTime(fixAnchorTimes([...done, ...fresh])), { status: 'active', headline: data.headline || todayPlan.headline })
       return data.reply ?? 'Replanned the rest of your day.'
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Planner failed')
       return null
     } finally { setWorking(false) }
-  }, [baseBody, savePlan, todayPlan])
+  }, [baseBody, savePlan, todayPlan, fixAnchorTimes])
 
   // Lock the draft in as the active plan for the day.
   const finalizePlan = useCallback(async () => {
