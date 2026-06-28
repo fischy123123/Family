@@ -40,6 +40,51 @@ function labelFor(dateStr: string): string {
   } catch { return dateStr }
 }
 
+// A surgical-edit patch from the engine (refine mode). `ref` is the 1-based
+// number of an item in the list we sent — i.e. index+1 into the current items.
+type PlanOp =
+  | { action: 'add'; item: DayPlanItem }
+  | { action: 'remove'; ref: number }
+  | { action: 'retime'; ref: number; startTime: string }
+  | { action: 'replace'; ref: number; item: DayPlanItem }
+
+type EngineResponse = { headline?: string; reply?: string; items?: DayPlanItem[]; ops?: PlanOp[] }
+
+// Apply an ops patch to the plan the client already holds — so a small edit
+// never costs a full-plan re-emit. Guards: never remove/retime/replace a done
+// item or an anchor (calendar event keeps its place/time), so the model can't
+// corrupt those even if it tries.
+function applyOps(current: DayPlanItem[], ops: PlanOp[]): DayPlanItem[] {
+  const removeRefs = new Set<number>()
+  const retime = new Map<number, string>()
+  const replace = new Map<number, DayPlanItem>()
+  const adds: DayPlanItem[] = []
+  for (const op of ops) {
+    if (op.action === 'add') adds.push(op.item)
+    else if (op.action === 'remove') removeRefs.add(op.ref)
+    else if (op.action === 'retime') retime.set(op.ref, op.startTime)
+    else if (op.action === 'replace') replace.set(op.ref, op.item)
+  }
+  const out: DayPlanItem[] = []
+  current.forEach((it, i) => {
+    const ref = i + 1
+    const locked = it.done || it.kind === 'anchor'  // never patched by ops
+    if (!locked && removeRefs.has(ref)) return       // dropped
+    if (!locked && replace.has(ref)) {
+      const r = replace.get(ref)!
+      out.push({ ...r, id: it.id, done: it.done, doneAt: it.doneAt })
+      return
+    }
+    if (!locked && retime.has(ref)) {
+      out.push({ ...it, startTime: retime.get(ref)! })
+      return
+    }
+    out.push(it)
+  })
+  for (const a of adds) out.push({ ...a, id: generateId(), done: false })
+  return out
+}
+
 // Put a plan's items into true chronological order so anchors (calendar events)
 // land in their real time slot instead of being bunched at the top. Timed items
 // sort by their time; an untimed move inherits the time of the nearest timed
@@ -207,7 +252,7 @@ export function useDayPlan() {
     }
   }, [planId, user, todayPlan, updatePlan, createPlan, date])
 
-  async function callEngine(body: unknown): Promise<{ headline?: string; reply?: string; items: DayPlanItem[] } | null> {
+  async function callEngine(body: unknown): Promise<EngineResponse | null> {
     const res = await fetch('/api/ai/plan-day', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -229,7 +274,7 @@ export function useDayPlan() {
     setWorking(true); setError(null)
     try {
       const data = await callEngine({ ...baseBody(), mode: 'draft', energy, intention: intention?.trim() || undefined, structure })
-      if (!data) return
+      if (!data?.items?.length) return
       const items = sortByTime(fixAnchorTimes(data.items.map((it) => ({ ...it, id: generateId() }))))
       await savePlan(items, { status: 'draft', headline: data.headline, energy, intention: intention?.trim() || undefined, structure })
     } catch (e) {
@@ -251,21 +296,33 @@ export function useDayPlan() {
     try {
       const data = await callEngine({ ...baseBody(), mode: 'refine', currentItems: todayPlan.items, message, focusTitle, energy: todayPlan.energy, structure: todayPlan.structure })
       if (!data) return null
-      const done = todayPlan.items.filter((i) => i.done)
-      const doneTitles = new Set(done.map((i) => i.title.toLowerCase()))
-      const reschedule = !!focusTitle
-      const origByTitle = new Map(todayPlan.items.map((o) => [o.title.trim().toLowerCase(), o]))
-      const fresh = data.items
-        .filter((i) => !doneTitles.has(i.title.toLowerCase()))
-        .map((it) => {
-          // Surgical edit: pin existing items to their original times. Reschedule:
-          // accept the model's times so it can reorganize around the change.
-          if (reschedule) return { ...it, id: generateId() }
-          const orig = origByTitle.get(it.title.trim().toLowerCase())
-          return { ...it, id: generateId(), startTime: orig?.startTime ?? it.startTime }
-        })
-      const items = sortByTime(fixAnchorTimes([...done, ...fresh]))
-      await savePlan(items, { headline: data.headline || todayPlan.headline })
+
+      // Fast path: a tiny ops patch applied to the plan we already hold (cheap
+      // output). Done items + anchors are protected inside applyOps.
+      if (data.ops?.length) {
+        const items = sortByTime(fixAnchorTimes(applyOps(todayPlan.items, data.ops)))
+        await savePlan(items, { headline: data.headline || todayPlan.headline })
+        return data.reply ?? 'Updated.'
+      }
+
+      // Fallback: the model returned a full plan instead of ops. Preserve done
+      // items; for a surgical edit pin existing times, for a reschedule accept
+      // the model's times so it can reorganize around the change.
+      if (data.items?.length) {
+        const done = todayPlan.items.filter((i) => i.done)
+        const doneTitles = new Set(done.map((i) => i.title.toLowerCase()))
+        const reschedule = !!focusTitle
+        const origByTitle = new Map(todayPlan.items.map((o) => [o.title.trim().toLowerCase(), o]))
+        const fresh = data.items
+          .filter((i) => !doneTitles.has(i.title.toLowerCase()))
+          .map((it) => {
+            if (reschedule) return { ...it, id: generateId() }
+            const orig = origByTitle.get(it.title.trim().toLowerCase())
+            return { ...it, id: generateId(), startTime: orig?.startTime ?? it.startTime }
+          })
+        const items = sortByTime(fixAnchorTimes([...done, ...fresh]))
+        await savePlan(items, { headline: data.headline || todayPlan.headline })
+      }
       return data.reply ?? 'Updated.'
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Planner failed')
@@ -280,7 +337,7 @@ export function useDayPlan() {
     setWorking(true); setError(null)
     try {
       const data = await callEngine({ ...baseBody(), mode: 'replan', currentItems: todayPlan.items, message, energy: todayPlan.energy, structure: todayPlan.structure })
-      if (!data) return null
+      if (!data?.items?.length) return null
       const done = todayPlan.items.filter((i) => i.done)
       const doneTitles = new Set(done.map((i) => i.title.toLowerCase()))
       const fresh = data.items

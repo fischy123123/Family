@@ -124,50 +124,112 @@ function buildModeInstruction(input: PlanDayInput): string {
     return `\n\nTASK — REPLAN THE REST OF TODAY: The day has shifted. Here is the current plan with completion state:\n${current}${aboutEnergy}\nKeep everything already marked DONE exactly as-is, and rebuild ONLY the remaining (not-done) part of TODAY around the CURRENT time — drop what no longer fits, resequence, lighten if energy is low. Stay within today only: do NOT pull in anything dated tomorrow or later. If little time remains, a short wind-down is the right answer. Return the COMPLETE updated plan (done items first, then the new go-forward items) as JSON, with a short "reply" acknowledging the reset.${struct}${input.message?.trim() ? `\nThey also said: "${input.message.trim().slice(0, 400)}"` : ''}`
   }
 
+  const numbered = fmtNumberedItems(input.currentItems ?? [])
+  const msg = (input.message ?? '').trim().slice(0, 500)
+
   // refine with a focused item — a per-card RESCHEDULE
   if (input.focusTitle?.trim()) {
-    return `\n\nTASK — RESCHEDULE ONE ITEM (reorganize intelligently around it): Here is the current plan (✓ = already done):\n${current}\nThe user wants to change the timing/placement of THIS item: "${input.focusTitle.trim()}". Their feedback: "${(input.message ?? '').trim().slice(0, 500)}"\nRules:\n- Re-time/move that one item to honor the request.\n- You MAY shift items that would otherwise conflict with it, or that depend on it, to keep the day sensible — but keep every UNRELATED item exactly as it is (same title, time, order, steps).\n- ALWAYS account for required TRAVEL/DRIVE TIME to and from locations (use event locations when shown) — leave realistic time to get places; never schedule back-to-back items in different locations without travel time, and add a leave-by buffer before anything the user must drive to.\n- NEVER move or re-time an anchor (calendar event) — anchors keep their real times.\n- NEVER modify or remove an item marked ✓ done.\nReturn the COMPLETE plan as JSON, plus a short "reply" (1 sentence) naming what you moved and how you adjusted around it.${struct}`
+    return `\n\nTASK — RESCHEDULE ONE ITEM (reorganize intelligently around it): Here is the current plan (numbered; ✓ = done):\n${numbered}\nThe user wants to change the timing/placement of THIS item: "${input.focusTitle.trim()}". Their feedback: "${msg}"\n- Find that item's number and emit a "retime" op to honor the request.\n- You MAY also "retime" items that would otherwise conflict with it — but touch as FEW as possible and leave every unrelated item alone.\n- ALWAYS account for TRAVEL/DRIVE TIME to/from locations (use event locations when shown): leave realistic time to get places; add a leave-by buffer before anything they must drive to.\n- NEVER retime an [anchor], and NEVER touch a ✓ done item.${struct}\n${OPS_SPEC}`
   }
 
-  // refine — a SURGICAL edit, not a re-plan
-  return `\n\nTASK — SURGICAL EDIT (make the SMALLEST change that satisfies the request — do NOT rebuild the plan): Here is the current plan (✓ = already done):\n${current}\nThe user wants this ONE change: "${(input.message ?? '').trim().slice(0, 500)}"\nRules:\n- Make ONLY that change. Keep EVERY other item exactly as it is — same title, same startTime, same order, same steps. Do NOT re-time, re-sequence, reword, merge, or drop anything the change doesn't require.\n- NEVER move or re-time an anchor (calendar event) — anchors always keep their real times.\n- NEVER modify or remove an item marked ✓ done.\n- If the change ADDS something, slot it into a sensible existing gap with an appropriate time, without shifting the other items' times.\nReturn the COMPLETE plan (all the untouched items, exactly as given, PLUS the one change) as JSON, plus a short "reply" (1 sentence) naming only what you changed.${struct}`
+  // refine — a SURGICAL edit, returned as a tiny patch (not a full re-emit)
+  return `\n\nTASK — SURGICAL EDIT (make the SMALLEST change that satisfies the request): Here is the current plan (numbered; ✓ = done):\n${numbered}\nThe user wants this ONE change: "${msg}"\n- ADD something → ONE "add" op, giving it a startTime in a sensible open gap (factor in travel time).\n- REMOVE something → ONE "remove" op.\n- MOVE / re-time something → "retime" op(s).\n- REWORD or change a field → a "replace" op.\nLeave EVERY other item untouched. NEVER retime/remove an [anchor], and NEVER touch a ✓ done item.${struct}\n${OPS_SPEC}`
 }
 
 const KINDS: DayPlanItemKind[] = ['anchor', 'move']
 const CATS = ['family', 'personal', 'rest', 'admin', 'connection']
 
+function coerceOneItem(raw: unknown, idx = 0): DayPlanItem | null {
+  const r = raw as Record<string, unknown>
+  if (!r || typeof r !== 'object') return null
+  const title = typeof r.title === 'string' ? r.title.trim() : ''
+  if (!title) return null
+  const kind: DayPlanItemKind = KINDS.includes(r.kind as DayPlanItemKind) ? (r.kind as DayPlanItemKind) : 'move'
+  const category = typeof r.category === 'string' && CATS.includes(r.category) ? (r.category as DayPlanItem['category']) : undefined
+  const minutes = typeof r.minutes === 'number' && r.minutes > 0 && r.minutes < 600 ? Math.round(r.minutes) : undefined
+  const srcTypes = ['event', 'task', 'reminder', 'inferred']
+  const sourceType = typeof r.sourceType === 'string' && srcTypes.includes(r.sourceType) ? (r.sourceType as DayPlanItem['sourceType']) : undefined
+  return {
+    id: `dp-${idx}`,
+    title,
+    why: typeof r.why === 'string' && r.why.trim() ? r.why.trim() : undefined,
+    kind,
+    startTime: typeof r.startTime === 'string' ? r.startTime : undefined,
+    minutes,
+    category,
+    firstStep: typeof r.firstStep === 'string' && r.firstStep.trim() ? r.firstStep.trim() : undefined,
+    steps: Array.isArray(r.steps)
+      ? r.steps.filter((s): s is string => typeof s === 'string' && s.trim().length > 0).map((s) => s.trim()).slice(0, 8)
+      : undefined,
+    sourceType,
+    sourceId: typeof r.sourceId === 'string' && r.sourceId.trim() ? r.sourceId.trim() : undefined,
+    done: false,
+  }
+}
+
 function coerceItems(raw: unknown): DayPlanItem[] {
   if (!Array.isArray(raw)) return []
   const out: DayPlanItem[] = []
   for (let i = 0; i < raw.length && out.length < 12; i++) {
-    const r = raw[i] as Record<string, unknown>
-    if (!r || typeof r !== 'object') continue
-    const title = typeof r.title === 'string' ? r.title.trim() : ''
-    if (!title) continue
-    const kind: DayPlanItemKind = KINDS.includes(r.kind as DayPlanItemKind) ? (r.kind as DayPlanItemKind) : 'move'
-    const category = typeof r.category === 'string' && CATS.includes(r.category) ? (r.category as DayPlanItem['category']) : undefined
-    const minutes = typeof r.minutes === 'number' && r.minutes > 0 && r.minutes < 600 ? Math.round(r.minutes) : undefined
-    const srcTypes = ['event', 'task', 'reminder', 'inferred']
-    const sourceType = typeof r.sourceType === 'string' && srcTypes.includes(r.sourceType) ? (r.sourceType as DayPlanItem['sourceType']) : undefined
-    out.push({
-      id: `dp-${i}`,
-      title,
-      why: typeof r.why === 'string' && r.why.trim() ? r.why.trim() : undefined,
-      kind,
-      startTime: typeof r.startTime === 'string' ? r.startTime : undefined,
-      minutes,
-      category,
-      firstStep: typeof r.firstStep === 'string' && r.firstStep.trim() ? r.firstStep.trim() : undefined,
-      steps: Array.isArray(r.steps)
-        ? r.steps.filter((s): s is string => typeof s === 'string' && s.trim().length > 0).map((s) => s.trim()).slice(0, 8)
-        : undefined,
-      sourceType,
-      sourceId: typeof r.sourceId === 'string' && r.sourceId.trim() ? r.sourceId.trim() : undefined,
-      done: false,
-    })
+    const it = coerceOneItem(raw[i], i)
+    if (it) out.push(it)
   }
   return out
 }
+
+// A surgical-edit patch: tiny ops the client applies to the plan it already
+// has, so a small change doesn't cost a full-plan re-emit on output. `ref` is
+// the 1-based number of an item in the numbered list sent to the model.
+type PlanOp =
+  | { action: 'add'; item: DayPlanItem }
+  | { action: 'remove'; ref: number }
+  | { action: 'retime'; ref: number; startTime: string }
+  | { action: 'replace'; ref: number; item: DayPlanItem }
+
+function coerceOps(raw: unknown): PlanOp[] {
+  if (!Array.isArray(raw)) return []
+  const ops: PlanOp[] = []
+  for (const o of raw) {
+    const r = o as Record<string, unknown>
+    if (!r || typeof r !== 'object') continue
+    const ref = typeof r.ref === 'number' ? Math.round(r.ref) : NaN
+    if (r.action === 'add') {
+      const it = coerceOneItem(r.item, ops.length)
+      if (it) ops.push({ action: 'add', item: it })
+    } else if (r.action === 'remove' && Number.isInteger(ref)) {
+      ops.push({ action: 'remove', ref })
+    } else if (r.action === 'retime' && Number.isInteger(ref) && typeof r.startTime === 'string') {
+      ops.push({ action: 'retime', ref, startTime: r.startTime })
+    } else if (r.action === 'replace' && Number.isInteger(ref)) {
+      const it = coerceOneItem(r.item, ops.length)
+      if (it) ops.push({ action: 'replace', ref, item: it })
+    }
+  }
+  return ops
+}
+
+// Number the current plan items so the model can reference them by number in
+// its ops (cheap) instead of re-emitting them.
+function fmtNumberedItems(items: DayPlanItem[]): string {
+  if (!items.length) return '  (empty)'
+  return items.map((it, i) => {
+    const bits = [`${i + 1}. [${it.kind}] ${it.title}`]
+    if (it.startTime) {
+      try { bits.push(`at ${new Date(it.startTime).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}`) } catch { /* ignore */ }
+    }
+    if (it.minutes) bits.push(`~${it.minutes}m`)
+    if (it.done) bits.push('✓ DONE')
+    return '  ' + bits.join(' · ')
+  }).join('\n')
+}
+
+// The ops output spec, shared by the surgical-edit and reschedule prompts.
+const OPS_SPEC = `Output ONLY a small patch as JSON — do NOT re-emit the whole plan: {"ops":[...],"reply":"<one short sentence>"}. Each op is one of:
+  {"action":"add","item":{"title":"...","why":"...","kind":"move","startTime":"<local ISO, no Z>","minutes":N,"category":"family|personal|rest|admin|connection","firstStep":"...","steps":["..."]}}  — a NEW item; give it a startTime in a sensible OPEN gap
+  {"action":"retime","ref":N,"startTime":"<local ISO, no Z>"}  — change the time of item N
+  {"action":"remove","ref":N}  — drop item N
+  {"action":"replace","ref":N,"item":{...full item...}}  — replace item N
+N is the NUMBER of an item in the list above. Use the FEWEST ops possible. NEVER emit an op targeting a ✓ done item, and NEVER retime/remove an [anchor] (calendar event).`
 
 export async function POST(request: NextRequest) {
   if (!process.env.ANTHROPIC_API_KEY) {
@@ -240,6 +302,24 @@ export async function POST(request: NextRequest) {
         .slice(0, 4)
       console.log(`[plan-day] wall=${Date.now() - reqStart}ms mode=suggest n=${suggestions.length}`)
       return NextResponse.json({ suggestions, generatedAt: new Date().toISOString() })
+    }
+
+    // Refine mode (surgical edit, quick-add, per-card reschedule, chat tweaks)
+    // returns a tiny ops PATCH — not the whole plan — so a small change is cheap
+    // on output. Falls back to a full-plan return if the model emitted items.
+    if (ctx.mode === 'refine') {
+      const reply = typeof parsed.reply === 'string' && parsed.reply.trim() ? parsed.reply.trim() : undefined
+      const ops = coerceOps(parsed.ops)
+      if (ops.length) {
+        console.log(`[plan-day] wall=${Date.now() - reqStart}ms mode=refine ops=${ops.length} out=${msg.usage?.output_tokens ?? '?'}`)
+        return NextResponse.json({ ops, reply, generatedAt: new Date().toISOString() })
+      }
+      const fallback = coerceItems(parsed.items)
+      if (fallback.length) {
+        console.log(`[plan-day] wall=${Date.now() - reqStart}ms mode=refine fallback_items=${fallback.length}`)
+        return NextResponse.json({ items: fallback, reply, generatedAt: new Date().toISOString() })
+      }
+      return NextResponse.json({ error: 'Could not apply that change — try again.' }, { status: 502 })
     }
 
     const items = coerceItems(parsed.items)

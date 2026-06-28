@@ -1,13 +1,13 @@
 'use client'
 
-import { useState, useEffect, type ReactNode, type CSSProperties } from 'react'
+import { useState, useEffect, type CSSProperties } from 'react'
 import { useRouter } from 'next/navigation'
 import {
-  CalendarDays, Sparkles, ArrowRight, Loader2, Check, X, Clock, GripVertical,
+  CalendarDays, Sparkles, ArrowRight, Loader2, Check, X, Clock,
   ChevronLeft, ChevronRight, Plus, Send, RefreshCw, Lock, Pin, LifeBuoy, Trash2, SlidersHorizontal, TrendingUp, Lightbulb,
 } from 'lucide-react'
 import {
-  DndContext, closestCenter, PointerSensor, KeyboardSensor, useSensor, useSensors,
+  DndContext, closestCenter, MouseSensor, TouchSensor, KeyboardSensor, useSensor, useSensors,
   type DragEndEvent,
 } from '@dnd-kit/core'
 import {
@@ -68,11 +68,13 @@ export function DayPlanner() {
     return () => clearInterval(id)
   }, [])
 
-  // Drag sensors (touch + mouse), with a small activation distance so taps and
-  // scrolling still work. Declared before any early returns — hooks must run
-  // unconditionally.
+  // Drag sensors. Mouse: drag starts after a small move (immediate, natural on
+  // desktop). Touch: press-and-hold ~220ms then drag, so normal taps and page
+  // scrolling still work on mobile. Declared before any early returns — hooks
+  // must run unconditionally.
   const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(MouseSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 220, tolerance: 8 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   )
 
@@ -695,38 +697,34 @@ type ItemRowProps = {
   onToggle: () => void
   onRemove: () => void
   onReschedule?: (message: string) => void | Promise<void>
-  dragHandle?: ReactNode
+  dragging?: boolean
 }
 
-// Wraps a row in dnd-kit's sortable so it can be dragged by its handle. Anchors
-// pass draggable=false (fixed calendar events — no handle).
-function SortableRow({ id, draggable, rowProps }: { id: string; draggable: boolean; rowProps: Omit<ItemRowProps, 'dragHandle'> }) {
+// Wraps a row in dnd-kit's sortable so the WHOLE card is the drag source —
+// press-and-hold (touch) or click-drag (mouse) the card to move it. Anchors
+// pass draggable=false (fixed calendar events). Quick taps still hit the
+// checkbox / reschedule button because of the sensor activation constraints.
+function SortableRow({ id, draggable, rowProps }: { id: string; draggable: boolean; rowProps: Omit<ItemRowProps, 'dragging'> }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id, disabled: !draggable })
   const style: CSSProperties = {
     transform: CSS.Transform.toString(transform),
     transition,
-    opacity: isDragging ? 0.5 : undefined,
     zIndex: isDragging ? 20 : undefined,
     position: 'relative',
   }
-  const handle = draggable ? (
-    <button
-      {...attributes}
-      {...listeners}
-      aria-label="Drag to reorder"
-      className="p-0.5 -my-0.5 text-slate-300 hover:text-slate-500 cursor-grab active:cursor-grabbing touch-none"
-    >
-      <GripVertical size={16} />
-    </button>
-  ) : null
   return (
-    <div ref={setNodeRef} style={style}>
-      <ItemRow {...rowProps} dragHandle={handle} />
+    <div
+      ref={setNodeRef}
+      style={style}
+      {...(draggable ? { ...attributes, ...listeners } : {})}
+      className={draggable ? 'cursor-grab active:cursor-grabbing' : undefined}
+    >
+      <ItemRow {...rowProps} dragging={isDragging} />
     </div>
   )
 }
 
-function ItemRow({ item, isDraft, busy, onToggle, onRemove, onReschedule, dragHandle }: ItemRowProps) {
+function ItemRow({ item, isDraft, busy, onToggle, onRemove, onReschedule, dragging }: ItemRowProps) {
   const isAnchor = item.kind === 'anchor'
   const cat = item.category ? MOMENT_KIND_META[item.category] : null
   const time = fmtTime(item.startTime)
@@ -743,6 +741,8 @@ function ItemRow({ item, isDraft, busy, onToggle, onRemove, onReschedule, dragHa
 
   return (
     <div className={`rounded-xl border p-3 flex items-start gap-3 transition-colors ${
+      dragging ? 'shadow-elevated ring-2 ring-indigo-300 bg-white' : ''
+    } ${
       item.done ? 'bg-slate-50 border-slate-100' : isAnchor ? 'bg-blue-50/50 border-blue-100' : 'bg-white border-slate-200'
     }`}>
       {/* Left: checkbox (tracking) or anchor pin */}
@@ -755,6 +755,7 @@ function ItemRow({ item, isDraft, busy, onToggle, onRemove, onReschedule, dragHa
       ) : (
         <button
           onClick={onToggle}
+          onPointerDownCapture={(e) => e.stopPropagation()}
           aria-label={item.done ? 'Mark not done' : 'Mark done'}
           className={`mt-0.5 w-5 h-5 rounded-md border flex items-center justify-center shrink-0 transition-colors ${
             item.done ? 'bg-green-500 border-green-500 text-white' : 'border-slate-300 hover:border-indigo-400'
@@ -798,7 +799,7 @@ function ItemRow({ item, isDraft, busy, onToggle, onRemove, onReschedule, dragHa
         {/* Per-card reschedule feedback — tell the coach when this should be and
             it reorganizes around it (keeping the rest of the day intact). */}
         {fbOpen && (
-          <div className="mt-2 flex items-center gap-2">
+          <div className="mt-2 flex items-center gap-2" onPointerDownCapture={(e) => e.stopPropagation()}>
             <input
               autoFocus
               value={fbText}
@@ -819,10 +820,11 @@ function ItemRow({ item, isDraft, busy, onToggle, onRemove, onReschedule, dragHa
         )}
       </div>
 
-      {/* Right: drag handle + (remove on draft / reschedule on committed). */}
-      {(dragHandle || isDraft || (onReschedule && !item.done)) && (
-        <div className="flex flex-col items-center gap-0.5 shrink-0">
-          {dragHandle}
+      {/* Right: remove (draft) / reschedule (committed, not done). The whole
+          card is the drag handle, so no separate grip here.
+          stopPropagation keeps a button tap from starting a drag. */}
+      {(isDraft || (onReschedule && !item.done)) && (
+        <div className="shrink-0" onPointerDownCapture={(e) => e.stopPropagation()}>
           {isDraft ? (
             <button onClick={onRemove} aria-label="Remove" className="p-1 text-slate-300 hover:text-red-500 transition-colors">
               <X size={15} />
