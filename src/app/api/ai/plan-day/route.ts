@@ -7,7 +7,7 @@ import {
 } from '@/lib/dayPlanPrompt'
 import { buildPersonalProfileBlock } from '@/lib/personalProfileContext'
 import type {
-  PersonalProfile, MomentEnergy, DayPlanItem, DayPlanItemKind,
+  PersonalProfile, MomentEnergy, DayPlanItem, DayPlanItemKind, DayPlanStructure,
   FamilyGoal, Reflection,
 } from '@/lib/types'
 
@@ -37,6 +37,17 @@ type PlanDayInput = FamilyContextInput & {
   targetDate?: string
   targetDateLabel?: string
   isToday?: boolean
+  // How prescriptive: 'flexible' (default) or 'structured' (time-blocked + steps).
+  structure?: DayPlanStructure
+}
+
+// The structure clause applied to every mode — tells the model which level of
+// prescriptiveness to produce.
+function structureClause(structure?: DayPlanStructure): string {
+  if (structure === 'structured') {
+    return ` STRUCTURE = STRUCTURED: produce a strict, time-blocked schedule — set a specific "startTime" on EVERY item (moves included), sequence them back-to-back in realistic order around the anchors using "minutes" so times add up, and break each non-trivial move into 2–5 concrete ordered "steps". Be directive and concrete, but still humane (buffers + rest, not an airless grid).`
+  }
+  return ` STRUCTURE = FLEXIBLE: anchors carry times; moves do NOT get clock times and each gets ONE tiny "firstStep" (no "steps" array).`
 }
 
 // Standing commitments + recent reflections → a block the planner should mine
@@ -86,6 +97,7 @@ function fmtItem(it: DayPlanItem): string {
 function buildModeInstruction(input: PlanDayInput): string {
   const isToday = input.isToday !== false  // default to today when unspecified
   const dayLabel = input.targetDateLabel || (isToday ? 'today' : `${input.targetDate}`)
+  const struct = structureClause(input.structure)
   const aboutEnergy = input.energy
     ? `\n${isToday ? 'Energy right now' : `Expected energy on ${dayLabel}`}: ${input.energy}.`
     : ''
@@ -97,17 +109,17 @@ function buildModeInstruction(input: PlanDayInput): string {
     const scope = isToday
       ? `the REMAINDER OF TODAY ONLY — from the current time until the user winds down tonight. Pull anchors from today's calendar (only events on today's date that start at or after now) and choose moves for the time left today.`
       : `the FULL DAY of ${dayLabel} — this is a FUTURE day, so the entire day is ahead (morning through evening). Pull anchors ONLY from the calendar events dated ${dayLabel}, and plan moves across that whole day.`
-    return `\n\nTASK — DRAFT THE PLAN FOR ${dayLabel.toUpperCase()}: Build a fresh, realistic plan for ${scope} The plan must stay strictly within ${dayLabel} — do NOT include anything from any other day. If there's genuinely little to do, a short honest plan is correct rather than padding it.${aboutEnergy}${aboutIntention}\nReturn the full plan as JSON. No "reply" field for an initial draft.`
+    return `\n\nTASK — DRAFT THE PLAN FOR ${dayLabel.toUpperCase()}: Build a fresh, realistic plan for ${scope} The plan must stay strictly within ${dayLabel} — do NOT include anything from any other day. If there's genuinely little to do, a short honest plan is correct rather than padding it.${struct}${aboutEnergy}${aboutIntention}\nReturn the full plan as JSON. No "reply" field for an initial draft.`
   }
 
   const current = (input.currentItems ?? []).map(fmtItem).join('\n') || '  (empty)'
 
   if (input.mode === 'replan') {
-    return `\n\nTASK — REPLAN THE REST OF TODAY: The day has shifted. Here is the current plan with completion state:\n${current}${aboutEnergy}\nKeep everything already marked DONE exactly as-is, and rebuild ONLY the remaining (not-done) part of TODAY around the CURRENT time — drop what no longer fits, resequence, lighten if energy is low. Stay within today only: do NOT pull in anything dated tomorrow or later. If little time remains, a short wind-down is the right answer. Return the COMPLETE updated plan (done items first, then the new go-forward items) as JSON, with a short "reply" acknowledging the reset.${input.message?.trim() ? `\nThey also said: "${input.message.trim().slice(0, 400)}"` : ''}`
+    return `\n\nTASK — REPLAN THE REST OF TODAY: The day has shifted. Here is the current plan with completion state:\n${current}${aboutEnergy}\nKeep everything already marked DONE exactly as-is, and rebuild ONLY the remaining (not-done) part of TODAY around the CURRENT time — drop what no longer fits, resequence, lighten if energy is low. Stay within today only: do NOT pull in anything dated tomorrow or later. If little time remains, a short wind-down is the right answer. Return the COMPLETE updated plan (done items first, then the new go-forward items) as JSON, with a short "reply" acknowledging the reset.${struct}${input.message?.trim() ? `\nThey also said: "${input.message.trim().slice(0, 400)}"` : ''}`
   }
 
   // refine
-  return `\n\nTASK — REFINE THE PLAN: Here is the current draft:\n${current}${aboutEnergy}\nThe user wants this change: "${(input.message ?? '').trim().slice(0, 500)}"\nApply it thoughtfully (keep the rest intact unless it conflicts), and return the COMPLETE updated plan as JSON plus a short "reply" (1-2 sentences) acknowledging what you changed.`
+  return `\n\nTASK — REFINE THE PLAN: Here is the current draft:\n${current}${aboutEnergy}\nThe user wants this change: "${(input.message ?? '').trim().slice(0, 500)}"\nApply it thoughtfully (keep the rest intact unless it conflicts), and return the COMPLETE updated plan as JSON plus a short "reply" (1-2 sentences) acknowledging what you changed.${struct}`
 }
 
 const KINDS: DayPlanItemKind[] = ['anchor', 'move']
@@ -135,6 +147,9 @@ function coerceItems(raw: unknown): DayPlanItem[] {
       minutes,
       category,
       firstStep: typeof r.firstStep === 'string' && r.firstStep.trim() ? r.firstStep.trim() : undefined,
+      steps: Array.isArray(r.steps)
+        ? r.steps.filter((s): s is string => typeof s === 'string' && s.trim().length > 0).map((s) => s.trim()).slice(0, 8)
+        : undefined,
       sourceType,
       sourceId: typeof r.sourceId === 'string' && r.sourceId.trim() ? r.sourceId.trim() : undefined,
       done: false,

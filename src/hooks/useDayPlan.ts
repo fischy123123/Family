@@ -8,7 +8,7 @@ import { generateId } from '@/lib/utils'
 import type {
   FamilyMember, CalendarEvent, Task, Chore, Plan, SmartList,
   FamilyProfile, FamilyMemory, FamilyReminder,
-  PersonalProfile, MomentEnergy, DayPlan, DayPlanItem,
+  PersonalProfile, MomentEnergy, DayPlan, DayPlanItem, DayPlanStructure,
   FamilyGoal, Reflection,
 } from '@/lib/types'
 
@@ -175,14 +175,19 @@ export function useDayPlan() {
   }
 
   // Draft a fresh plan from the kickoff check-in. Energy is optional (for future
-  // days, "how you'll feel" is a guess, so it's not required).
-  const draftPlan = useCallback(async (energy?: MomentEnergy, intention?: string) => {
+  // days, "how you'll feel" is a guess, so it's not required). Structure controls
+  // how prescriptive the plan is (flexible vs. time-blocked) and is saved on it.
+  const draftPlan = useCallback(async (
+    energy?: MomentEnergy,
+    intention?: string,
+    structure: DayPlanStructure = 'flexible',
+  ) => {
     setWorking(true); setError(null)
     try {
-      const data = await callEngine({ ...baseBody(), mode: 'draft', energy, intention: intention?.trim() || undefined })
+      const data = await callEngine({ ...baseBody(), mode: 'draft', energy, intention: intention?.trim() || undefined, structure })
       if (!data) return
       const items = data.items.map((it) => ({ ...it, id: generateId() }))
-      await savePlan(items, { status: 'draft', headline: data.headline, energy, intention: intention?.trim() || undefined })
+      await savePlan(items, { status: 'draft', headline: data.headline, energy, intention: intention?.trim() || undefined, structure })
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Planner failed')
     } finally { setWorking(false) }
@@ -193,7 +198,7 @@ export function useDayPlan() {
     if (!todayPlan) return null
     setWorking(true); setError(null)
     try {
-      const data = await callEngine({ ...baseBody(), mode: 'refine', currentItems: todayPlan.items, message, energy: todayPlan.energy })
+      const data = await callEngine({ ...baseBody(), mode: 'refine', currentItems: todayPlan.items, message, energy: todayPlan.energy, structure: todayPlan.structure })
       if (!data) return null
       const items = data.items.map((it) => ({ ...it, id: generateId() }))
       await savePlan(items, { headline: data.headline || todayPlan.headline })
@@ -210,7 +215,7 @@ export function useDayPlan() {
     if (!todayPlan) return null
     setWorking(true); setError(null)
     try {
-      const data = await callEngine({ ...baseBody(), mode: 'replan', currentItems: todayPlan.items, message, energy: todayPlan.energy })
+      const data = await callEngine({ ...baseBody(), mode: 'replan', currentItems: todayPlan.items, message, energy: todayPlan.energy, structure: todayPlan.structure })
       if (!data) return null
       const done = todayPlan.items.filter((i) => i.done)
       const doneTitles = new Set(done.map((i) => i.title.toLowerCase()))

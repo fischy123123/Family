@@ -34,6 +34,7 @@ export function AboutMeForm({
   const [careSchedule, setCareSchedule] = useState(existing?.careSchedule ?? '')
 
   const [planStyle, setPlanStyle] = useState<PersonalProfile['planStyle']>(existing?.planStyle)
+  const [planStructure, setPlanStructure] = useState<PersonalProfile['planStructure']>(existing?.planStructure)
   const [protectRest, setProtectRest] = useState(existing?.protectRest ?? false)
   const [nonNegotiables, setNonNegotiables] = useState((existing?.nonNegotiables ?? []).join('\n'))
 
@@ -50,6 +51,7 @@ export function AboutMeForm({
       householdRoles: householdRoles.trim() || undefined,
       careSchedule: careSchedule.trim() || undefined,
       planStyle,
+      planStructure,
       protectRest,
       nonNegotiables: linesToArr(nonNegotiables),
       freeform: freeform.trim() || undefined,
@@ -112,6 +114,25 @@ export function AboutMeForm({
                 >
                   <span className="text-xs font-semibold">{s.label}</span>
                   <span className="text-[10px] text-slate-400 leading-tight text-center">{s.hint}</span>
+                </button>
+              )
+            })}
+          </div>
+        </Field>
+        <Field label="Default style">
+          <div className="grid grid-cols-2 gap-2">
+            {([['flexible', 'Flexible', 'anchors + a loose flow'], ['structured', 'Structured', 'timed, step-by-step']] as const).map(([key, label, hint]) => {
+              const active = planStructure === key
+              return (
+                <button
+                  key={key}
+                  onClick={() => setPlanStructure(active ? undefined : key)}
+                  className={`rounded-xl py-2 px-2.5 flex flex-col items-start gap-0.5 border text-left transition-all ${
+                    active ? 'border-indigo-500 bg-indigo-50' : 'border-slate-200 bg-white hover:border-slate-300'
+                  }`}
+                >
+                  <span className={`text-xs font-bold ${active ? 'text-indigo-700' : 'text-slate-700'}`}>{label}</span>
+                  <span className="text-[10px] text-slate-400 leading-tight">{hint}</span>
                 </button>
               )
             })}

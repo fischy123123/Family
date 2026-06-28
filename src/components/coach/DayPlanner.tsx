@@ -8,7 +8,7 @@ import {
 import { useDayPlan, dateStrOffset } from '@/hooks/useDayPlan'
 import { AboutMeForm } from './AboutMeForm'
 import { MOMENT_ENERGY_META, MOMENT_KIND_META } from '@/lib/types'
-import type { MomentEnergy, DayPlanItem } from '@/lib/types'
+import type { MomentEnergy, DayPlanItem, DayPlanStructure } from '@/lib/types'
 
 const ENERGY_ORDER: MomentEnergy[] = ['wired', 'okay', 'drained']
 
@@ -41,6 +41,10 @@ export function DayPlanner() {
   const [reply, setReply] = useState<string | null>(null)
   const [addText, setAddText] = useState('')
   const [editingProfile, setEditingProfile] = useState(false)
+  // How prescriptive to draft. Defaults to the saved profile preference until
+  // the user picks for this plan.
+  const [structureChoice, setStructureChoice] = useState<DayPlanStructure | null>(null)
+  const structure: DayPlanStructure = structureChoice ?? personalProfile?.planStructure ?? 'flexible'
 
   const status = plan?.status
   const today0 = dateStrOffset(0)
@@ -210,9 +214,26 @@ export function DayPlanner() {
                 className="w-full text-sm rounded-lg px-3 py-2 border border-slate-200 focus:outline-none focus:border-indigo-300 bg-slate-50 resize-none leading-relaxed"
               />
             </div>
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2">Style</p>
+              <div className="grid grid-cols-2 gap-2">
+                <StyleChoice
+                  active={structure === 'flexible'}
+                  onClick={() => setStructureChoice('flexible')}
+                  label="Flexible"
+                  hint="anchors + a loose to-do flow"
+                />
+                <StyleChoice
+                  active={structure === 'structured'}
+                  onClick={() => setStructureChoice('structured')}
+                  label="Structured"
+                  hint="timed, step-by-step schedule"
+                />
+              </div>
+            </div>
             {error && <p className="text-xs text-red-600 bg-red-50 rounded-lg px-3 py-2">{error}</p>}
             <button
-              onClick={() => draftPlan(energy ?? undefined, intention)}
+              onClick={() => draftPlan(energy ?? undefined, intention, structure)}
               disabled={working || (isToday && !energy)}
               className="w-full py-3 rounded-xl bg-indigo-600 text-white font-bold text-sm flex items-center justify-center gap-2 disabled:opacity-50 active:scale-[0.99] transition-transform"
             >
@@ -269,6 +290,15 @@ export function DayPlanner() {
       {/* Draft controls: add, chat-refine, finalize */}
       {isDraft && (
         <div className="mt-4 space-y-3">
+          {/* Flip how prescriptive the plan is — regenerates from the same inputs. */}
+          <button
+            onClick={() => draftPlan(plan.energy ?? undefined, plan.intention, plan.structure === 'structured' ? 'flexible' : 'structured')}
+            disabled={working}
+            className="w-full flex items-center justify-center gap-1.5 rounded-xl px-3 py-2 bg-slate-100 text-slate-600 text-xs font-semibold hover:bg-slate-200 disabled:opacity-50 transition-colors"
+          >
+            {working ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />}
+            {plan.structure === 'structured' ? 'Switch to a flexible plan' : 'Make it a timed, step-by-step plan'}
+          </button>
           <div className="flex items-center gap-2">
             <input
               value={addText}
@@ -372,6 +402,20 @@ export function DayPlanner() {
   )
 }
 
+function StyleChoice({ active, onClick, label, hint }: { active: boolean; onClick: () => void; label: string; hint: string }) {
+  return (
+    <button
+      onClick={onClick}
+      className={`rounded-xl py-2 px-2.5 flex flex-col items-start gap-0.5 border text-left transition-all ${
+        active ? 'border-indigo-500 bg-indigo-50' : 'border-slate-200 bg-white hover:border-slate-300'
+      }`}
+    >
+      <span className={`text-xs font-bold ${active ? 'text-indigo-700' : 'text-slate-700'}`}>{label}</span>
+      <span className="text-[10px] text-slate-400 leading-tight">{hint}</span>
+    </button>
+  )
+}
+
 function ItemRow({
   item, isDraft, onToggle, onRemove, onUp, onDown,
 }: {
@@ -422,11 +466,22 @@ function ItemRow({
           )}
         </div>
         {item.why && !item.done && <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">{item.why}</p>}
-        {item.firstStep && !item.done && !isAnchor && (
+        {/* Structured plans break a move into ordered steps; flexible ones give
+            a single tiny first step. Show whichever is present. */}
+        {item.steps?.length && !item.done && !isAnchor ? (
+          <ol className="mt-1.5 space-y-1">
+            {item.steps.map((s, i) => (
+              <li key={i} className="flex gap-2 text-xs text-slate-600 leading-snug">
+                <span className="text-indigo-500 font-bold tabular-nums shrink-0">{i + 1}.</span>
+                <span>{s}</span>
+              </li>
+            ))}
+          </ol>
+        ) : item.firstStep && !item.done && !isAnchor ? (
           <p className="text-xs text-indigo-600 mt-1">
             <span className="font-semibold">Start:</span> {item.firstStep}
           </p>
-        )}
+        ) : null}
         {item.minutes && !item.done && <span className="text-[11px] text-slate-400">~{item.minutes} min</span>}
       </div>
 

@@ -207,6 +207,7 @@ export interface PersonalProfile {
 
   // ── How they want the plan built ──
   planStyle?: 'minimal' | 'balanced' | 'packed'  // how full a day should feel
+  planStructure?: DayPlanStructure  // default prescriptiveness: flexible vs. time-blocked
   protectRest?: boolean         // explicitly carve out rest/downtime
   nonNegotiables?: string[]     // hard rules the plan must respect ("nothing after 8pm bedtime")
 
@@ -265,6 +266,12 @@ export interface MomentCheckIn {
 
 export type DayPlanStatus = 'draft' | 'active' | 'done'
 
+// How prescriptive the plan is. 'flexible' = anchors + an ordered pool of moves
+// with no rigid clock times (forgiving, the default). 'structured' = a strict,
+// time-blocked schedule: every item has a specific time and moves are broken
+// into concrete ordered steps — for when you want to be told exactly what to do.
+export type DayPlanStructure = 'flexible' | 'structured'
+
 // 'anchor' = a fixed, time-bound commitment (usually a calendar event) the day
 // is built around. 'move' = a flexible intention with no rigid clock time,
 // pulled from the pool when there's room.
@@ -279,6 +286,7 @@ export interface DayPlanItem {
   minutes?: number              // rough size, not a hard slot
   category?: MomentMove['kind'] // family | personal | rest | admin | connection
   firstStep?: string            // a trivially small way to begin (ADHD initiation)
+  steps?: string[]              // concrete ordered sub-steps — used in 'structured' plans
   // Provenance — link back to the real entity so checking it off can sync.
   sourceType?: 'event' | 'task' | 'reminder' | 'inferred'
   sourceId?: string
@@ -291,6 +299,7 @@ export interface DayPlan {
   email: string
   date: string                  // YYYY-MM-DD (the user's local day)
   status: DayPlanStatus
+  structure?: DayPlanStructure  // flexible (default) vs. structured/time-blocked
   intention?: string            // the kickoff "what's on your mind today"
   energy?: MomentEnergy
   headline?: string             // the coach's one-line framing of the day
