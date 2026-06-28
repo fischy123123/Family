@@ -28,6 +28,15 @@ export async function POST(request: NextRequest) {
 
   const db = getFirestore(adminApp)
 
+  // A full re-sync re-establishes the time window and re-expands every recurring
+  // instance, pruning stale ones. We force it when the caller asks (?full=1) or
+  // when the last full sync is older than this — incremental syncTokens are
+  // locked to their original absolute window, so without periodic full syncs,
+  // recurring-event date changes (and anything past the original window) never
+  // propagate.
+  const FULL_RESYNC_MS = 2 * 60 * 60 * 1000  // 2 hours
+  const forceFull = request.nextUrl.searchParams.get('full') === '1'
+
   const userSnap = await db.collection('users').doc(uid).get()
   const familyId = userSnap.data()?.familyId
   if (!familyId) return NextResponse.json({ synced: 0, reason: 'no-family' })
@@ -36,9 +45,9 @@ export async function POST(request: NextRequest) {
     .collection('families').doc(familyId).collection('googleTokens').get()
   if (tokensSnap.empty) return NextResponse.json({ synced: 0, reason: 'no-tokens' })
 
-  // 14-day window used only on the first (full) sync per member
+  // 30-day window, re-anchored to "now" on every full sync so it slides forward.
   const timeMin = new Date().toISOString()
-  const timeMax = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString()
+  const timeMax = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString()
 
   let synced = 0
   const syncStart = Date.now()
@@ -49,11 +58,18 @@ export async function POST(request: NextRequest) {
       refreshToken: string
       email: string
       calSyncTokens?: Record<string, string>
+      lastFullSyncAt?: number
     }
     const { accessToken, refreshToken, email } = tokenData
     if (!accessToken || !refreshToken) continue
 
-    const storedTokens: Record<string, string> = tokenData.calSyncTokens ?? {}
+    // Force a full sync when asked, when we have no tokens yet, or when the last
+    // full sync is stale — otherwise use the stored tokens for a cheap delta.
+    const fullDue = forceFull
+      || !tokenData.calSyncTokens
+      || Object.keys(tokenData.calSyncTokens).length === 0
+      || (Date.now() - (tokenData.lastFullSyncAt ?? 0) > FULL_RESYNC_MS)
+    const storedTokens: Record<string, string> = fullDue ? {} : (tokenData.calSyncTokens ?? {})
     const isIncremental = Object.keys(storedTokens).length > 0
 
     try {
@@ -114,8 +130,11 @@ export async function POST(request: NextRequest) {
         await batch.commit()
       }
 
-      // Persist updated syncTokens so next run is incremental
-      await tokenDoc.ref.update({ calSyncTokens: delta.syncTokensByCalendar })
+      // Persist updated syncTokens so next run is incremental; stamp the full
+      // sync time so the periodic re-sync window slides forward.
+      const tokenUpdate: Record<string, unknown> = { calSyncTokens: delta.syncTokensByCalendar }
+      if (fullDue) tokenUpdate.lastFullSyncAt = Date.now()
+      await tokenDoc.ref.update(tokenUpdate)
 
       const mode = isIncremental ? 'incremental' : 'full'
       console.log(

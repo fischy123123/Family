@@ -401,6 +401,9 @@ export function CommandCenter() {
   // even when called silently. Used after cache reset or when the cached report
   // is stale, so the fresh result appears immediately without a "tap to see" step.
   const forceDirectRef = useRef(false)
+  // Set by the manual Refresh button so the next calendar sync is a FULL
+  // re-sync (catches recurring-event changes the incremental delta misses).
+  const forceFullSyncRef = useRef(false)
   const deepToken = useRef<number>(0)
   const engineAbortRef = useRef<AbortController | null>(null)
   // In-flight aborts for the lazily-loaded problems / recommendations sections.
@@ -656,12 +659,16 @@ export function CommandCenter() {
       if (!familyId) { setGoogleLoaded(true); return }
       setGoogleLoaded(false)
       setCalendarFetching(true)
+      // A manual refresh forces a FULL re-sync (?full=1) so recurring-event
+      // changes and anything past the incremental window are pulled fresh.
+      const full = forceFullSyncRef.current
+      forceFullSyncRef.current = false
       try {
         if (isConnected) await getFreshTokens()
         if (cancelled) return
         const idToken = await user?.getIdToken()
         if (!idToken || cancelled) return
-        await fetch('/api/calendar/sync', {
+        await fetch(`/api/calendar/sync${full ? '?full=1' : ''}`, {
           method: 'POST',
           headers: { Authorization: `Bearer ${idToken}` },
         })
@@ -1644,7 +1651,14 @@ export function CommandCenter() {
         </div>
         <div className="flex items-center gap-2">
           <button
-            onClick={() => { setPendingReport(null); forceDirectRef.current = true; runEngine(undefined, !!report) }}
+            onClick={() => {
+              // Refresh = pull fresh calendar (full re-sync) AND regenerate.
+              setPendingReport(null)
+              forceDirectRef.current = true
+              forceFullSyncRef.current = true
+              setCalSyncKey((k) => k + 1)
+              runEngine(undefined, !!report)
+            }}
             disabled={loading || calendarFetching}
             title={loading || calendarFetching ? 'Loading calendar…' : refreshing ? 'Updating — tap to refresh now' : 'Refresh briefing'}
             className={`mt-1 p-2.5 rounded-xl border shadow-card transition-all disabled:opacity-60 ${
