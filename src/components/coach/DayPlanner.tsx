@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, Fragment } from 'react'
+import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import {
   CalendarDays, Sparkles, ArrowRight, Loader2, Check, X, Clock,
@@ -18,13 +18,12 @@ function fmtTime(iso?: string): string {
   try { return new Date(iso).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }) } catch { return '' }
 }
 
-// Where the "now" line falls among the (time-sorted) items: the index of the
-// first item still ahead of the current time. Untimed moves inherit the nearest
-// preceding timed item's time (matching the stored sort). Returns null when
-// nothing is timed (no meaningful place for the marker).
-function nowMarkerIndex(items: DayPlanItem[], nowMs: number): number | null {
+// Effective time (ms) for each item in a time-sorted list: timed items use
+// their time; an untimed move inherits the nearest preceding timed item's time
+// (matching the stored sort), or the next one if none precede. Untimed-only
+// lists come back as Infinity.
+function effectiveTimes(items: DayPlanItem[]): number[] {
   const ms = items.map((it) => (it.startTime ? new Date(it.startTime).getTime() : NaN))
-  if (ms.every((m) => Number.isNaN(m))) return null
   const eff = ms.slice()
   let last = NaN
   for (let i = 0; i < eff.length; i++) {
@@ -36,11 +35,7 @@ function nowMarkerIndex(items: DayPlanItem[], nowMs: number): number | null {
     if (!Number.isNaN(ms[i])) next = ms[i]
     else if (Number.isNaN(eff[i]) && !Number.isNaN(next)) eff[i] = next
   }
-  for (let i = 0; i < items.length; i++) {
-    const t = Number.isNaN(eff[i]) ? Infinity : eff[i]
-    if (t > nowMs) return i
-  }
-  return items.length
+  return eff.map((v) => (Number.isNaN(v) ? Infinity : v))
 }
 
 // Shift a YYYY-MM-DD by n days (parsed as local midnight to avoid UTC drift).
@@ -311,8 +306,19 @@ export function DayPlanner() {
   // Always present items in chronological order at render time — robust even for
   // plans saved before the sort logic, or after a manual edit.
   const ordered = sortByTime(items)
-  // The "now" line only makes sense on today's committed (not draft) plan.
-  const markerAt = isToday && !isDraft ? nowMarkerIndex(ordered, now) : null
+  // The "now" line only makes sense on today's committed (not draft) plan, once
+  // at least one item is timed.
+  const showNow = isToday && !isDraft && ordered.some((it) => it.startTime)
+  // Split around the now line: anything DONE or already past sits above the
+  // line (behind you); only not-done, still-ahead items sit below it. So a task
+  // you complete jumps above the line even if it was scheduled for later.
+  const eff = effectiveTimes(ordered)
+  const aboveNow: DayPlanItem[] = []
+  const belowNow: DayPlanItem[] = []
+  ordered.forEach((it, i) => {
+    if (!showNow || it.done || eff[i] <= now) aboveNow.push(it)
+    else belowNow.push(it)
+  })
 
   return (
     <section className="rounded-2xl p-5 bg-white shadow-card">
@@ -364,12 +370,13 @@ export function DayPlanner() {
         </div>
       )}
 
-      {/* Items — chronological, with a live "now" line slotted into the timeline. */}
+      {/* Items — chronological. Done / past items sit above the live "now" line;
+          only what's still ahead sits below it. */}
       <div className="space-y-2">
-        {ordered.map((it, idx) => (
-          <Fragment key={it.id}>
-            {markerAt === idx && <NowLine now={now} />}
+        {(() => {
+          const renderRow = (it: DayPlanItem) => (
             <ItemRow
+              key={it.id}
               item={it}
               isDraft={isDraft}
               busy={working}
@@ -377,9 +384,15 @@ export function DayPlanner() {
               onRemove={() => removeItem(it.id)}
               onReschedule={!isDraft && !it.done ? async (msg) => { setReply(null); const r = await refinePlan(msg, it.title); setReply(r) } : undefined}
             />
-          </Fragment>
-        ))}
-        {markerAt === ordered.length && <NowLine now={now} />}
+          )
+          return (
+            <>
+              {aboveNow.map(renderRow)}
+              {showNow && <NowLine now={now} />}
+              {belowNow.map(renderRow)}
+            </>
+          )
+        })()}
       </div>
 
       {/* Draft controls: add, chat-refine, finalize */}
