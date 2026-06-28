@@ -40,6 +40,32 @@ function labelFor(dateStr: string): string {
   } catch { return dateStr }
 }
 
+// Put a plan's items into true chronological order so anchors (calendar events)
+// land in their real time slot instead of being bunched at the top. Timed items
+// sort by their time; an untimed move inherits the time of the nearest timed
+// item before it (so it follows that anchor) — or the next one if none precede —
+// and ties break by the model's original order. Stable + deterministic.
+function sortByTime(items: DayPlanItem[]): DayPlanItem[] {
+  const ms = items.map((it) => (it.startTime ? new Date(it.startTime).getTime() : NaN))
+  const eff = ms.slice()
+  // Forward-fill: an untimed item takes the previous known time.
+  let last = NaN
+  for (let i = 0; i < eff.length; i++) {
+    if (!Number.isNaN(ms[i])) last = ms[i]
+    else if (!Number.isNaN(last)) eff[i] = last
+  }
+  // Back-fill any leading untimed items from the next known time.
+  let next = NaN
+  for (let i = eff.length - 1; i >= 0; i--) {
+    if (!Number.isNaN(ms[i])) next = ms[i]
+    else if (Number.isNaN(eff[i]) && !Number.isNaN(next)) eff[i] = next
+  }
+  return items
+    .map((it, i) => ({ it, i, t: Number.isNaN(eff[i]) ? Infinity : eff[i] }))
+    .sort((a, b) => (a.t !== b.t ? a.t - b.t : a.i - b.i))
+    .map((x) => x.it)
+}
+
 // The Command Center scans Gmail and caches the resulting signals under this
 // per-family key. We read that cache so the planner sees the same email signals
 // (deliveries, confirmations, appointment emails) the briefing already uses —
@@ -186,7 +212,7 @@ export function useDayPlan() {
     try {
       const data = await callEngine({ ...baseBody(), mode: 'draft', energy, intention: intention?.trim() || undefined, structure })
       if (!data) return
-      const items = data.items.map((it) => ({ ...it, id: generateId() }))
+      const items = sortByTime(data.items.map((it) => ({ ...it, id: generateId() })))
       await savePlan(items, { status: 'draft', headline: data.headline, energy, intention: intention?.trim() || undefined, structure })
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Planner failed')
@@ -200,7 +226,7 @@ export function useDayPlan() {
     try {
       const data = await callEngine({ ...baseBody(), mode: 'refine', currentItems: todayPlan.items, message, energy: todayPlan.energy, structure: todayPlan.structure })
       if (!data) return null
-      const items = data.items.map((it) => ({ ...it, id: generateId() }))
+      const items = sortByTime(data.items.map((it) => ({ ...it, id: generateId() })))
       await savePlan(items, { headline: data.headline || todayPlan.headline })
       return data.reply ?? 'Updated.'
     } catch (e) {
@@ -222,7 +248,7 @@ export function useDayPlan() {
       const fresh = data.items
         .filter((i) => !i.done && !doneTitles.has(i.title.toLowerCase()))
         .map((it) => ({ ...it, id: generateId() }))
-      await savePlan([...done, ...fresh], { status: 'active', headline: data.headline || todayPlan.headline })
+      await savePlan(sortByTime([...done, ...fresh]), { status: 'active', headline: data.headline || todayPlan.headline })
       return data.reply ?? 'Replanned the rest of your day.'
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Planner failed')

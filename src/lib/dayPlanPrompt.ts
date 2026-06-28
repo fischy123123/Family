@@ -82,4 +82,4 @@ OUTPUT — respond with ONLY a JSON object of exactly this shape, no markdown, n
   ]
 }
 
-Order "items" exactly as the day should flow (anchors interleaved with moves by time/sequence). Keep each item compact. Return the COMPLETE plan every time (in refine/replan you are returning the whole updated list, not a diff). If asked to replan, keep what's already done as-is and rebuild only the remaining part of the day around the current time. Never include more than ~8 items total.`
+Order "items" in TRUE CHRONOLOGICAL ORDER of the day — exactly how it unfolds from morning to night: an early anchor, then the moves that happen before the next anchor, then that anchor, and so on. NEVER list all calendar events/anchors first and the moves afterward — weave each anchor into its real time position among the moves. Keep each item compact. Return the COMPLETE plan every time (in refine/replan you are returning the whole updated list, not a diff). If asked to replan, keep what's already done as-is and rebuild only the remaining part of the day around the current time. Never include more than ~8 items total.`
