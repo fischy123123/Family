@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import {
   CalendarDays, Sparkles, ArrowRight, Loader2, Check, X, Clock, ChevronUp, ChevronDown,
-  ChevronLeft, ChevronRight, Plus, Send, RefreshCw, Lock, Pin, LifeBuoy, Trash2, SlidersHorizontal, TrendingUp,
+  ChevronLeft, ChevronRight, Plus, Send, RefreshCw, Lock, Pin, LifeBuoy, Trash2, SlidersHorizontal, TrendingUp, Lightbulb,
 } from 'lucide-react'
 import { useDayPlan, dateStrOffset, sortByTime } from '@/hooks/useDayPlan'
 import { AboutMeForm } from './AboutMeForm'
@@ -55,6 +55,7 @@ export function DayPlanner() {
     draftPlan, refinePlan, replanRest, finalizePlan,
     toggleItem, removeItem, addItem, applyItems, discardPlan,
     savePersonalProfile,
+    suggestions, suggestLoading, suggestExtras, dismissSuggestion,
   } = useDayPlan()
 
   const [energy, setEnergy] = useState<MomentEnergy | null>(null)
@@ -111,6 +112,15 @@ export function DayPlanner() {
     setFeedback('')
     setReply(null)
     const r = await refinePlan(msg)
+    setReply(r)
+  }
+
+  // Slot a suggested idea into the plan — a surgical add that finds a spot.
+  async function addSuggestion(s: { title: string; why?: string }) {
+    if (working) return
+    setReply(null)
+    dismissSuggestion(s.title)
+    const r = await refinePlan(`Add "${s.title}"${s.why ? ` (${s.why})` : ''} to the plan — find a sensible spot for it, factoring travel time.`)
     setReply(r)
   }
 
@@ -575,6 +585,58 @@ export function DayPlanner() {
             >
               <Trash2 size={12} /> Clear this plan
             </button>
+          )}
+        </div>
+      )}
+
+      {/* Consider fitting in — optional ideas drawn from your goals & standing
+          commitments that could slot into the time you have. */}
+      {!isDone && (
+        <div className="mt-5 pt-4 border-t border-slate-100">
+          <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center gap-1.5">
+              <Lightbulb size={14} className="text-amber-500" />
+              <span className="text-xs font-bold text-slate-700">Consider fitting in</span>
+            </div>
+            <button
+              onClick={suggestExtras}
+              disabled={suggestLoading}
+              className="text-[11px] font-semibold text-indigo-600 hover:text-indigo-700 disabled:opacity-50 flex items-center gap-1 transition-colors"
+            >
+              {suggestLoading ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={11} />}
+              {suggestions.length ? 'Refresh' : 'Suggest'}
+            </button>
+          </div>
+          {suggestions.length === 0 ? (
+            <p className="text-xs text-slate-400 leading-relaxed">
+              {suggestLoading ? 'Looking at your goals & commitments…' : 'Ideas from your goals & standing commitments that could fit today.'}
+            </p>
+          ) : (
+            <div className="space-y-2">
+              {suggestions.map((s) => (
+                <div key={s.title} className="rounded-xl border border-slate-200 p-2.5 flex items-start gap-2">
+                  <Lightbulb size={13} className="text-amber-400 mt-0.5 shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-slate-800 leading-snug">{s.title}</p>
+                    {s.why && <p className="text-xs text-slate-400 mt-0.5 leading-snug">{s.why}</p>}
+                  </div>
+                  <button
+                    onClick={() => addSuggestion(s)}
+                    disabled={working}
+                    className="px-2.5 py-1 rounded-lg bg-indigo-600 text-white text-xs font-semibold disabled:opacity-50 shrink-0 transition-opacity"
+                  >
+                    Add
+                  </button>
+                  <button
+                    onClick={() => dismissSuggestion(s.title)}
+                    aria-label="Dismiss"
+                    className="p-1 text-slate-300 hover:text-slate-500 shrink-0 transition-colors"
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
+              ))}
+            </div>
           )}
         </div>
       )}

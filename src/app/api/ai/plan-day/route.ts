@@ -13,7 +13,7 @@ import type {
 
 const MODEL = DAY_PLAN_MODEL
 
-type PlanMode = 'draft' | 'refine' | 'replan'
+type PlanMode = 'draft' | 'refine' | 'replan' | 'suggest'
 
 // Builds and revises today's plan. Shares the cached family-context block with
 // the other engines, then appends a mode-specific instruction: draft a fresh
@@ -116,6 +116,10 @@ function buildModeInstruction(input: PlanDayInput): string {
 
   const current = (input.currentItems ?? []).map(fmtItem).join('\n') || '  (empty)'
 
+  if (input.mode === 'suggest') {
+    return `\n\nTASK — SUGGEST OPTIONAL ADDITIONS (do NOT modify the plan, do NOT output items): Here is ${dayLabel}'s plan so far:\n${current}\nLooking hard at the user's GOALS, STANDING COMMITMENTS, recent reflections, and overall life balance, propose up to 4 OPTIONAL things they could consider fitting into the time still available ${isToday ? 'today' : `on ${dayLabel}`} that are NOT already in the plan. Strongly favor things that advance a stated goal or honor a standing commitment, or that restore an obviously neglected balance (movement, connection, rest, a put-off priority). Each is short and concrete with a one-line "why" that names the goal/commitment/benefit it serves. Be realistic about the time actually left — if the day is genuinely full or nothing meaningful fits, return fewer or an empty list. Never invent busywork or repeat anything already planned.\nOutput ONLY this JSON and nothing else: {"suggestions":[{"title":"...","why":"..."}]}`
+  }
+
   if (input.mode === 'replan') {
     return `\n\nTASK — REPLAN THE REST OF TODAY: The day has shifted. Here is the current plan with completion state:\n${current}${aboutEnergy}\nKeep everything already marked DONE exactly as-is, and rebuild ONLY the remaining (not-done) part of TODAY around the CURRENT time — drop what no longer fits, resequence, lighten if energy is low. Stay within today only: do NOT pull in anything dated tomorrow or later. If little time remains, a short wind-down is the right answer. Return the COMPLETE updated plan (done items first, then the new go-forward items) as JSON, with a short "reply" acknowledging the reset.${struct}${input.message?.trim() ? `\nThey also said: "${input.message.trim().slice(0, 400)}"` : ''}`
   }
@@ -210,6 +214,21 @@ export async function POST(request: NextRequest) {
     const match = text.match(/\{[\s\S]*\}/)
     let parsed: Record<string, unknown> = {}
     try { if (match) parsed = JSON.parse(match[0]) } catch { /* handled below */ }
+
+    // Suggest mode returns optional ideas, not a plan.
+    if (ctx.mode === 'suggest') {
+      const raw = Array.isArray(parsed.suggestions) ? parsed.suggestions : []
+      const suggestions = raw
+        .map((s) => {
+          const r = s as Record<string, unknown>
+          const title = typeof r.title === 'string' ? r.title.trim() : ''
+          return title ? { title, why: typeof r.why === 'string' ? r.why.trim() : undefined } : null
+        })
+        .filter(Boolean)
+        .slice(0, 4)
+      console.log(`[plan-day] wall=${Date.now() - reqStart}ms mode=suggest n=${suggestions.length}`)
+      return NextResponse.json({ suggestions, generatedAt: new Date().toISOString() })
+    }
 
     const items = coerceItems(parsed.items)
     if (items.length === 0) {

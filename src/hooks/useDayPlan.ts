@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useCallback, useMemo } from 'react'
+import { useState, useCallback, useMemo, useEffect } from 'react'
 import { useFirestore } from '@/hooks/useFirestore'
 import { useAuth } from '@/contexts/AuthContext'
 import { useFamily } from '@/contexts/FamilyContext'
@@ -141,6 +141,9 @@ export function useDayPlan() {
 
   const [working, setWorking] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // Optional "consider fitting in" ideas drawn from goals/commitments/balance.
+  const [suggestions, setSuggestions] = useState<{ title: string; why?: string }[]>([])
+  const [suggestLoading, setSuggestLoading] = useState(false)
 
   const allTasks: Task[] = useMemo(() => [
     ...tasks,
@@ -333,6 +336,31 @@ export function useDayPlan() {
     if (planId) await removePlan(planId)
   }, [planId, removePlan])
 
+  // Ask the engine for optional things to fit in, drawn from the user's goals,
+  // standing commitments, and balance — explicitly NOT modifying the plan.
+  const suggestExtras = useCallback(async () => {
+    if (!todayPlan) return
+    setSuggestLoading(true)
+    try {
+      const res = await fetch('/api/ai/plan-day', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...baseBody(), mode: 'suggest', currentItems: todayPlan.items }),
+      })
+      const data = await res.json()
+      if (res.ok && Array.isArray(data.suggestions)) setSuggestions(data.suggestions)
+    } catch { /* non-fatal */ } finally {
+      setSuggestLoading(false)
+    }
+  }, [baseBody, todayPlan])
+
+  const dismissSuggestion = useCallback((title: string) => {
+    setSuggestions((prev) => prev.filter((s) => s.title !== title))
+  }, [])
+
+  // Suggestions are day-specific — clear them when the selected day changes.
+  useEffect(() => { setSuggestions([]) }, [planId])
+
   // Save (or create) the signed-in person's profile — the "about me & my days"
   // editor writes through this. Same per-person doc the Moment Coach reads.
   const savePersonalProfile = useCallback(async (patch: Partial<PersonalProfile>) => {
@@ -354,5 +382,6 @@ export function useDayPlan() {
     draftPlan, refinePlan, replanRest, finalizePlan,
     toggleItem, removeItem, addItem, applyItems, discardPlan,
     savePersonalProfile,
+    suggestions, suggestLoading, suggestExtras, dismissSuggestion,
   }
 }
