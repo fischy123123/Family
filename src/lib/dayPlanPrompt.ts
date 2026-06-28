@@ -37,11 +37,12 @@ A great plan visibly reflects this knowledge: someone reading it should feel "th
 
 ────────────────────────────────────────
 HOW TO BUILD A GOOD PLAN:
-1. Pull the real ANCHORS from the calendar for today and place them at their actual times.
+1. Pull the real ANCHORS for today: calendar events at their actual times, PLUS the person's fixed daily anchors from ABOUT ME (pickup/drop-off, work hours, bedtime, meds) — these aren't on the calendar but are just as real, and they shape where moves can go. Respect their daily rhythm (hard/important moves in their good focus windows, light moves in the dips). Plan ONLY what's genuinely on THIS person's plate — use their household roles and care/partner schedule to avoid assigning things their partner owns or planning around kids who aren't with them today.
 2. Choose a SMALL set of MOVES — usually 3 to 6, never a brain-dump of every open task. Pick what genuinely matters today, weighing ALL of it: real deadlines, the family's needs and dynamics, standing commitments, the person's goals, what you know from memories and reflections, and their energy. At least one move should usually come from the softer signals (a commitment, a relationship, a goal) — not every item should be a calendar event or an open task. Honor their ABOUT ME, PERSONAL LENS, and any "what's on my mind today" intention.
 3. Be REALISTIC about the day's true capacity. A day with three anchors and low energy has room for two moves, not six. Leave breathing room. Protect rest if they're depleted — a rest move is a legitimate, valuable item, not filler.
 4. Order moves sensibly around the anchors and energy curve (hard/important things when they'll have the most fuel; light things in the low pockets).
 5. For each move, give a short "why" (why it's worth a spot today) and a "firstStep" — a trivially small way to begin (under ~2 min, almost no decision) to beat task-initiation paralysis. Add a rough "minutes" so the day feels finite.
+5b. Respect their plan-density preference and ALWAYS obey their NON-NEGOTIABLES (hard rules like "nothing after bedtime") — never propose anything that breaks one. If they asked to protect rest, include real downtime.
 6. Be CREATIVE and make sensible assumptions — surface what SHOULD happen today even if it's not written down anywhere (the call they keep meaning to make, 20 minutes outside, a small kindness), not just a mirror of the task list. Concrete, not vague.
 
 ────────────────────────────────────────

@@ -3,6 +3,7 @@
 import { useState, useCallback, useMemo } from 'react'
 import { useFirestore } from '@/hooks/useFirestore'
 import { useAuth } from '@/contexts/AuthContext'
+import { useFamily } from '@/contexts/FamilyContext'
 import { generateId } from '@/lib/utils'
 import type {
   FamilyMember, CalendarEvent, Task, Chore, Plan, SmartList,
@@ -23,12 +24,40 @@ function todayStr(): string {
   return `${d.getFullYear()}-${m}-${day}`
 }
 
+// The Command Center scans Gmail and caches the resulting signals under this
+// per-family key. We read that cache so the planner sees the same email signals
+// (deliveries, confirmations, appointment emails) the briefing already uses —
+// without running its own scan. Degrades to [] when nothing's been scanned yet.
+type CachedSignal = {
+  title: string; date?: string | null; notes?: string
+  sourceEmailSubject?: string; messageId?: string; forNames?: string[]
+}
+function readCachedInbox(familyId: string | null): CachedSignal[] {
+  if (!familyId || typeof window === 'undefined') return []
+  try {
+    const raw = localStorage.getItem(`fam-gmail-${familyId}`)
+    if (!raw) return []
+    const parsed = JSON.parse(raw)
+    const inner = parsed && typeof parsed === 'object' && 'v' in parsed ? parsed.v : parsed
+    const signals: CachedSignal[] = Array.isArray(inner) ? inner : (inner?.signals ?? [])
+    return signals
+      .filter((s) => s && s.title)
+      .map((s) => ({
+        title: s.title, date: s.date ?? undefined, notes: s.notes,
+        sourceEmailSubject: s.sourceEmailSubject, messageId: s.messageId, forNames: s.forNames,
+      }))
+  } catch {
+    return []
+  }
+}
+
 // The Day Planner hook. Owns today's plan document (one per person per day):
 // draft it with the AI, refine by chat, edit by tap, finalize, track to done,
 // and replan the rest of the day when it slips. The plan persists in Firestore
 // throughout, so it survives reloads and is the same on every device.
 export function useDayPlan() {
   const { user } = useAuth()
+  const { familyId } = useFamily()
 
   const { data: members } = useFirestore<FamilyMember>('members')
   const { data: events } = useFirestore<CalendarEvent>('events')
@@ -39,7 +68,9 @@ export function useDayPlan() {
   const { data: lists } = useFirestore<SmartList>('lists')
   const { data: memories } = useFirestore<FamilyMemory>('memories')
   const { data: profiles } = useFirestore<FamilyProfile>('profile')
-  const { data: personalProfiles } = useFirestore<PersonalProfile>('personalProfiles')
+  const {
+    data: personalProfiles, create: createProfile, update: updateProfile,
+  } = useFirestore<PersonalProfile>('personalProfiles')
   // Standing commitments + recent reflections — the "who we want to be" layer
   // the planner should translate into concrete moves for today.
   const { data: goals } = useFirestore<FamilyGoal>('goals')
@@ -82,11 +113,12 @@ export function useDayPlan() {
     profile, memories, personalProfile,
     goals: goals.filter((g) => g.active),
     reflections,
+    inbox: readCachedInbox(familyId),
     currentUserEmail: user?.email ?? undefined,
     currentUserName: user?.displayName ?? undefined,
     now: new Date().toISOString(),
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-  }), [members, events, allTasks, chores, plans, lists, profile, memories, personalProfile, goals, reflections, user])
+  }), [members, events, allTasks, chores, plans, lists, profile, memories, personalProfile, goals, reflections, familyId, user])
 
   // Persist a set of items (with a headline) as today's plan doc, preserving
   // status. Items get stable ids so later toggles/edits address the right one.
@@ -212,11 +244,25 @@ export function useDayPlan() {
     if (planId) await removePlan(planId)
   }, [planId, removePlan])
 
+  // Save (or create) the signed-in person's profile — the "about me & my days"
+  // editor writes through this. Same per-person doc the Moment Coach reads.
+  const savePersonalProfile = useCallback(async (patch: Partial<PersonalProfile>) => {
+    if (!user?.email || !myKey) return
+    const next: PersonalProfile = {
+      ...(personalProfile ?? { id: myKey, email: user.email }),
+      ...patch, id: myKey, email: user.email, updatedAt: new Date().toISOString(),
+    }
+    if (personalProfile) await updateProfile(next)
+    else await createProfile(next)
+  }, [user, myKey, personalProfile, createProfile, updateProfile])
+
   return {
     todayPlan,
+    personalProfile,
     hasProfile: !!personalProfile,
     working, error,
     draftPlan, refinePlan, replanRest, finalizePlan,
     toggleItem, removeItem, addItem, moveItem, discardPlan,
+    savePersonalProfile,
   }
 }

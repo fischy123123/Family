@@ -5,6 +5,7 @@ import { logUsage } from '@/lib/ai'
 import {
   DAY_PLAN_MODEL, DAY_PLAN_MAX_TOKENS, DAY_PLAN_SYSTEM_PROMPT,
 } from '@/lib/dayPlanPrompt'
+import { buildPersonalProfileBlock } from '@/lib/personalProfileContext'
 import type {
   PersonalProfile, MomentEnergy, DayPlanItem, DayPlanItemKind,
   FamilyGoal, Reflection,
@@ -144,14 +145,7 @@ export async function POST(request: NextRequest) {
   }
 
   const { timeHeader, dataBlock } = buildFamilyContextParts(ctx)
-  const aboutMe = ctx.personalProfile
-    ? `\n\nABOUT ME (the signed-in person — tune the plan to them): ${[
-        ctx.personalProfile.goals?.length ? `Working toward: ${ctx.personalProfile.goals.join('; ')}.` : '',
-        ctx.personalProfile.biggestStruggle ? `Gets in my way: ${ctx.personalProfile.biggestStruggle}.` : '',
-        ctx.personalProfile.hasAdhd ? `Has ADHD — lean on tiny first steps and a short, forgiving plan.` : '',
-        ctx.personalProfile.freeform ? `Also: ${ctx.personalProfile.freeform}.` : '',
-      ].filter(Boolean).join(' ')}`
-    : ''
+  const aboutMe = buildPersonalProfileBlock(ctx.personalProfile)
   const commitments = buildCommitmentsBlock(ctx.goals, ctx.reflections)
   const modeInstruction = buildModeInstruction(ctx)
 

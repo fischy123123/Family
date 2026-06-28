@@ -5,6 +5,7 @@ import { logUsage } from '@/lib/ai'
 import {
   MOMENT_COACH_MODEL, MOMENT_COACH_MAX_TOKENS, MOMENT_COACH_SYSTEM_PROMPT,
 } from '@/lib/momentCoachPrompt'
+import { buildPersonalProfileBlock } from '@/lib/personalProfileContext'
 import type {
   PersonalProfile, MomentEnergy, MomentMood, MomentGuidance, MomentMove, MomentCheckIn,
   DayPlan, DayPlanItem,
@@ -32,23 +33,6 @@ type CoachNowInput = FamilyContextInput & {
   // advance the plan (point at the next sensible thing on it) rather than invent
   // something unrelated, unless the user's state clearly calls for otherwise.
   dayPlan?: { headline?: string; status?: string; items?: DayPlanItem[] }
-}
-
-// Render the "ABOUT ME" block from the user's personal profile. This is the
-// highest-priority personalization signal for the coach — kept compact.
-function buildAboutMe(p?: PersonalProfile | null): string {
-  if (!p) return ''
-  const lines: string[] = []
-  if (p.goals?.length) lines.push(`What I'm working toward: ${p.goals.join('; ')}`)
-  if (p.biggestStruggle) lines.push(`What most gets in my way: ${p.biggestStruggle}`)
-  if (p.hasAdhd) lines.push(`I have ADHD — task initiation is hard; tiny first steps and momentum help me a lot.`)
-  if (p.startStrategies?.length) lines.push(`Things that actually help me start: ${p.startStrategies.join('; ')}`)
-  if (p.energizers?.length) lines.push(`What energizes me: ${p.energizers.join('; ')}`)
-  if (p.drainers?.length) lines.push(`What drains me: ${p.drainers.join('; ')}`)
-  if (p.avoiding?.length) lines.push(`Things I keep putting off: ${p.avoiding.join('; ')}`)
-  if (p.freeform) lines.push(`Also: ${p.freeform}`)
-  if (!lines.length) return ''
-  return `\n\nABOUT ME (the signed-in person — highest-priority personalization. Tune every suggestion to this person; use a start-strategy they told you works):\n${lines.join('\n')}`
 }
 
 // Render the current-state check-in. This is decisive for the coach — it sizes
@@ -153,7 +137,7 @@ export async function POST(request: NextRequest) {
   // The static, cacheable family context — identical to what the attention
   // engine builds, so this call shares the family-context cache entry.
   const { timeHeader, dataBlock } = buildFamilyContextParts(ctx)
-  const aboutMe = buildAboutMe(ctx.personalProfile)
+  const aboutMe = buildPersonalProfileBlock(ctx.personalProfile)
   const checkIn = buildCheckIn(ctx.energy, ctx.mood, ctx.completedToday)
   const situation = buildSituation(ctx.situation)
   const trends = buildTrends(ctx.recentCheckins)

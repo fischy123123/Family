@@ -196,6 +196,20 @@ export interface PersonalProfile {
   avoiding?: string[]           // things they keep meaning to do but put off
   freeform?: string             // anything else they want the coach to know
   hasAdhd?: boolean             // tunes the coach toward initiation support
+
+  // ── Your days (rhythm) — how the day actually flows, beyond the calendar ──
+  rhythm?: string               // when they focus best vs. crash (e.g. "sharp 6-9am, fried after lunch")
+  fixedAnchors?: string[]       // recurring NON-calendar anchors: pickup/drop-off, work hours, bedtime, meds
+
+  // ── Household dynamic — who does what, and who's around ──
+  householdRoles?: string       // division of labor by default ("I do mornings + pickup; partner does dinner + bedtime")
+  careSchedule?: string         // which days they have the kids / partner availability/travel pattern
+
+  // ── How they want the plan built ──
+  planStyle?: 'minimal' | 'balanced' | 'packed'  // how full a day should feel
+  protectRest?: boolean         // explicitly carve out rest/downtime
+  nonNegotiables?: string[]     // hard rules the plan must respect ("nothing after 8pm bedtime")
+
   updatedAt?: string
 }
 

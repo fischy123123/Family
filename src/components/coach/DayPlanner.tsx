@@ -3,9 +3,10 @@
 import { useState } from 'react'
 import {
   CalendarDays, Sparkles, ArrowRight, Loader2, Check, X, ChevronUp, ChevronDown,
-  Plus, Send, RefreshCw, Lock, Pin, LifeBuoy, Trash2,
+  Plus, Send, RefreshCw, Lock, Pin, LifeBuoy, Trash2, SlidersHorizontal,
 } from 'lucide-react'
 import { useDayPlan } from '@/hooks/useDayPlan'
+import { AboutMeForm } from './AboutMeForm'
 import { MOMENT_ENERGY_META, MOMENT_KIND_META } from '@/lib/types'
 import type { MomentEnergy, DayPlanItem } from '@/lib/types'
 
@@ -18,9 +19,10 @@ function fmtTime(iso?: string): string {
 
 export function DayPlanner() {
   const {
-    todayPlan, working, error,
+    todayPlan, personalProfile, working, error,
     draftPlan, refinePlan, replanRest, finalizePlan,
     toggleItem, removeItem, addItem, moveItem, discardPlan,
+    savePersonalProfile,
   } = useDayPlan()
 
   const [energy, setEnergy] = useState<MomentEnergy | null>(null)
@@ -28,6 +30,7 @@ export function DayPlanner() {
   const [chat, setChat] = useState('')
   const [reply, setReply] = useState<string | null>(null)
   const [addText, setAddText] = useState('')
+  const [editingProfile, setEditingProfile] = useState(false)
 
   const status = todayPlan?.status
   const dateLabel = new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })
@@ -56,12 +59,48 @@ export function DayPlanner() {
       <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-indigo-500 to-blue-600 flex items-center justify-center shrink-0">
         <CalendarDays size={18} className="text-white" />
       </div>
-      <div className="min-w-0">
+      <div className="min-w-0 flex-1">
         <h2 className="text-lg font-bold text-slate-900 tracking-tight leading-tight">Today&apos;s plan</h2>
         <p className="text-xs text-slate-400 truncate">{dateLabel}</p>
       </div>
+      <button
+        onClick={() => setEditingProfile(true)}
+        aria-label="About me & my days"
+        className="p-1.5 rounded-lg text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 transition-colors shrink-0"
+      >
+        <SlidersHorizontal size={17} />
+      </button>
     </div>
   )
+
+  // ── Profile editor (about me & my days) ─────────────────────────────────────
+  if (editingProfile) {
+    return (
+      <section className="rounded-2xl p-5 bg-white shadow-card">
+        <div className="flex items-center gap-2.5 mb-4">
+          <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-indigo-500 to-blue-600 flex items-center justify-center shrink-0">
+            <SlidersHorizontal size={18} className="text-white" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <h2 className="text-lg font-bold text-slate-900 tracking-tight leading-tight">About me &amp; my days</h2>
+            <p className="text-xs text-slate-400">So your plans actually fit you</p>
+          </div>
+          <button
+            onClick={() => setEditingProfile(false)}
+            aria-label="Close"
+            className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors shrink-0"
+          >
+            <X size={18} />
+          </button>
+        </div>
+        <AboutMeForm
+          existing={personalProfile}
+          onSave={async (patch) => { await savePersonalProfile(patch); setEditingProfile(false) }}
+          onCancel={() => setEditingProfile(false)}
+        />
+      </section>
+    )
+  }
 
   // ── Kickoff (no plan yet) ───────────────────────────────────────────────────
   if (!todayPlan) {
@@ -78,6 +117,15 @@ export function DayPlanner() {
             <p className="text-sm text-slate-500 leading-relaxed">
               Tell me where you&apos;re at and I&apos;ll draft a realistic plan for today. You can tweak it before locking it in.
             </p>
+            {!personalProfile?.rhythm && !personalProfile?.householdRoles && (
+              <button
+                onClick={() => setEditingProfile(true)}
+                className="w-full flex items-center justify-between gap-2 rounded-xl px-3 py-2.5 bg-indigo-50 text-indigo-700 text-xs font-semibold hover:bg-indigo-100 transition-colors"
+              >
+                <span className="flex items-center gap-1.5"><SlidersHorizontal size={14} /> Tell me about you &amp; your days — plans fit way better</span>
+                <ArrowRight size={14} />
+              </button>
+            )}
             <div>
               <p className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2">Energy today</p>
               <div className="grid grid-cols-3 gap-2">
