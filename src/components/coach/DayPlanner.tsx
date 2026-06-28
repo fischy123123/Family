@@ -65,6 +65,7 @@ export function DayPlanner() {
   const [chat, setChat] = useState('')
   const [reply, setReply] = useState<string | null>(null)
   const [addText, setAddText] = useState('')
+  const [feedback, setFeedback] = useState('')
   const [editingProfile, setEditingProfile] = useState(false)
   // How prescriptive to draft. Defaults to the saved profile preference until
   // the user picks for this plan.
@@ -100,6 +101,19 @@ export function DayPlanner() {
   async function doReplan() {
     setReply(null)
     const r = await replanRest()
+    setReply(r)
+  }
+
+  // On-the-fly feedback on a locked-in plan. For today, this re-plans ONLY the
+  // remaining (not-done) items around the current time — completed items are
+  // kept exactly as they are. For a future committed day (nothing done yet,
+  // no "now"), it's a normal refine of the whole plan.
+  async function sendFeedback() {
+    const msg = feedback.trim()
+    if (!msg || working) return
+    setFeedback('')
+    setReply(null)
+    const r = isToday ? await replanRest(msg) : await refinePlan(msg)
     setReply(r)
   }
 
@@ -440,6 +454,29 @@ export function DayPlanner() {
             </div>
           )}
           {error && <p className="text-xs text-red-600 bg-red-50 rounded-lg px-3 py-2">{error}</p>}
+
+          {/* On-the-fly feedback — adjust the plan after it's locked in. Only
+              the remaining/not-done items change; what you've finished stays. */}
+          {!isDone && (
+            <div className="flex items-center gap-2">
+              <input
+                value={feedback}
+                onChange={(e) => setFeedback(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') sendFeedback() }}
+                placeholder={isToday ? 'Something change? Tell me — I’ll redo the rest…' : 'Want to adjust this plan? Tell me…'}
+                disabled={working}
+                className="flex-1 text-sm rounded-lg px-3 py-2 border border-slate-200 focus:outline-none focus:border-indigo-300 bg-slate-50"
+              />
+              <button
+                onClick={sendFeedback}
+                disabled={!feedback.trim() || working}
+                className="p-2 rounded-lg bg-indigo-100 text-indigo-600 hover:bg-indigo-200 disabled:opacity-40 transition-colors"
+              >
+                {working ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
+              </button>
+            </div>
+          )}
+
           {/* "Get a nudge" and "re-plan the rest" are about the day in progress,
               so they only apply to today. Future days just show the checklist. */}
           {!isDone && isToday && (
