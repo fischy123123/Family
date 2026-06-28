@@ -32,6 +32,11 @@ type PlanDayInput = FamilyContextInput & {
   // block, so the planner renders them itself (see buildCommitments).
   goals?: FamilyGoal[]
   reflections?: Reflection[]
+  // Which day to plan. Defaults to today; isToday=false means a future day
+  // (plan the whole day, not "from now forward").
+  targetDate?: string
+  targetDateLabel?: string
+  isToday?: boolean
 }
 
 // Standing commitments + recent reflections → a block the planner should mine
@@ -79,13 +84,20 @@ function fmtItem(it: DayPlanItem): string {
 }
 
 function buildModeInstruction(input: PlanDayInput): string {
-  const aboutEnergy = input.energy ? `\nEnergy right now: ${input.energy}.` : ''
+  const isToday = input.isToday !== false  // default to today when unspecified
+  const dayLabel = input.targetDateLabel || (isToday ? 'today' : `${input.targetDate}`)
+  const aboutEnergy = input.energy
+    ? `\n${isToday ? 'Energy right now' : `Expected energy on ${dayLabel}`}: ${input.energy}.`
+    : ''
   const aboutIntention = input.intention?.trim()
-    ? `\nWhat's on their mind today (honor this): "${input.intention.trim().slice(0, 600)}"`
+    ? `\nWhat's on their mind for ${dayLabel} (honor this): "${input.intention.trim().slice(0, 600)}"`
     : ''
 
   if (input.mode === 'draft') {
-    return `\n\nTASK — DRAFT TODAY'S PLAN: Build a fresh, realistic plan for the REMAINDER OF TODAY ONLY — from the current time until the user winds down tonight. Pull anchors from today's calendar (only events on today's date that start at or after now) and choose moves for the time left today. Do NOT include anything dated tomorrow or later, even if it's the next calendar event. If little remains in the day, return a short honest wind-down plan rather than padding it.${aboutEnergy}${aboutIntention}\nReturn the full plan as JSON. No "reply" field for an initial draft.`
+    const scope = isToday
+      ? `the REMAINDER OF TODAY ONLY — from the current time until the user winds down tonight. Pull anchors from today's calendar (only events on today's date that start at or after now) and choose moves for the time left today.`
+      : `the FULL DAY of ${dayLabel} — this is a FUTURE day, so the entire day is ahead (morning through evening). Pull anchors ONLY from the calendar events dated ${dayLabel}, and plan moves across that whole day.`
+    return `\n\nTASK — DRAFT THE PLAN FOR ${dayLabel.toUpperCase()}: Build a fresh, realistic plan for ${scope} The plan must stay strictly within ${dayLabel} — do NOT include anything from any other day. If there's genuinely little to do, a short honest plan is correct rather than padding it.${aboutEnergy}${aboutIntention}\nReturn the full plan as JSON. No "reply" field for an initial draft.`
   }
 
   const current = (input.currentItems ?? []).map(fmtItem).join('\n') || '  (empty)'

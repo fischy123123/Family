@@ -24,6 +24,22 @@ function todayStr(): string {
   return `${d.getFullYear()}-${m}-${day}`
 }
 
+// A YYYY-MM-DD a given number of days from today (local).
+export function dateStrOffset(days: number): string {
+  const d = new Date()
+  d.setDate(d.getDate() + days)
+  const m = `${d.getMonth() + 1}`.padStart(2, '0')
+  const day = `${d.getDate()}`.padStart(2, '0')
+  return `${d.getFullYear()}-${m}-${day}`
+}
+
+// Human label for a YYYY-MM-DD (parsed as local midnight to avoid UTC shift).
+function labelFor(dateStr: string): string {
+  try {
+    return new Date(`${dateStr}T00:00:00`).toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })
+  } catch { return dateStr }
+}
+
 // The Command Center scans Gmail and caches the resulting signals under this
 // per-family key. We read that cache so the planner sees the same email signals
 // (deliveries, confirmations, appointment emails) the briefing already uses —
@@ -81,7 +97,11 @@ export function useDayPlan() {
 
   const profile = profiles[0] ?? null
   const myKey = user?.email ? emailKey(user.email) : null
-  const date = todayStr()
+  // Which day is being planned. Defaults to today; can move to any future day.
+  const [selectedDate, setSelectedDate] = useState(todayStr())
+  const date = selectedDate
+  const isToday = selectedDate === todayStr()
+  const targetDateLabel = labelFor(selectedDate)
   const planId = myKey ? `${myKey}_${date}` : null
   const personalProfile = useMemo(
     () => (myKey ? personalProfiles.find((p) => p.id === myKey) ?? null : null),
@@ -118,7 +138,11 @@ export function useDayPlan() {
     currentUserName: user?.displayName ?? undefined,
     now: new Date().toISOString(),
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-  }), [members, events, allTasks, chores, plans, lists, profile, memories, personalProfile, goals, reflections, familyId, user])
+    // Which day to plan, and whether it's today (vs. a future day).
+    targetDate: selectedDate,
+    targetDateLabel,
+    isToday,
+  }), [members, events, allTasks, chores, plans, lists, profile, memories, personalProfile, goals, reflections, familyId, user, selectedDate, targetDateLabel, isToday])
 
   // Persist a set of items (with a headline) as today's plan doc, preserving
   // status. Items get stable ids so later toggles/edits address the right one.
@@ -150,8 +174,9 @@ export function useDayPlan() {
     return data
   }
 
-  // Draft a fresh plan from the kickoff check-in.
-  const draftPlan = useCallback(async (energy: MomentEnergy, intention?: string) => {
+  // Draft a fresh plan from the kickoff check-in. Energy is optional (for future
+  // days, "how you'll feel" is a guess, so it's not required).
+  const draftPlan = useCallback(async (energy?: MomentEnergy, intention?: string) => {
     setWorking(true); setError(null)
     try {
       const data = await callEngine({ ...baseBody(), mode: 'draft', energy, intention: intention?.trim() || undefined })
@@ -257,7 +282,8 @@ export function useDayPlan() {
   }, [user, myKey, personalProfile, createProfile, updateProfile])
 
   return {
-    todayPlan,
+    plan: todayPlan,
+    selectedDate, setSelectedDate, isToday, targetDateLabel,
     personalProfile,
     hasProfile: !!personalProfile,
     working, error,

@@ -3,9 +3,9 @@
 import { useState } from 'react'
 import {
   CalendarDays, Sparkles, ArrowRight, Loader2, Check, X, ChevronUp, ChevronDown,
-  Plus, Send, RefreshCw, Lock, Pin, LifeBuoy, Trash2, SlidersHorizontal,
+  ChevronLeft, ChevronRight, Plus, Send, RefreshCw, Lock, Pin, LifeBuoy, Trash2, SlidersHorizontal,
 } from 'lucide-react'
-import { useDayPlan } from '@/hooks/useDayPlan'
+import { useDayPlan, dateStrOffset } from '@/hooks/useDayPlan'
 import { AboutMeForm } from './AboutMeForm'
 import { MOMENT_ENERGY_META, MOMENT_KIND_META } from '@/lib/types'
 import type { MomentEnergy, DayPlanItem } from '@/lib/types'
@@ -17,9 +17,19 @@ function fmtTime(iso?: string): string {
   try { return new Date(iso).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }) } catch { return '' }
 }
 
+// Shift a YYYY-MM-DD by n days (parsed as local midnight to avoid UTC drift).
+function shiftDate(dateStr: string, days: number): string {
+  const d = new Date(`${dateStr}T00:00:00`)
+  d.setDate(d.getDate() + days)
+  const m = `${d.getMonth() + 1}`.padStart(2, '0')
+  const day = `${d.getDate()}`.padStart(2, '0')
+  return `${d.getFullYear()}-${m}-${day}`
+}
+
 export function DayPlanner() {
   const {
-    todayPlan, personalProfile, working, error,
+    plan, selectedDate, setSelectedDate, isToday, targetDateLabel,
+    personalProfile, working, error,
     draftPlan, refinePlan, replanRest, finalizePlan,
     toggleItem, removeItem, addItem, moveItem, discardPlan,
     savePersonalProfile,
@@ -32,8 +42,13 @@ export function DayPlanner() {
   const [addText, setAddText] = useState('')
   const [editingProfile, setEditingProfile] = useState(false)
 
-  const status = todayPlan?.status
-  const dateLabel = new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })
+  const status = plan?.status
+  const today0 = dateStrOffset(0)
+  const relLabel = selectedDate === today0 ? 'Today' : selectedDate === dateStrOffset(1) ? 'Tomorrow' : null
+  const weekday = targetDateLabel.split(',')[0]
+  const title = relLabel ? `${relLabel}’s plan` : `${weekday}’s plan`
+  const canGoPrev = selectedDate > today0          // no planning the past
+  const canGoNext = selectedDate < dateStrOffset(14)  // up to two weeks out
 
   async function sendRefine() {
     const msg = chat.trim()
@@ -55,21 +70,53 @@ export function DayPlanner() {
 
   // ── Header ────────────────────────────────────────────────────────────────
   const header = (
-    <div className="flex items-center gap-2.5 mb-4">
-      <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-indigo-500 to-blue-600 flex items-center justify-center shrink-0">
-        <CalendarDays size={18} className="text-white" />
+    <div className="mb-4">
+      <div className="flex items-center gap-2.5">
+        <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-indigo-500 to-blue-600 flex items-center justify-center shrink-0">
+          <CalendarDays size={18} className="text-white" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <h2 className="text-lg font-bold text-slate-900 tracking-tight leading-tight">{title}</h2>
+          <p className="text-xs text-slate-400 truncate">{targetDateLabel}</p>
+        </div>
+        <button
+          onClick={() => setEditingProfile(true)}
+          aria-label="About me & my days"
+          className="p-1.5 rounded-lg text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 transition-colors shrink-0"
+        >
+          <SlidersHorizontal size={17} />
+        </button>
       </div>
-      <div className="min-w-0 flex-1">
-        <h2 className="text-lg font-bold text-slate-900 tracking-tight leading-tight">Today&apos;s plan</h2>
-        <p className="text-xs text-slate-400 truncate">{dateLabel}</p>
+      {/* Day stepper — plan today or any day up to two weeks out. */}
+      <div className="flex items-center gap-2 mt-3">
+        <button
+          onClick={() => canGoPrev && setSelectedDate(shiftDate(selectedDate, -1))}
+          disabled={!canGoPrev}
+          aria-label="Previous day"
+          className="w-8 h-8 rounded-lg flex items-center justify-center text-slate-500 bg-slate-100 hover:bg-slate-200 disabled:opacity-30 disabled:hover:bg-slate-100 transition-colors"
+        >
+          <ChevronLeft size={16} />
+        </button>
+        <div className="flex-1 text-center text-xs font-semibold text-slate-500">
+          {relLabel ?? weekday}
+        </div>
+        <button
+          onClick={() => canGoNext && setSelectedDate(shiftDate(selectedDate, 1))}
+          disabled={!canGoNext}
+          aria-label="Next day"
+          className="w-8 h-8 rounded-lg flex items-center justify-center text-slate-500 bg-slate-100 hover:bg-slate-200 disabled:opacity-30 disabled:hover:bg-slate-100 transition-colors"
+        >
+          <ChevronRight size={16} />
+        </button>
+        {!isToday && (
+          <button
+            onClick={() => setSelectedDate(today0)}
+            className="px-2.5 h-8 rounded-lg text-xs font-semibold text-indigo-600 bg-indigo-50 hover:bg-indigo-100 transition-colors"
+          >
+            Today
+          </button>
+        )}
       </div>
-      <button
-        onClick={() => setEditingProfile(true)}
-        aria-label="About me & my days"
-        className="p-1.5 rounded-lg text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 transition-colors shrink-0"
-      >
-        <SlidersHorizontal size={17} />
-      </button>
     </div>
   )
 
@@ -103,7 +150,7 @@ export function DayPlanner() {
   }
 
   // ── Kickoff (no plan yet) ───────────────────────────────────────────────────
-  if (!todayPlan) {
+  if (!plan) {
     return (
       <section className="rounded-2xl p-5 bg-white shadow-card">
         {header}
@@ -115,7 +162,9 @@ export function DayPlanner() {
         ) : (
           <div className="space-y-4">
             <p className="text-sm text-slate-500 leading-relaxed">
-              Tell me where you&apos;re at and I&apos;ll draft a realistic plan for today. You can tweak it before locking it in.
+              {isToday
+                ? 'Tell me where you’re at and I’ll draft a realistic plan for today. You can tweak it before locking it in.'
+                : `Let’s plan ${relLabel ? relLabel.toLowerCase() : weekday}. I’ll draft a realistic day from what’s on the calendar and what matters — tweak it before locking it in.`}
             </p>
             {!personalProfile?.rhythm && !personalProfile?.householdRoles && (
               <button
@@ -127,7 +176,9 @@ export function DayPlanner() {
               </button>
             )}
             <div>
-              <p className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2">Energy today</p>
+              <p className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2">
+                {isToday ? 'Energy today' : <>Expected energy <span className="font-normal normal-case text-slate-300">· optional</span></>}
+              </p>
               <div className="grid grid-cols-3 gap-2">
                 {ENERGY_ORDER.map((e) => {
                   const meta = MOMENT_ENERGY_META[e]
@@ -149,23 +200,23 @@ export function DayPlanner() {
             </div>
             <div>
               <p className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2">
-                What&apos;s on your mind today? <span className="font-normal normal-case text-slate-300">· optional</span>
+                What&apos;s on your mind for {relLabel ? relLabel.toLowerCase() : weekday}? <span className="font-normal normal-case text-slate-300">· optional</span>
               </p>
               <textarea
                 value={intention}
                 onChange={(e) => setIntention(e.target.value)}
                 rows={2}
-                placeholder="What you want to get done, what you're dreading, anything special about today…"
+                placeholder={isToday ? "What you want to get done, what you're dreading, anything special about today…" : 'What you want this day to include, anything to prep for, anything special…'}
                 className="w-full text-sm rounded-lg px-3 py-2 border border-slate-200 focus:outline-none focus:border-indigo-300 bg-slate-50 resize-none leading-relaxed"
               />
             </div>
             {error && <p className="text-xs text-red-600 bg-red-50 rounded-lg px-3 py-2">{error}</p>}
             <button
-              onClick={() => energy && draftPlan(energy, intention)}
-              disabled={!energy}
+              onClick={() => draftPlan(energy ?? undefined, intention)}
+              disabled={working || (isToday && !energy)}
               className="w-full py-3 rounded-xl bg-indigo-600 text-white font-bold text-sm flex items-center justify-center gap-2 disabled:opacity-50 active:scale-[0.99] transition-transform"
             >
-              Draft my day <ArrowRight size={16} />
+              Draft {relLabel ? relLabel.toLowerCase() : weekday} <ArrowRight size={16} />
             </button>
           </div>
         )}
@@ -173,7 +224,7 @@ export function DayPlanner() {
     )
   }
 
-  const items = todayPlan.items
+  const items = plan.items
   const doneCount = items.filter((i) => i.done).length
   const pct = items.length ? Math.round((doneCount / items.length) * 100) : 0
   const isDraft = status === 'draft'
@@ -183,8 +234,8 @@ export function DayPlanner() {
     <section className="rounded-2xl p-5 bg-white shadow-card">
       {header}
 
-      {todayPlan.headline && (
-        <p className="text-sm text-slate-600 leading-relaxed mb-4 -mt-1">{todayPlan.headline}</p>
+      {plan.headline && (
+        <p className="text-sm text-slate-600 leading-relaxed mb-4 -mt-1">{plan.headline}</p>
       )}
 
       {/* Progress (active/done) */}
@@ -290,7 +341,9 @@ export function DayPlanner() {
             </div>
           )}
           {error && <p className="text-xs text-red-600 bg-red-50 rounded-lg px-3 py-2">{error}</p>}
-          {!isDone && (
+          {/* "Get a nudge" and "re-plan the rest" are about the day in progress,
+              so they only apply to today. Future days just show the checklist. */}
+          {!isDone && isToday && (
             <div className="flex items-center gap-2">
               <button
                 onClick={nudge}
@@ -311,7 +364,7 @@ export function DayPlanner() {
             onClick={discardPlan}
             className="w-full py-2 rounded-xl text-xs font-medium text-slate-400 hover:text-red-500 hover:bg-red-50 transition-colors flex items-center justify-center gap-1.5"
           >
-            <Trash2 size={12} /> Clear today&apos;s plan
+            <Trash2 size={12} /> Clear this plan
           </button>
         </div>
       )}
