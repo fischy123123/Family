@@ -68,6 +68,14 @@ export function DayPlanner() {
     return () => clearInterval(id)
   }, [])
 
+  // Drag sensors (touch + mouse), with a small activation distance so taps and
+  // scrolling still work. Declared before any early returns — hooks must run
+  // unconditionally.
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  )
+
   const status = plan?.status
   const today0 = dateStrOffset(0)
   const relLabel = selectedDate === today0 ? 'Today' : selectedDate === dateStrOffset(1) ? 'Tomorrow' : null
@@ -345,12 +353,6 @@ export function DayPlanner() {
     }
     applyItems(out)
   }
-
-  // Touch + mouse drag, with a small activation distance so taps/scroll still work.
-  const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
-    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
-  )
 
   return (
     <section className="rounded-2xl p-5 bg-white shadow-card">
