@@ -45,13 +45,13 @@ function buildModeInstruction(input: PlanDayInput): string {
     : ''
 
   if (input.mode === 'draft') {
-    return `\n\nTASK — DRAFT TODAY'S PLAN: Build a fresh, realistic plan for the rest of today from the calendar (anchors) and what matters (moves).${aboutEnergy}${aboutIntention}\nReturn the full plan as JSON. No "reply" field for an initial draft.`
+    return `\n\nTASK — DRAFT TODAY'S PLAN: Build a fresh, realistic plan for the REMAINDER OF TODAY ONLY — from the current time until the user winds down tonight. Pull anchors from today's calendar (only events on today's date that start at or after now) and choose moves for the time left today. Do NOT include anything dated tomorrow or later, even if it's the next calendar event. If little remains in the day, return a short honest wind-down plan rather than padding it.${aboutEnergy}${aboutIntention}\nReturn the full plan as JSON. No "reply" field for an initial draft.`
   }
 
   const current = (input.currentItems ?? []).map(fmtItem).join('\n') || '  (empty)'
 
   if (input.mode === 'replan') {
-    return `\n\nTASK — REPLAN THE REST OF TODAY: The day has shifted. Here is the current plan with completion state:\n${current}${aboutEnergy}\nKeep everything already marked DONE exactly as-is, and rebuild ONLY the remaining (not-done) part of the day around the CURRENT time — drop what no longer fits, resequence, lighten if energy is low. Return the COMPLETE updated plan (done items first, then the new go-forward items) as JSON, with a short "reply" acknowledging the reset.${input.message?.trim() ? `\nThey also said: "${input.message.trim().slice(0, 400)}"` : ''}`
+    return `\n\nTASK — REPLAN THE REST OF TODAY: The day has shifted. Here is the current plan with completion state:\n${current}${aboutEnergy}\nKeep everything already marked DONE exactly as-is, and rebuild ONLY the remaining (not-done) part of TODAY around the CURRENT time — drop what no longer fits, resequence, lighten if energy is low. Stay within today only: do NOT pull in anything dated tomorrow or later. If little time remains, a short wind-down is the right answer. Return the COMPLETE updated plan (done items first, then the new go-forward items) as JSON, with a short "reply" acknowledging the reset.${input.message?.trim() ? `\nThey also said: "${input.message.trim().slice(0, 400)}"` : ''}`
   }
 
   // refine
