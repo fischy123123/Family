@@ -77,6 +77,7 @@ export function TasksView() {
   const [showCompleted, setShowCompleted] = useState(false)
   const [addTitle, setAddTitle] = useState('')
   const [addPriority, setAddPriority] = useState<Priority>('none')
+  const [addDueDate, setAddDueDate] = useState('')
   const [addAssignee, setAddAssignee] = useState<string | undefined>(undefined)
   const [adding, setAdding] = useState(false)
 
@@ -147,12 +148,14 @@ export function TasksView() {
       title,
       isCompleted: false,
       priority: addPriority,
+      ...(addDueDate ? { dueDate: addDueDate } : {}),
       ...assignFields(members, addAssignee),
       source: 'manual',
       createdAt: new Date().toISOString(),
     } as Task)
     setAddTitle('')
     setAddPriority('none')
+    setAddDueDate('')
     setAddAssignee(undefined)
     setAdding(false)
   }
@@ -192,6 +195,23 @@ export function TasksView() {
             <option value="medium">🟠 Medium</option>
             <option value="low">🟢 Low</option>
           </select>
+          <input
+            type="date"
+            value={addDueDate}
+            onChange={(e) => setAddDueDate(e.target.value)}
+            aria-label="Due date"
+            className="flex-1 text-xs rounded-xl px-2 py-2 border border-slate-200 focus:outline-none focus:border-blue-300 bg-white text-slate-600"
+          />
+          {addDueDate && (
+            <button
+              type="button"
+              onClick={() => setAddDueDate('')}
+              aria-label="Clear due date"
+              className="px-2 py-2 rounded-xl text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors"
+            >
+              <X size={14} />
+            </button>
+          )}
         </div>
         {members.length > 0 && (
           <AssigneePicker members={members} value={addAssignee} onChange={setAddAssignee} label="Assign to" />
