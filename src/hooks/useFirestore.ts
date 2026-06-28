@@ -16,8 +16,26 @@ import { db } from '@/lib/firebase'
 import { useFamily } from '@/contexts/FamilyContext'
 import { generateId } from '@/lib/utils'
 
+// Recursively drop `undefined` values — Firestore rejects them, including when
+// they're nested inside arrays/maps (e.g. an optional field on a plan item
+// inside the `items` array). Only plain objects/arrays are recursed into;
+// class instances (FieldValue like deleteField(), Timestamp, Date) are left
+// intact so sentinels keep working.
+function deepStrip(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(deepStrip)
+  if (value && typeof value === 'object' && Object.getPrototypeOf(value) === Object.prototype) {
+    const out: Record<string, unknown> = {}
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      if (v === undefined) continue
+      out[k] = deepStrip(v)
+    }
+    return out
+  }
+  return value
+}
+
 function stripUndefined(obj: Record<string, unknown>): Record<string, unknown> {
-  return Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== undefined))
+  return deepStrip(obj) as Record<string, unknown>
 }
 
 export function useFirestore<T extends { id: string }>(collectionName: string) {
