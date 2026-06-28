@@ -187,6 +187,24 @@ export async function POST(request: NextRequest) {
   const commitments = buildCommitmentsBlock(ctx.goals, ctx.reflections)
   const modeInstruction = buildModeInstruction(ctx)
 
+  // Caching layout (most stable → most volatile, so the cached PREFIX stays
+  // identical across the many calls in one planning session):
+  //   1. system prompt (static)            — cached
+  //   2. FAMILY CONTEXT data block         — cached
+  //   3. about-me + standing commitments   — cached (stable within a session)
+  //   4. time header + mode instruction    — uncached (changes every call/mode)
+  // So a draft writes the cache and every subsequent refine/reschedule/replan/
+  // suggest reads the whole prefix at ~10% cost.
+  const stableContext = aboutMe + commitments
+  const volatileTail = timeHeader + modeInstruction
+  const userContent: Anthropic.TextBlockParam[] = [
+    { type: 'text', text: `FAMILY CONTEXT:\n\n${dataBlock}`, cache_control: { type: 'ephemeral', ttl: '1h' } },
+  ]
+  if (stableContext.trim()) {
+    userContent.push({ type: 'text', text: stableContext, cache_control: { type: 'ephemeral', ttl: '1h' } })
+  }
+  userContent.push({ type: 'text', text: volatileTail })
+
   const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
   try {
@@ -197,13 +215,7 @@ export async function POST(request: NextRequest) {
         system: [
           { type: 'text', text: DAY_PLAN_SYSTEM_PROMPT, cache_control: { type: 'ephemeral', ttl: '1h' } },
         ],
-        messages: [{
-          role: 'user',
-          content: [
-            { type: 'text', text: `FAMILY CONTEXT:\n\n${dataBlock}`, cache_control: { type: 'ephemeral', ttl: '1h' } },
-            { type: 'text', text: timeHeader + aboutMe + commitments + modeInstruction },
-          ],
-        }],
+        messages: [{ role: 'user', content: userContent }],
       },
       { signal: request.signal },
     )
