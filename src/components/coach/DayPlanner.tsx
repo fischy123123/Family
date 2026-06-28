@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect, Fragment } from 'react'
 import {
   CalendarDays, Sparkles, ArrowRight, Loader2, Check, X, ChevronUp, ChevronDown,
   ChevronLeft, ChevronRight, Plus, Send, RefreshCw, Lock, Pin, LifeBuoy, Trash2, SlidersHorizontal,
@@ -15,6 +15,31 @@ const ENERGY_ORDER: MomentEnergy[] = ['wired', 'okay', 'drained']
 function fmtTime(iso?: string): string {
   if (!iso) return ''
   try { return new Date(iso).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }) } catch { return '' }
+}
+
+// Where the "now" line falls among the (time-sorted) items: the index of the
+// first item still ahead of the current time. Untimed moves inherit the nearest
+// preceding timed item's time (matching the stored sort). Returns null when
+// nothing is timed (no meaningful place for the marker).
+function nowMarkerIndex(items: DayPlanItem[], nowMs: number): number | null {
+  const ms = items.map((it) => (it.startTime ? new Date(it.startTime).getTime() : NaN))
+  if (ms.every((m) => Number.isNaN(m))) return null
+  const eff = ms.slice()
+  let last = NaN
+  for (let i = 0; i < eff.length; i++) {
+    if (!Number.isNaN(ms[i])) last = ms[i]
+    else if (!Number.isNaN(last)) eff[i] = last
+  }
+  let next = NaN
+  for (let i = eff.length - 1; i >= 0; i--) {
+    if (!Number.isNaN(ms[i])) next = ms[i]
+    else if (Number.isNaN(eff[i]) && !Number.isNaN(next)) eff[i] = next
+  }
+  for (let i = 0; i < items.length; i++) {
+    const t = Number.isNaN(eff[i]) ? Infinity : eff[i]
+    if (t > nowMs) return i
+  }
+  return items.length
 }
 
 // Shift a YYYY-MM-DD by n days (parsed as local midnight to avoid UTC drift).
@@ -45,6 +70,16 @@ export function DayPlanner() {
   // the user picks for this plan.
   const [structureChoice, setStructureChoice] = useState<DayPlanStructure | null>(null)
   const structure: DayPlanStructure = structureChoice ?? personalProfile?.planStructure ?? 'flexible'
+  // Two-step confirm so a locked-in plan can't be wiped with one stray tap.
+  const [confirmingClear, setConfirmingClear] = useState(false)
+
+  // Live clock for the "now" marker — ticks each minute so the line drifts down
+  // the timeline through the day.
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 60_000)
+    return () => clearInterval(id)
+  }, [])
 
   const status = plan?.status
   const today0 = dateStrOffset(0)
@@ -250,14 +285,45 @@ export function DayPlanner() {
   const pct = items.length ? Math.round((doneCount / items.length) * 100) : 0
   const isDraft = status === 'draft'
   const isDone = status === 'done'
+  // The "now" line only makes sense on today's committed (not draft) plan.
+  const markerAt = isToday && !isDraft ? nowMarkerIndex(items, now) : null
 
   return (
     <section className="rounded-2xl p-5 bg-white shadow-card">
       {header}
 
       {plan.headline && (
-        <p className="text-sm text-slate-600 leading-relaxed mb-4 -mt-1">{plan.headline}</p>
+        <p className="text-sm text-slate-600 leading-relaxed mb-3 -mt-1">{plan.headline}</p>
       )}
+
+      {/* "Tuned to you" — surfaces which of your settings shaped this plan, so
+          it's visible they're being used. Tap to adjust them. */}
+      {(() => {
+        const p = personalProfile
+        if (!p) return null
+        const chips: string[] = []
+        if (p.planStyle) chips.push(`${p.planStyle} days`)
+        if (p.planStructure) chips.push(p.planStructure)
+        if (p.protectRest) chips.push('protects rest')
+        if (p.rhythm) chips.push('your rhythm')
+        if (p.householdRoles || p.careSchedule) chips.push('your household')
+        if (p.fixedAnchors?.length) chips.push('your anchors')
+        if (p.nonNegotiables?.length) chips.push(`${p.nonNegotiables.length} rule${p.nonNegotiables.length > 1 ? 's' : ''}`)
+        if (!chips.length) return null
+        return (
+          <button
+            onClick={() => setEditingProfile(true)}
+            className="flex flex-wrap items-center gap-1.5 mb-4 text-left"
+            title="Adjust your settings"
+          >
+            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Tuned to you</span>
+            {chips.map((c) => (
+              <span key={c} className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-600">{c}</span>
+            ))}
+            <SlidersHorizontal size={11} className="text-slate-300" />
+          </button>
+        )
+      })()}
 
       {/* Progress (active/done) */}
       {!isDraft && (
@@ -272,19 +338,22 @@ export function DayPlanner() {
         </div>
       )}
 
-      {/* Items */}
+      {/* Items — with a live "now" line slotted into the timeline. */}
       <div className="space-y-2">
         {items.map((it, idx) => (
-          <ItemRow
-            key={it.id}
-            item={it}
-            isDraft={isDraft}
-            onToggle={() => toggleItem(it.id)}
-            onRemove={() => removeItem(it.id)}
-            onUp={idx > 0 ? () => moveItem(it.id, -1) : undefined}
-            onDown={idx < items.length - 1 ? () => moveItem(it.id, 1) : undefined}
-          />
+          <Fragment key={it.id}>
+            {markerAt === idx && <NowLine now={now} />}
+            <ItemRow
+              item={it}
+              isDraft={isDraft}
+              onToggle={() => toggleItem(it.id)}
+              onRemove={() => removeItem(it.id)}
+              onUp={idx > 0 ? () => moveItem(it.id, -1) : undefined}
+              onDown={idx < items.length - 1 ? () => moveItem(it.id, 1) : undefined}
+            />
+          </Fragment>
         ))}
+        {markerAt === items.length && <NowLine now={now} />}
       </div>
 
       {/* Draft controls: add, chat-refine, finalize */}
@@ -390,15 +459,45 @@ export function DayPlanner() {
               </button>
             </div>
           )}
-          <button
-            onClick={discardPlan}
-            className="w-full py-2 rounded-xl text-xs font-medium text-slate-400 hover:text-red-500 hover:bg-red-50 transition-colors flex items-center justify-center gap-1.5"
-          >
-            <Trash2 size={12} /> Clear this plan
-          </button>
+          {confirmingClear ? (
+            <div className="flex items-center gap-2 rounded-xl bg-red-50 border border-red-200 px-3 py-2">
+              <span className="flex-1 text-xs font-medium text-red-700">Delete the whole plan?</span>
+              <button
+                onClick={() => setConfirmingClear(false)}
+                className="px-2.5 py-1.5 rounded-lg text-xs font-semibold text-slate-600 hover:bg-white transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => { setConfirmingClear(false); discardPlan() }}
+                className="px-2.5 py-1.5 rounded-lg text-xs font-bold text-white bg-red-500 hover:bg-red-600 transition-colors"
+              >
+                Delete
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={() => setConfirmingClear(true)}
+              className="w-full py-2 rounded-xl text-xs font-medium text-slate-400 hover:text-red-500 hover:bg-red-50 transition-colors flex items-center justify-center gap-1.5"
+            >
+              <Trash2 size={12} /> Clear this plan
+            </button>
+          )}
         </div>
       )}
     </section>
+  )
+}
+
+function NowLine({ now }: { now: number }) {
+  const time = new Date(now).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
+  return (
+    <div className="flex items-center gap-2 py-0.5" aria-label={`Current time ${time}`}>
+      <span className="text-[10px] font-bold uppercase tracking-wider text-rose-500 shrink-0">Now</span>
+      <span className="w-1.5 h-1.5 rounded-full bg-rose-500 shrink-0" />
+      <span className="flex-1 h-px bg-rose-300" />
+      <span className="text-[10px] font-semibold text-rose-500 tabular-nums shrink-0">{time}</span>
+    </div>
   )
 }
 

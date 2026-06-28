@@ -209,7 +209,18 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Could not build a plan — try again.' }, { status: 502 })
     }
 
-    console.log(`[plan-day] wall=${Date.now() - reqStart}ms mode=${ctx.mode} items=${items.length} stop=${msg.stop_reason}`)
+    // Log which profile signals actually arrived, so "settings aren't used" is
+    // verifiable from the server logs rather than guessed at.
+    const pp = ctx.personalProfile
+    const ppKeys = pp
+      ? Object.entries({
+          goals: pp.goals?.length, struggle: !!pp.biggestStruggle, adhd: pp.hasAdhd,
+          rhythm: !!pp.rhythm, anchors: pp.fixedAnchors?.length, roles: !!pp.householdRoles,
+          care: !!pp.careSchedule, style: pp.planStyle, structure: pp.planStructure,
+          protectRest: pp.protectRest, nonNegotiables: pp.nonNegotiables?.length,
+        }).filter(([, v]) => v).map(([k, v]) => `${k}=${v}`).join(',')
+      : 'NONE'
+    console.log(`[plan-day] wall=${Date.now() - reqStart}ms mode=${ctx.mode} struct=${ctx.structure ?? '-'} items=${items.length} stop=${msg.stop_reason} profile=[${ppKeys}] goals=${ctx.goals?.length ?? 0} aboutMe_chars=${aboutMe.length}`)
 
     return NextResponse.json({
       headline: typeof parsed.headline === 'string' ? parsed.headline.trim() : '',
