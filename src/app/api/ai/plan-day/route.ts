@@ -28,6 +28,8 @@ type PlanDayInput = FamilyContextInput & {
   currentItems?: DayPlanItem[]
   // The user's chat instruction (refine) or replan note.
   message?: string
+  // When set, the refine is a per-card RESCHEDULE focused on this item's title.
+  focusTitle?: string
   // Standing commitments + recent reflections — not part of the shared context
   // block, so the planner renders them itself (see buildCommitments).
   goals?: FamilyGoal[]
@@ -116,6 +118,11 @@ function buildModeInstruction(input: PlanDayInput): string {
 
   if (input.mode === 'replan') {
     return `\n\nTASK — REPLAN THE REST OF TODAY: The day has shifted. Here is the current plan with completion state:\n${current}${aboutEnergy}\nKeep everything already marked DONE exactly as-is, and rebuild ONLY the remaining (not-done) part of TODAY around the CURRENT time — drop what no longer fits, resequence, lighten if energy is low. Stay within today only: do NOT pull in anything dated tomorrow or later. If little time remains, a short wind-down is the right answer. Return the COMPLETE updated plan (done items first, then the new go-forward items) as JSON, with a short "reply" acknowledging the reset.${struct}${input.message?.trim() ? `\nThey also said: "${input.message.trim().slice(0, 400)}"` : ''}`
+  }
+
+  // refine with a focused item — a per-card RESCHEDULE
+  if (input.focusTitle?.trim()) {
+    return `\n\nTASK — RESCHEDULE ONE ITEM (reorganize intelligently around it): Here is the current plan (✓ = already done):\n${current}\nThe user wants to change the timing/placement of THIS item: "${input.focusTitle.trim()}". Their feedback: "${(input.message ?? '').trim().slice(0, 500)}"\nRules:\n- Re-time/move that one item to honor the request.\n- You MAY shift items that would otherwise conflict with it, or that depend on it, to keep the day sensible — but keep every UNRELATED item exactly as it is (same title, time, order, steps).\n- ALWAYS account for required TRAVEL/DRIVE TIME to and from locations (use event locations when shown) — leave realistic time to get places; never schedule back-to-back items in different locations without travel time, and add a leave-by buffer before anything the user must drive to.\n- NEVER move or re-time an anchor (calendar event) — anchors keep their real times.\n- NEVER modify or remove an item marked ✓ done.\nReturn the COMPLETE plan as JSON, plus a short "reply" (1 sentence) naming what you moved and how you adjusted around it.${struct}`
   }
 
   // refine — a SURGICAL edit, not a re-plan

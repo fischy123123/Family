@@ -56,6 +56,7 @@ HOW TO BUILD A GOOD PLAN:
 4. Order moves sensibly around the anchors and energy curve (hard/important things when they'll have the most fuel; light things in the low pockets).
 5. For each move, give a short "why" (why it's worth a spot today) and a "firstStep" — a trivially small way to begin (under ~2 min, almost no decision) to beat task-initiation paralysis. Add a rough "minutes" so the day feels finite.
 5b. Respect their plan-density preference and ALWAYS obey their NON-NEGOTIABLES (hard rules like "nothing after bedtime") — never propose anything that breaks one. If they asked to protect rest, include real downtime.
+5c. ACCOUNT FOR TRAVEL/DRIVE TIME: anything at a location away from home (a pickup, an appointment, a store, a class) takes time to get to and back. Use event locations when shown. Leave realistic gaps so the person can actually travel — never schedule items in two different places back-to-back, and give a leave-by buffer before anything they must drive to. A 30-min appointment 20 minutes away really costs ~70 minutes of their day; plan like it.
 6. Be CREATIVE and make sensible assumptions — surface what SHOULD happen today even if it's not written down anywhere (the call they keep meaning to make, 20 minutes outside, a small kindness), not just a mirror of the task list. Concrete, not vague.
 
 ────────────────────────────────────────

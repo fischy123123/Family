@@ -234,24 +234,30 @@ export function useDayPlan() {
     } finally { setWorking(false) }
   }, [baseBody, savePlan, fixAnchorTimes])
 
-  // Refine the current plan from a chat/feedback instruction — a surgical edit.
-  // Completed items are preserved verbatim (the model never gets to rewrite what
-  // you've already done); the model's output supplies the not-done items.
-  const refinePlan = useCallback(async (message: string): Promise<string | null> => {
+  // Refine the current plan from a chat/feedback instruction.
+  //  • No focusTitle (the global feedback box) = a SURGICAL edit: every existing
+  //    item keeps its original time; only genuinely new items get a fresh one.
+  //  • focusTitle set (per-card "reschedule this") = the model MAY re-time that
+  //    item and shift its neighbors to make room; other items' model times are
+  //    accepted so the day can reorganize around the change.
+  // Either way, completed items are preserved verbatim and anchors snap back to
+  // their real calendar times.
+  const refinePlan = useCallback(async (message: string, focusTitle?: string): Promise<string | null> => {
     if (!todayPlan) return null
     setWorking(true); setError(null)
     try {
-      const data = await callEngine({ ...baseBody(), mode: 'refine', currentItems: todayPlan.items, message, energy: todayPlan.energy, structure: todayPlan.structure })
+      const data = await callEngine({ ...baseBody(), mode: 'refine', currentItems: todayPlan.items, message, focusTitle, energy: todayPlan.energy, structure: todayPlan.structure })
       if (!data) return null
       const done = todayPlan.items.filter((i) => i.done)
       const doneTitles = new Set(done.map((i) => i.title.toLowerCase()))
-      // A surgical edit must not drift the times of items that already existed.
-      // Preserve each returned item's ORIGINAL startTime (matched by title) —
-      // both anchors and moves — so only genuinely new items get a fresh time.
+      const reschedule = !!focusTitle
       const origByTitle = new Map(todayPlan.items.map((o) => [o.title.trim().toLowerCase(), o]))
       const fresh = data.items
         .filter((i) => !doneTitles.has(i.title.toLowerCase()))
         .map((it) => {
+          // Surgical edit: pin existing items to their original times. Reschedule:
+          // accept the model's times so it can reorganize around the change.
+          if (reschedule) return { ...it, id: generateId() }
           const orig = origByTitle.get(it.title.trim().toLowerCase())
           return { ...it, id: generateId(), startTime: orig?.startTime ?? it.startTime }
         })

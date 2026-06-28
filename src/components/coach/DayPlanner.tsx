@@ -3,7 +3,7 @@
 import { useState, useEffect, Fragment } from 'react'
 import { useRouter } from 'next/navigation'
 import {
-  CalendarDays, Sparkles, ArrowRight, Loader2, Check, X,
+  CalendarDays, Sparkles, ArrowRight, Loader2, Check, X, Clock,
   ChevronLeft, ChevronRight, Plus, Send, RefreshCw, Lock, Pin, LifeBuoy, Trash2, SlidersHorizontal, TrendingUp,
 } from 'lucide-react'
 import { useDayPlan, dateStrOffset, sortByTime } from '@/hooks/useDayPlan'
@@ -372,8 +372,10 @@ export function DayPlanner() {
             <ItemRow
               item={it}
               isDraft={isDraft}
+              busy={working}
               onToggle={() => toggleItem(it.id)}
               onRemove={() => removeItem(it.id)}
+              onReschedule={!isDraft && !it.done ? async (msg) => { setReply(null); const r = await refinePlan(msg, it.title); setReply(r) } : undefined}
             />
           </Fragment>
         ))}
@@ -563,16 +565,28 @@ function StyleChoice({ active, onClick, label, hint }: { active: boolean; onClic
 }
 
 function ItemRow({
-  item, isDraft, onToggle, onRemove,
+  item, isDraft, busy, onToggle, onRemove, onReschedule,
 }: {
   item: DayPlanItem
   isDraft: boolean
+  busy?: boolean
   onToggle: () => void
   onRemove: () => void
+  onReschedule?: (message: string) => void | Promise<void>
 }) {
   const isAnchor = item.kind === 'anchor'
   const cat = item.category ? MOMENT_KIND_META[item.category] : null
   const time = fmtTime(item.startTime)
+  const [fbOpen, setFbOpen] = useState(false)
+  const [fbText, setFbText] = useState('')
+
+  async function submitFeedback() {
+    const m = fbText.trim()
+    if (!m || busy) return
+    setFbText('')
+    setFbOpen(false)
+    await onReschedule?.(m)
+  }
 
   return (
     <div className={`rounded-xl border p-3 flex items-start gap-3 transition-colors ${
@@ -627,14 +641,46 @@ function ItemRow({
           </p>
         ) : null}
         {item.minutes && !item.done && <span className="text-[11px] text-slate-400">~{item.minutes} min</span>}
+
+        {/* Per-card reschedule feedback — tell the coach when this should be and
+            it reorganizes around it (keeping the rest of the day intact). */}
+        {fbOpen && (
+          <div className="mt-2 flex items-center gap-2">
+            <input
+              autoFocus
+              value={fbText}
+              onChange={(e) => setFbText(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') submitFeedback(); if (e.key === 'Escape') setFbOpen(false) }}
+              placeholder="When should this be? e.g. “after the gym, not before”"
+              disabled={busy}
+              className="flex-1 text-xs rounded-lg px-2.5 py-1.5 border border-indigo-200 focus:outline-none focus:border-indigo-400 bg-white"
+            />
+            <button
+              onClick={submitFeedback}
+              disabled={!fbText.trim() || busy}
+              className="p-1.5 rounded-lg bg-indigo-100 text-indigo-600 hover:bg-indigo-200 disabled:opacity-40 transition-colors"
+            >
+              {busy ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
+            </button>
+          </div>
+        )}
       </div>
 
-      {/* Right: remove (draft only). Order is chronological/automatic now. */}
-      {isDraft && (
+      {/* Right: remove (draft) or reschedule (committed, not done). */}
+      {isDraft ? (
         <button onClick={onRemove} aria-label="Remove" className="p-1 text-slate-300 hover:text-red-500 transition-colors shrink-0">
           <X size={15} />
         </button>
-      )}
+      ) : onReschedule && !item.done ? (
+        <button
+          onClick={() => setFbOpen((v) => !v)}
+          aria-label="Reschedule this"
+          title="Reschedule / adjust this"
+          className={`p-1.5 rounded-lg transition-colors shrink-0 ${fbOpen ? 'text-indigo-600 bg-indigo-50' : 'text-slate-300 hover:text-indigo-600 hover:bg-indigo-50'}`}
+        >
+          <Clock size={15} />
+        </button>
+      ) : null}
     </div>
   )
 }
