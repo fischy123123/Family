@@ -7,6 +7,7 @@ import {
 } from '@/lib/momentCoachPrompt'
 import type {
   PersonalProfile, MomentEnergy, MomentMood, MomentGuidance, MomentMove, MomentCheckIn,
+  DayPlan, DayPlanItem,
 } from '@/lib/types'
 
 const MODEL = MOMENT_COACH_MODEL
@@ -27,6 +28,10 @@ type CoachNowInput = FamilyContextInput & {
   // The user's recent logged check-ins, so the coach can read trends across
   // days (recurring drain, repeated situations) and address the pattern.
   recentCheckins?: MomentCheckIn[]
+  // Today's plan, if one exists — the backbone. The moment-coach should usually
+  // advance the plan (point at the next sensible thing on it) rather than invent
+  // something unrelated, unless the user's state clearly calls for otherwise.
+  dayPlan?: { headline?: string; status?: string; items?: DayPlanItem[] }
 }
 
 // Render the "ABOUT ME" block from the user's personal profile. This is the
@@ -95,6 +100,25 @@ function buildTrends(recent?: MomentCheckIn[]): string {
   return `\n\nRECENT CHECK-INS (this person's last several moments with you — newest first. Look for PATTERNS: a recurring low/drain at a certain time, the same situation coming up again and again, or suggestions that keep going undone. When you see a real pattern, gently name it and let the move address the pattern, not just this instant. Don't force a pattern that isn't there):\n${lines.join('\n')}`
 }
 
+// Today's plan → a compact block. When a plan exists, the moment-coach should
+// usually point at the next undone thing on it (or, if the day has clearly
+// slipped, suggest re-planning) rather than inventing something off-plan.
+function buildDayPlan(plan?: { headline?: string; status?: string; items?: DayPlanItem[] }): string {
+  if (!plan || !Array.isArray(plan.items) || plan.items.length === 0) return ''
+  if (plan.status === 'draft') return ''  // not committed yet — don't steer against a draft
+  const lines = plan.items.map((it) => {
+    const bits: string[] = []
+    if (it.startTime) {
+      try { bits.push(new Date(it.startTime).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })) } catch { /* ignore */ }
+    }
+    bits.push(it.done ? `✓ ${it.title}` : it.title)
+    if (it.kind === 'anchor') bits.push('(fixed)')
+    return `  - ${bits.join(' ')}`
+  })
+  const head = plan.headline ? `${plan.headline}\n` : ''
+  return `\n\nTODAY'S PLAN (the user committed to this earlier — it's the backbone for the day. Your move should USUALLY be the next undone item that fits this moment and their energy, framed with a tiny first step. If the day has clearly slipped past what's here, gently suggest they re-plan the rest instead. Don't pull them off-plan onto something unrelated unless their state or what they just told you clearly calls for it):\n${head}${lines.join('\n')}`
+}
+
 // Coerce one move object from the model into a typed MomentMove, dropping junk.
 function coerceMove(raw: unknown): MomentMove | undefined {
   if (!raw || typeof raw !== 'object') return undefined
@@ -133,6 +157,7 @@ export async function POST(request: NextRequest) {
   const checkIn = buildCheckIn(ctx.energy, ctx.mood, ctx.completedToday)
   const situation = buildSituation(ctx.situation)
   const trends = buildTrends(ctx.recentCheckins)
+  const dayPlan = buildDayPlan(ctx.dayPlan)
 
   const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
@@ -150,8 +175,8 @@ export async function POST(request: NextRequest) {
             // Reuse the same cached family data block as the attention engine.
             { type: 'text', text: `FAMILY CONTEXT:\n\n${dataBlock}`, cache_control: { type: 'ephemeral', ttl: '1h' } },
             // Fresh tail: time anchor + this person + how they feel right now +
-            // what they said is happening + their recent-check-in trends.
-            { type: 'text', text: timeHeader + aboutMe + checkIn + situation + trends },
+            // what they said is happening + recent-check-in trends + today's plan.
+            { type: 'text', text: timeHeader + aboutMe + checkIn + situation + trends + dayPlan },
           ],
         }],
       },

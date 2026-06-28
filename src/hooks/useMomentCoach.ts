@@ -7,12 +7,18 @@ import { generateId } from '@/lib/utils'
 import type {
   FamilyMember, CalendarEvent, Task, Chore, Plan, SmartList,
   FamilyProfile, FamilyMemory, FamilyReminder,
-  PersonalProfile, MomentEnergy, MomentMood, MomentGuidance, MomentCheckIn,
+  PersonalProfile, MomentEnergy, MomentMood, MomentGuidance, MomentCheckIn, DayPlan,
 } from '@/lib/types'
 
 // Sanitize an email into a safe, stable Firestore doc id (one profile per person).
 function emailKey(email: string): string {
   return email.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase()
+}
+
+// Local YYYY-MM-DD (the user's day, not UTC) — matches the Day Planner's key.
+function todayStr(): string {
+  const d = new Date()
+  return `${d.getFullYear()}-${`${d.getMonth() + 1}`.padStart(2, '0')}-${`${d.getDate()}`.padStart(2, '0')}`
 }
 
 function isToday(iso?: string): boolean {
@@ -45,10 +51,16 @@ export function useMomentCoach() {
   const {
     data: checkins, create: createCheckin, update: updateCheckin,
   } = useFirestore<MomentCheckIn>('momentCheckins')
+  const { data: dayPlans } = useFirestore<DayPlan>('dayPlans')
 
   const profile = profiles[0] ?? null
   const myKey = user?.email ? emailKey(user.email) : null
   const myEmail = user?.email?.toLowerCase() ?? null
+  // Today's plan, if one exists — the backbone the moment-coach reasons against.
+  const todayPlan = useMemo(
+    () => (myKey ? dayPlans.find((p) => p.id === `${myKey}_${todayStr()}`) ?? null : null),
+    [dayPlans, myKey],
+  )
   const personalProfile = useMemo(
     () => (myKey ? personalProfiles.find((p) => p.id === myKey) ?? null : null),
     [personalProfiles, myKey],
@@ -144,6 +156,7 @@ export function useMomentCoach() {
           profile, memories,
           personalProfile,
           energy, mood, situation: cleanSituation, completedToday, recentCheckins,
+          dayPlan: todayPlan ? { headline: todayPlan.headline, status: todayPlan.status, items: todayPlan.items } : undefined,
           currentUserEmail: user?.email ?? undefined,
           currentUserName: user?.displayName ?? undefined,
           now: new Date().toISOString(),
@@ -167,7 +180,7 @@ export function useMomentCoach() {
     } finally {
       setLoading(false)
     }
-  }, [members, events, allTasks, chores, plans, lists, profile, memories, personalProfile, myCheckins, createCheckin, updateCheckin, user])
+  }, [members, events, allTasks, chores, plans, lists, profile, memories, personalProfile, myCheckins, todayPlan, createCheckin, updateCheckin, user])
 
   // Record what happened with the last suggestion, against its check-in entry.
   const recordOutcome = useCallback((outcome: 'did_it' | 'dismissed') => {

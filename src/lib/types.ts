@@ -240,6 +240,52 @@ export interface MomentCheckIn {
   outcome?: 'did_it' | 'dismissed'  // set later if they act on or move past it
 }
 
+// ============================================================
+// DAY PLAN — an interactive, tracked plan for today
+// ============================================================
+// Where the Moment Coach answers "what now," the Day Plan is the backbone for
+// the whole day: built WITH the user (AI drafts → they tap + chat to adjust →
+// finalize), then tracked to completion. Hybrid by design — fixed calendar
+// commitments are time-anchored, everything else is a flexible, ordered pool of
+// "moves" so a derailed day doesn't break the plan.
+
+export type DayPlanStatus = 'draft' | 'active' | 'done'
+
+// 'anchor' = a fixed, time-bound commitment (usually a calendar event) the day
+// is built around. 'move' = a flexible intention with no rigid clock time,
+// pulled from the pool when there's room.
+export type DayPlanItemKind = 'anchor' | 'move'
+
+export interface DayPlanItem {
+  id: string
+  title: string
+  why?: string                  // one line — why it earned a place today
+  kind: DayPlanItemKind
+  startTime?: string            // ISO — set for anchors (and optionally scheduled moves)
+  minutes?: number              // rough size, not a hard slot
+  category?: MomentMove['kind'] // family | personal | rest | admin | connection
+  firstStep?: string            // a trivially small way to begin (ADHD initiation)
+  // Provenance — link back to the real entity so checking it off can sync.
+  sourceType?: 'event' | 'task' | 'reminder' | 'inferred'
+  sourceId?: string
+  done: boolean
+  doneAt?: string
+}
+
+export interface DayPlan {
+  id: string                    // `${emailKey}_${date}` — one plan per person per day
+  email: string
+  date: string                  // YYYY-MM-DD (the user's local day)
+  status: DayPlanStatus
+  intention?: string            // the kickoff "what's on your mind today"
+  energy?: MomentEnergy
+  headline?: string             // the coach's one-line framing of the day
+  items: DayPlanItem[]          // anchors + moves, in intended order
+  createdAt: string
+  finalizedAt?: string          // when the user locked it in (draft → active)
+  updatedAt?: string
+}
+
 export type GroceryCategory = 'produce' | 'dairy' | 'meat' | 'bakery' | 'pantry' | 'frozen' | 'household' | 'other'
 
 export interface GroceryItem {

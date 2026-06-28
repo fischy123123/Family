@@ -1,17 +1,27 @@
 'use client'
 
-import { useState } from 'react'
-import { Plus, Sparkles } from 'lucide-react'
+import { useState, useEffect } from 'react'
+import { Sparkles } from 'lucide-react'
 import { Sidebar } from './Sidebar'
 import { MobileNav } from './MobileNav'
 import { MomentCoachSheet } from '@/components/coach/MomentCoachSheet'
 import { useCapture } from '@/contexts/CaptureContext'
 
 export function AppShell({ children }: { children: React.ReactNode }) {
-  const { open, isOpen } = useCapture()
+  // isOpen still matters: the Capture modal is opened from in-app affordances
+  // (recommendations, quick notes), so we hide the FAB while it's up.
+  const { isOpen } = useCapture()
   const [coachOpen, setCoachOpen] = useState(false)
 
-  // Hide the floating buttons whenever any overlay is up, so they can't be
+  // Let any screen open the "Right now" coach (e.g. the Day Planner's "get a
+  // nudge" button) without prop-drilling — they dispatch a window event.
+  useEffect(() => {
+    const openCoach = () => setCoachOpen(true)
+    window.addEventListener('open-moment-coach', openCoach)
+    return () => window.removeEventListener('open-moment-coach', openCoach)
+  }, [])
+
+  // Hide the floating button whenever any overlay is up, so it can't be
   // tapped through a backdrop on mobile.
   const overlayUp = isOpen || coachOpen
 
@@ -28,24 +38,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <button
           onClick={() => setCoachOpen(true)}
           aria-label="Right now"
-          className="fixed z-50 bottom-24 sm:bottom-8 left-5 inline-flex items-center gap-1.5 pl-3 pr-4 h-12 rounded-2xl bg-gradient-to-br from-violet-600 to-indigo-600 text-white font-semibold text-sm shadow-float hover:-translate-y-0.5 hover:shadow-lg transition-all duration-200 active:translate-y-0"
+          className="fixed z-50 bottom-24 sm:bottom-8 right-5 inline-flex items-center gap-1.5 pl-3 pr-4 h-12 rounded-2xl bg-gradient-to-br from-violet-600 to-indigo-600 text-white font-semibold text-sm shadow-float hover:-translate-y-0.5 hover:shadow-lg transition-all duration-200 active:translate-y-0"
           style={{ boxShadow: '0 12px 28px rgba(99,102,241,0.45)' }}
         >
           <Sparkles size={18} strokeWidth={2.5} />
           Right now
-        </button>
-      )}
-
-      {/* Global Capture FAB — hidden while any overlay is open so it can't be
-          accidentally tapped through the backdrop on mobile */}
-      {!overlayUp && (
-        <button
-          onClick={() => open()}
-          aria-label="Capture"
-          className="fixed z-50 bottom-24 sm:bottom-8 right-5 w-14 h-14 rounded-2xl bg-gradient-to-br from-blue-600 to-purple-600 text-white flex items-center justify-center shadow-float hover:-translate-y-0.5 hover:shadow-lg transition-all duration-200 active:translate-y-0"
-          style={{ boxShadow: '0 12px 28px rgba(79,70,229,0.45)' }}
-        >
-          <Plus size={26} strokeWidth={2.5} />
         </button>
       )}
 
