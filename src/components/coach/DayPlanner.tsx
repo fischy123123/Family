@@ -1,9 +1,10 @@
 'use client'
 
 import { useState, useEffect, Fragment } from 'react'
+import { useRouter } from 'next/navigation'
 import {
   CalendarDays, Sparkles, ArrowRight, Loader2, Check, X,
-  ChevronLeft, ChevronRight, Plus, Send, RefreshCw, Lock, Pin, LifeBuoy, Trash2, SlidersHorizontal,
+  ChevronLeft, ChevronRight, Plus, Send, RefreshCw, Lock, Pin, LifeBuoy, Trash2, SlidersHorizontal, TrendingUp,
 } from 'lucide-react'
 import { useDayPlan, dateStrOffset, sortByTime } from '@/hooks/useDayPlan'
 import { AboutMeForm } from './AboutMeForm'
@@ -52,6 +53,7 @@ function shiftDate(dateStr: string, days: number): string {
 }
 
 export function DayPlanner() {
+  const router = useRouter()
   const {
     plan, selectedDate, setSelectedDate, isToday, targetDateLabel,
     personalProfile, working, error,
@@ -132,6 +134,13 @@ export function DayPlanner() {
           <h2 className="text-lg font-bold text-slate-900 tracking-tight leading-tight">{title}</h2>
           <p className="text-xs text-slate-400 truncate">{targetDateLabel}</p>
         </div>
+        <button
+          onClick={() => router.push('/insights')}
+          aria-label="Your progress"
+          className="p-1.5 rounded-lg text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 transition-colors shrink-0"
+        >
+          <TrendingUp size={17} />
+        </button>
         <button
           onClick={() => setEditingProfile(true)}
           aria-label="About me & my days"
