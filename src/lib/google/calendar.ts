@@ -115,6 +115,7 @@ export interface EventsDelta {
   upserted: GoogleEvent[]   // new or modified events
   deletedIds: string[]      // event ids that were deleted in Google Calendar
   syncTokensByCalendar: Record<string, string>  // updated tokens to store
+  fetchedCalendarIds: string[]  // calendars we successfully read this run
 }
 
 // Incremental sync using per-calendar syncTokens.
@@ -138,6 +139,7 @@ export async function getEventsDelta(
   const upserted: GoogleEvent[] = []
   const deletedIds: string[] = []
   const newTokens: Record<string, string> = {}
+  const fetchedCalendarIds: string[] = []
 
   for (const cal of calendars) {
     if (!cal.id) continue
@@ -150,6 +152,7 @@ export async function getEventsDelta(
         : { calendarId: cal.id, timeMin, timeMax, singleEvents: true, orderBy: 'startTime' as const, showDeleted: false }
 
       const { data: eventsData } = await calendar.events.list(params)
+      fetchedCalendarIds.push(cal.id)
       if (eventsData.nextSyncToken) newTokens[cal.id] = eventsData.nextSyncToken
 
       for (const item of eventsData.items ?? []) {
@@ -184,7 +187,7 @@ export async function getEventsDelta(
     }
   }
 
-  return { upserted, deletedIds, syncTokensByCalendar: newTokens }
+  return { upserted, deletedIds, syncTokensByCalendar: newTokens, fetchedCalendarIds }
 }
 
 export async function createEvent(

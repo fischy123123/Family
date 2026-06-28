@@ -93,13 +93,19 @@ export async function POST(request: NextRequest) {
 
       // Delete stale / cancelled events
       if (!isIncremental) {
-        // Full sync: delete events that are no longer in the Google response
-        const oldSnap = await eventsCol
-          .where('ownerEmail', '==', email)
-          .where('source', '==', 'google')
-          .get()
+        // Full sync: delete events that are no longer in the Google response —
+        // scoped to the CALENDARS we actually fetched (not the owner's login
+        // email). A recurring event on a shared/family calendar has a different
+        // owner id, so the old (email-scoped) filter never pruned its stale
+        // instances after a date change. Scoping by calendarId fixes that and
+        // still can't touch another member's calendars (we only fetched ours).
+        const fetchedCals = new Set(delta.fetchedCalendarIds)
         const freshIds = new Set(delta.upserted.map((e) => e.id))
-        const stale = oldSnap.docs.filter((d) => !freshIds.has(d.id))
+        const oldSnap = await eventsCol.where('source', '==', 'google').get()
+        const stale = oldSnap.docs.filter((d) => {
+          const cid = (d.data() as CalendarEvent).calendarId
+          return cid && fetchedCals.has(cid) && !freshIds.has(d.id)
+        })
         for (let i = 0; i < stale.length; i += BATCH_LIMIT) {
           const batch = db.batch()
           stale.slice(i, i + BATCH_LIMIT).forEach((d) => batch.delete(d.ref))
