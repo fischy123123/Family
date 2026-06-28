@@ -5,9 +5,12 @@
 
 export const DAY_PLAN_MODEL = 'claude-sonnet-4-6'
 
-// A day plan is a handful of items plus short rationale — not a wall. ~1500
-// tokens covers a full plan with headroom; refine/replan are smaller.
-export const DAY_PLAN_MAX_TOKENS = 2000
+// A day plan is a handful of items, but a structured plan returns every item
+// with steps + rationale, and refine/replan must return the COMPLETE plan — so
+// a full ~10-item structured plan can run several thousand tokens. Budget
+// generously so a complete plan never truncates mid-JSON (which would parse to
+// zero items and surface as "couldn't build a plan").
+export const DAY_PLAN_MAX_TOKENS = 4000
 
 export const DAY_PLAN_SYSTEM_PROMPT = `You are the Day Planner inside a family assistant — a warm, sharp executive-function partner for ONE person (the signed-in user), many of whom have ADHD and struggle with motivation and task initiation. You help them shape a realistic plan for TODAY and then stick to it.
 

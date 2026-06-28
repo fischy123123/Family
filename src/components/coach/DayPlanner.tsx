@@ -1,12 +1,20 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, type ReactNode, type CSSProperties } from 'react'
 import { useRouter } from 'next/navigation'
 import {
-  CalendarDays, Sparkles, ArrowRight, Loader2, Check, X, Clock, ChevronUp, ChevronDown,
+  CalendarDays, Sparkles, ArrowRight, Loader2, Check, X, Clock, GripVertical,
   ChevronLeft, ChevronRight, Plus, Send, RefreshCw, Lock, Pin, LifeBuoy, Trash2, SlidersHorizontal, TrendingUp, Lightbulb,
 } from 'lucide-react'
-import { useDayPlan, dateStrOffset, sortByTime } from '@/hooks/useDayPlan'
+import {
+  DndContext, closestCenter, PointerSensor, KeyboardSensor, useSensor, useSensors,
+  type DragEndEvent,
+} from '@dnd-kit/core'
+import {
+  SortableContext, verticalListSortingStrategy, useSortable, arrayMove, sortableKeyboardCoordinates,
+} from '@dnd-kit/sortable'
+import { CSS } from '@dnd-kit/utilities'
+import { useDayPlan, dateStrOffset } from '@/hooks/useDayPlan'
 import { AboutMeForm } from './AboutMeForm'
 import { MOMENT_ENERGY_META, MOMENT_KIND_META } from '@/lib/types'
 import type { MomentEnergy, DayPlanItem, DayPlanStructure } from '@/lib/types'
@@ -16,26 +24,6 @@ const ENERGY_ORDER: MomentEnergy[] = ['wired', 'okay', 'drained']
 function fmtTime(iso?: string): string {
   if (!iso) return ''
   try { return new Date(iso).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }) } catch { return '' }
-}
-
-// Effective time (ms) for each item in a time-sorted list: timed items use
-// their time; an untimed move inherits the nearest preceding timed item's time
-// (matching the stored sort), or the next one if none precede. Untimed-only
-// lists come back as Infinity.
-function effectiveTimes(items: DayPlanItem[]): number[] {
-  const ms = items.map((it) => (it.startTime ? new Date(it.startTime).getTime() : NaN))
-  const eff = ms.slice()
-  let last = NaN
-  for (let i = 0; i < eff.length; i++) {
-    if (!Number.isNaN(ms[i])) last = ms[i]
-    else if (!Number.isNaN(last)) eff[i] = last
-  }
-  let next = NaN
-  for (let i = eff.length - 1; i >= 0; i--) {
-    if (!Number.isNaN(ms[i])) next = ms[i]
-    else if (Number.isNaN(eff[i]) && !Number.isNaN(next)) eff[i] = next
-  }
-  return eff.map((v) => (Number.isNaN(v) ? Infinity : v))
 }
 
 // Shift a YYYY-MM-DD by n days (parsed as local midnight to avoid UTC drift).
@@ -313,47 +301,56 @@ export function DayPlanner() {
   const pct = items.length ? Math.round((doneCount / items.length) * 100) : 0
   const isDraft = status === 'draft'
   const isDone = status === 'done'
-  // Always present items in chronological order at render time — robust even for
-  // plans saved before the sort logic, or after a manual edit.
-  const ordered = sortByTime(items)
-  // The "now" line only makes sense on today's committed (not draft) plan, once
-  // at least one item is timed.
+  // Render in stored order (the engine already sorts chronologically when it
+  // generates a plan; manual drag overrides). No re-sort at render so a drag
+  // actually sticks.
+  const ordered = items
+  // The "now" line only makes sense on today's committed (not draft) plan.
   const showNow = isToday && !isDraft && ordered.some((it) => it.startTime)
-  // Split around the now line: anything DONE or already past sits above the
-  // line (behind you); only not-done, still-ahead items sit below it. So a task
-  // you complete jumps above the line even if it was scheduled for later.
-  const eff = effectiveTimes(ordered)
+  // Split around the now line. ONLY two things go above (behind you): items
+  // you've completed, and timed items whose own start time is already past.
+  // Everything else — future items AND undated to-dos — stays below, where it's
+  // still actionable and reorderable. (We use each item's OWN time, not an
+  // inherited one, so an undated task never gets shoved above the line.)
   const aboveNow: DayPlanItem[] = []
   const belowNow: DayPlanItem[] = []
-  ordered.forEach((it, i) => {
-    if (!showNow || it.done || eff[i] <= now) aboveNow.push(it)
+  ordered.forEach((it) => {
+    const t = it.startTime ? new Date(it.startTime).getTime() : NaN
+    const past = !Number.isNaN(t) && t <= now
+    if (!showNow || it.done || past) aboveNow.push(it)
     else belowNow.push(it)
   })
 
-  // Manual reorder: swap an item with its neighbor WITHIN the same group (we
-  // don't let arrows push an item across the now line). For two timed items we
-  // swap their times (so the timeline stays sorted); otherwise we swap their
-  // order in the stored array (untimed items keep order via the sort tiebreak).
-  function swapWithin(group: DayPlanItem[], idx: number, dir: -1 | 1) {
-    const j = idx + dir
-    if (j < 0 || j >= group.length) return
-    const a = group[idx]
-    const b = group[j]
-    if (a.startTime && b.startTime) {
-      applyItems(items.map((it) =>
-        it.id === a.id ? { ...it, startTime: b.startTime }
-        : it.id === b.id ? { ...it, startTime: a.startTime }
-        : it,
-      ))
-    } else {
-      const arr = [...items]
-      const ia = arr.findIndex((x) => x.id === a.id)
-      const ib = arr.findIndex((x) => x.id === b.id)
-      if (ia < 0 || ib < 0) return
-      ;[arr[ia], arr[ib]] = [arr[ib], arr[ia]]
-      applyItems(arr)
+  // Drag-and-drop reorder: persist the new order of a group within the full
+  // item list. Timed items in the group keep the same set of time slots,
+  // reassigned in the new order (so the schedule stays coherent and the drag
+  // sticks); untimed moves simply take their new order.
+  function reorderGroup(group: DayPlanItem[], oldIndex: number, newIndex: number) {
+    if (oldIndex === newIndex) return
+    const newGroup = arrayMove(group, oldIndex, newIndex)
+    const slots = (group.map((g) => g.startTime).filter(Boolean) as string[])
+      .sort((a, b) => new Date(a).getTime() - new Date(b).getTime())
+    let s = 0
+    const retimed = newGroup.map((g) => (g.startTime ? { ...g, startTime: slots[s++] } : g))
+    const groupIds = new Set(group.map((g) => g.id))
+    // Stitch the reordered block back into the full list where it sat.
+    const out: DayPlanItem[] = []
+    let inserted = false
+    for (const it of items) {
+      if (groupIds.has(it.id)) {
+        if (!inserted) { out.push(...retimed); inserted = true }
+      } else {
+        out.push(it)
+      }
     }
+    applyItems(out)
   }
+
+  // Touch + mouse drag, with a small activation distance so taps/scroll still work.
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  )
 
   return (
     <section className="rounded-2xl p-5 bg-white shadow-card">
@@ -405,32 +402,51 @@ export function DayPlanner() {
         </div>
       )}
 
-      {/* Items — chronological. Done / past items sit above the live "now" line;
-          only what's still ahead sits below it. Up/down arrows reorder within a
-          group. */}
+      {/* Items — done / past above the live "now" line, what's still ahead
+          below it. Drag the handle to reorder within a group. */}
       <div className="space-y-2">
         {(() => {
-          const renderGroup = (group: DayPlanItem[], reorderable: boolean) => group.map((it, idx) => (
-            <ItemRow
-              key={it.id}
-              item={it}
-              isDraft={isDraft}
-              busy={working}
-              onToggle={() => toggleItem(it.id)}
-              onRemove={() => removeItem(it.id)}
-              onUp={reorderable && idx > 0 ? () => swapWithin(group, idx, -1) : undefined}
-              onDown={reorderable && idx < group.length - 1 ? () => swapWithin(group, idx, 1) : undefined}
-              onReschedule={!isDraft && !it.done ? async (msg) => { setReply(null); const r = await refinePlan(msg, it.title); setReply(r) } : undefined}
-            />
-          ))
+          const itemRowProps = (it: DayPlanItem) => ({
+            item: it,
+            isDraft,
+            busy: working,
+            onToggle: () => toggleItem(it.id),
+            onRemove: () => removeItem(it.id),
+            onReschedule: !isDraft && !it.done
+              ? async (msg: string) => { setReply(null); const r = await refinePlan(msg, it.title); setReply(r) }
+              : undefined,
+          })
+          // A draggable, sortable group. Anchors stay put (no handle); moves can
+          // be reordered. Each group is its own drag context.
+          const Group = ({ group, reorderable }: { group: DayPlanItem[]; reorderable: boolean }) => {
+            if (!reorderable) return <>{group.map((it) => <ItemRow key={it.id} {...itemRowProps(it)} />)}</>
+            return (
+              <DndContext
+                sensors={sensors}
+                collisionDetection={closestCenter}
+                onDragEnd={(e: DragEndEvent) => {
+                  const { active, over } = e
+                  if (!over || active.id === over.id) return
+                  const oldIndex = group.findIndex((g) => g.id === active.id)
+                  const newIndex = group.findIndex((g) => g.id === over.id)
+                  if (oldIndex >= 0 && newIndex >= 0) reorderGroup(group, oldIndex, newIndex)
+                }}
+              >
+                <SortableContext items={group.map((g) => g.id)} strategy={verticalListSortingStrategy}>
+                  {group.map((it) => (
+                    <SortableRow key={it.id} id={it.id} draggable={it.kind !== 'anchor'} rowProps={itemRowProps(it)} />
+                  ))}
+                </SortableContext>
+              </DndContext>
+            )
+          }
           return (
             <>
-              {/* Above-now is reorderable on a draft/future plan (it's the whole
-                  list); on today's committed plan it's the done/past block, which
-                  we leave fixed. The upcoming (below) block is always reorderable. */}
-              {renderGroup(aboveNow, !showNow)}
+              {/* On a draft/future plan the whole list is reorderable; on today's
+                  committed plan the done/past block above the line is fixed. */}
+              <Group group={aboveNow} reorderable={!showNow} />
               {showNow && <NowLine now={now} />}
-              {renderGroup(belowNow, true)}
+              <Group group={belowNow} reorderable />
             </>
           )
         })()}
@@ -670,18 +686,45 @@ function StyleChoice({ active, onClick, label, hint }: { active: boolean; onClic
   )
 }
 
-function ItemRow({
-  item, isDraft, busy, onToggle, onRemove, onReschedule, onUp, onDown,
-}: {
+type ItemRowProps = {
   item: DayPlanItem
   isDraft: boolean
   busy?: boolean
   onToggle: () => void
   onRemove: () => void
   onReschedule?: (message: string) => void | Promise<void>
-  onUp?: () => void
-  onDown?: () => void
-}) {
+  dragHandle?: ReactNode
+}
+
+// Wraps a row in dnd-kit's sortable so it can be dragged by its handle. Anchors
+// pass draggable=false (fixed calendar events — no handle).
+function SortableRow({ id, draggable, rowProps }: { id: string; draggable: boolean; rowProps: Omit<ItemRowProps, 'dragHandle'> }) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id, disabled: !draggable })
+  const style: CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.5 : undefined,
+    zIndex: isDragging ? 20 : undefined,
+    position: 'relative',
+  }
+  const handle = draggable ? (
+    <button
+      {...attributes}
+      {...listeners}
+      aria-label="Drag to reorder"
+      className="p-0.5 -my-0.5 text-slate-300 hover:text-slate-500 cursor-grab active:cursor-grabbing touch-none"
+    >
+      <GripVertical size={16} />
+    </button>
+  ) : null
+  return (
+    <div ref={setNodeRef} style={style}>
+      <ItemRow {...rowProps} dragHandle={handle} />
+    </div>
+  )
+}
+
+function ItemRow({ item, isDraft, busy, onToggle, onRemove, onReschedule, dragHandle }: ItemRowProps) {
   const isAnchor = item.kind === 'anchor'
   const cat = item.category ? MOMENT_KIND_META[item.category] : null
   const time = fmtTime(item.startTime)
@@ -774,14 +817,10 @@ function ItemRow({
         )}
       </div>
 
-      {/* Right: reorder arrows + (remove on draft / reschedule on committed). */}
-      {(onUp || onDown || isDraft || (onReschedule && !item.done)) && (
+      {/* Right: drag handle + (remove on draft / reschedule on committed). */}
+      {(dragHandle || isDraft || (onReschedule && !item.done)) && (
         <div className="flex flex-col items-center gap-0.5 shrink-0">
-          {(onUp || onDown) && (
-            <button onClick={onUp} disabled={!onUp} aria-label="Move up" className="p-0.5 text-slate-300 hover:text-indigo-600 disabled:opacity-0 transition-colors">
-              <ChevronUp size={16} />
-            </button>
-          )}
+          {dragHandle}
           {isDraft ? (
             <button onClick={onRemove} aria-label="Remove" className="p-1 text-slate-300 hover:text-red-500 transition-colors">
               <X size={15} />
@@ -796,11 +835,6 @@ function ItemRow({
               <Clock size={15} />
             </button>
           ) : null}
-          {(onUp || onDown) && (
-            <button onClick={onDown} disabled={!onDown} aria-label="Move down" className="p-0.5 text-slate-300 hover:text-indigo-600 disabled:opacity-0 transition-colors">
-              <ChevronDown size={16} />
-            </button>
-          )}
         </div>
       )}
     </div>
