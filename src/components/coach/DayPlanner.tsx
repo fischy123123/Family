@@ -2,10 +2,10 @@
 
 import { useState, useEffect, Fragment } from 'react'
 import {
-  CalendarDays, Sparkles, ArrowRight, Loader2, Check, X, ChevronUp, ChevronDown,
+  CalendarDays, Sparkles, ArrowRight, Loader2, Check, X,
   ChevronLeft, ChevronRight, Plus, Send, RefreshCw, Lock, Pin, LifeBuoy, Trash2, SlidersHorizontal,
 } from 'lucide-react'
-import { useDayPlan, dateStrOffset } from '@/hooks/useDayPlan'
+import { useDayPlan, dateStrOffset, sortByTime } from '@/hooks/useDayPlan'
 import { AboutMeForm } from './AboutMeForm'
 import { MOMENT_ENERGY_META, MOMENT_KIND_META } from '@/lib/types'
 import type { MomentEnergy, DayPlanItem, DayPlanStructure } from '@/lib/types'
@@ -56,7 +56,7 @@ export function DayPlanner() {
     plan, selectedDate, setSelectedDate, isToday, targetDateLabel,
     personalProfile, working, error,
     draftPlan, refinePlan, replanRest, finalizePlan,
-    toggleItem, removeItem, addItem, moveItem, discardPlan,
+    toggleItem, removeItem, addItem, discardPlan,
     savePersonalProfile,
   } = useDayPlan()
 
@@ -299,8 +299,11 @@ export function DayPlanner() {
   const pct = items.length ? Math.round((doneCount / items.length) * 100) : 0
   const isDraft = status === 'draft'
   const isDone = status === 'done'
+  // Always present items in chronological order at render time — robust even for
+  // plans saved before the sort logic, or after a manual edit.
+  const ordered = sortByTime(items)
   // The "now" line only makes sense on today's committed (not draft) plan.
-  const markerAt = isToday && !isDraft ? nowMarkerIndex(items, now) : null
+  const markerAt = isToday && !isDraft ? nowMarkerIndex(ordered, now) : null
 
   return (
     <section className="rounded-2xl p-5 bg-white shadow-card">
@@ -352,9 +355,9 @@ export function DayPlanner() {
         </div>
       )}
 
-      {/* Items — with a live "now" line slotted into the timeline. */}
+      {/* Items — chronological, with a live "now" line slotted into the timeline. */}
       <div className="space-y-2">
-        {items.map((it, idx) => (
+        {ordered.map((it, idx) => (
           <Fragment key={it.id}>
             {markerAt === idx && <NowLine now={now} />}
             <ItemRow
@@ -362,12 +365,10 @@ export function DayPlanner() {
               isDraft={isDraft}
               onToggle={() => toggleItem(it.id)}
               onRemove={() => removeItem(it.id)}
-              onUp={idx > 0 ? () => moveItem(it.id, -1) : undefined}
-              onDown={idx < items.length - 1 ? () => moveItem(it.id, 1) : undefined}
             />
           </Fragment>
         ))}
-        {markerAt === items.length && <NowLine now={now} />}
+        {markerAt === ordered.length && <NowLine now={now} />}
       </div>
 
       {/* Draft controls: add, chat-refine, finalize */}
@@ -553,14 +554,12 @@ function StyleChoice({ active, onClick, label, hint }: { active: boolean; onClic
 }
 
 function ItemRow({
-  item, isDraft, onToggle, onRemove, onUp, onDown,
+  item, isDraft, onToggle, onRemove,
 }: {
   item: DayPlanItem
   isDraft: boolean
   onToggle: () => void
   onRemove: () => void
-  onUp?: () => void
-  onDown?: () => void
 }) {
   const isAnchor = item.kind === 'anchor'
   const cat = item.category ? MOMENT_KIND_META[item.category] : null
@@ -621,13 +620,11 @@ function ItemRow({
         {item.minutes && !item.done && <span className="text-[11px] text-slate-400">~{item.minutes} min</span>}
       </div>
 
-      {/* Right: draft reorder/remove */}
+      {/* Right: remove (draft only). Order is chronological/automatic now. */}
       {isDraft && (
-        <div className="flex flex-col items-center gap-0.5 shrink-0">
-          <button onClick={onUp} disabled={!onUp} className="p-0.5 text-slate-300 hover:text-slate-600 disabled:opacity-0 transition-colors"><ChevronUp size={15} /></button>
-          <button onClick={onRemove} className="p-0.5 text-slate-300 hover:text-red-500 transition-colors"><X size={14} /></button>
-          <button onClick={onDown} disabled={!onDown} className="p-0.5 text-slate-300 hover:text-slate-600 disabled:opacity-0 transition-colors"><ChevronDown size={15} /></button>
-        </div>
+        <button onClick={onRemove} aria-label="Remove" className="p-1 text-slate-300 hover:text-red-500 transition-colors shrink-0">
+          <X size={15} />
+        </button>
       )}
     </div>
   )

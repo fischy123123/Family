@@ -44,8 +44,9 @@ function labelFor(dateStr: string): string {
 // land in their real time slot instead of being bunched at the top. Timed items
 // sort by their time; an untimed move inherits the time of the nearest timed
 // item before it (so it follows that anchor) — or the next one if none precede —
-// and ties break by the model's original order. Stable + deterministic.
-function sortByTime(items: DayPlanItem[]): DayPlanItem[] {
+// and ties break by the model's original order. Stable + deterministic. Exported
+// so the UI can also sort at render time (covers plans saved before this logic).
+export function sortByTime(items: DayPlanItem[]): DayPlanItem[] {
   const ms = items.map((it) => (it.startTime ? new Date(it.startTime).getTime() : NaN))
   const eff = ms.slice()
   // Forward-fill: an untimed item takes the previous known time.
