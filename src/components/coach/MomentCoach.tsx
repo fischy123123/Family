@@ -1,8 +1,8 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useRef } from 'react'
 import {
-  Sparkles, ArrowRight, RefreshCw, Check, Loader2, Clock, Settings2, X, ChevronRight,
+  Sparkles, ArrowRight, RefreshCw, Check, Loader2, Clock, Settings2, X, ChevronRight, Mic, Square,
 } from 'lucide-react'
 import { useMomentCoach } from '@/hooks/useMomentCoach'
 import { useFirestore } from '@/hooks/useFirestore'
@@ -17,11 +17,16 @@ import type {
 
 const ENERGY_ORDER: MomentEnergy[] = ['wired', 'okay', 'drained']
 const MOOD_ORDER: MomentMood[] = ['good', 'meh', 'low', 'anxious']
+// One-tap situational states — the zero-effort path to giving context.
+const SITUATION_CHIPS = [
+  'Just got home', 'Kids are on me', 'Free block', 'Between things',
+  'Winding down', "Can't get started", 'Overwhelmed', 'Bored',
+]
 
 export function MomentCoach() {
   const {
     personalProfile, hasProfile, savePersonalProfile,
-    guidance, loading, error, requestGuidance, clearGuidance,
+    guidance, loading, error, requestGuidance, recordOutcome, clearGuidance,
   } = useMomentCoach()
   const { create: createTask } = useFirestore<Task>('tasks')
   const { toast } = useToast()
@@ -29,6 +34,7 @@ export function MomentCoach() {
   const [setupOpen, setSetupOpen] = useState(false)
   const [energy, setEnergy] = useState<MomentEnergy | null>(null)
   const [mood, setMood] = useState<MomentMood | null>(null)
+  const [situation, setSituation] = useState('')
   const [showFallback, setShowFallback] = useState(false)
 
   const needsSetup = !hasProfile || setupOpen
@@ -36,13 +42,14 @@ export function MomentCoach() {
   async function runCoach() {
     if (!energy) return
     setShowFallback(false)
-    await requestGuidance(energy, mood ?? undefined)
+    await requestGuidance(energy, mood ?? undefined, situation)
   }
 
   function resetCheckIn() {
     clearGuidance()
     setEnergy(null)
     setMood(null)
+    setSituation('')
     setShowFallback(false)
   }
 
@@ -60,7 +67,15 @@ export function MomentCoach() {
         createdAt: new Date().toISOString(),
       } as Task)
     } catch { /* non-fatal — celebration still shows */ }
+    recordOutcome('did_it')
     toast('Nice — that counts. 🎉', 'success')
+    resetCheckIn()
+  }
+
+  // They moved past the suggestion without doing it — log it so follow-through
+  // (and "suggestions that keep going undone") shows up in the trends.
+  function dismissGuidance() {
+    recordOutcome('dismissed')
     resetCheckIn()
   }
 
@@ -105,12 +120,12 @@ export function MomentCoach() {
           onShowFallback={() => setShowFallback(true)}
           onDone={markDone}
           onSomethingElse={runCoach}
-          onNewCheckIn={resetCheckIn}
+          onNewCheckIn={dismissGuidance}
         />
       ) : (
         <CheckIn
-          energy={energy} mood={mood}
-          setEnergy={setEnergy} setMood={setMood}
+          energy={energy} mood={mood} situation={situation}
+          setEnergy={setEnergy} setMood={setMood} setSituation={setSituation}
           onSubmit={runCoach}
           error={error}
         />
@@ -119,14 +134,16 @@ export function MomentCoach() {
   )
 }
 
-// ── Check-in: pick energy (required) + mood (optional), then ask ────────────
+// ── Check-in: energy (required) + mood + what's going on, then ask ──────────
 function CheckIn({
-  energy, mood, setEnergy, setMood, onSubmit, error,
+  energy, mood, situation, setEnergy, setMood, setSituation, onSubmit, error,
 }: {
   energy: MomentEnergy | null
   mood: MomentMood | null
+  situation: string
   setEnergy: (e: MomentEnergy) => void
   setMood: (m: MomentMood) => void
+  setSituation: (s: string) => void
   onSubmit: () => void
   error: string | null
 }) {
@@ -178,6 +195,8 @@ function CheckIn({
         </div>
       </div>
 
+      <SituationCapture value={situation} onChange={setSituation} />
+
       {error && <p className="text-xs text-rose-100 bg-rose-500/30 rounded-lg px-3 py-2">{error}</p>}
 
       <button
@@ -188,6 +207,102 @@ function CheckIn({
         Tell me what to do
         <ArrowRight size={16} />
       </button>
+    </div>
+  )
+}
+
+// ── Situational context: one-tap chips + hold-to-talk voice + free text ─────
+// The whole game is low friction: tap a chip and go, ramble into the mic, or
+// type — whatever fits the moment. All three feed one "what's going on" string.
+function SituationCapture({ value, onChange }: { value: string; onChange: (s: string) => void }) {
+  const [recording, setRecording] = useState(false)
+  const [transcribing, setTranscribing] = useState(false)
+  const recorderRef = useRef<MediaRecorder | null>(null)
+  const chunksRef = useRef<Blob[]>([])
+
+  function appendPhrase(phrase: string) {
+    const cur = value.trim()
+    // Toggle off if it's already there; otherwise append.
+    if (cur.toLowerCase().includes(phrase.toLowerCase())) return
+    onChange(cur ? `${cur}, ${phrase}` : phrase)
+  }
+
+  async function startRecording() {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      const rec = new MediaRecorder(stream)
+      chunksRef.current = []
+      rec.ondataavailable = (e) => { if (e.data.size > 0) chunksRef.current.push(e.data) }
+      rec.onstop = async () => {
+        stream.getTracks().forEach((t) => t.stop())
+        const blob = new Blob(chunksRef.current, { type: rec.mimeType || 'audio/webm' })
+        setRecording(false)
+        if (blob.size === 0) return
+        setTranscribing(true)
+        try {
+          const fd = new FormData()
+          fd.append('file', blob, 'clip.webm')
+          const res = await fetch('/api/transcribe', { method: 'POST', body: fd })
+          const data = await res.json()
+          if (res.ok && data.text) {
+            const cur = value.trim()
+            onChange(cur ? `${cur} ${data.text}` : data.text)
+          }
+        } catch { /* keep what they have */ } finally {
+          setTranscribing(false)
+        }
+      }
+      recorderRef.current = rec
+      rec.start()
+      setRecording(true)
+    } catch { /* mic permission denied — chips + text still work */ }
+  }
+
+  function stopRecording() {
+    recorderRef.current?.stop()
+  }
+
+  return (
+    <div>
+      <p className="text-xs font-semibold uppercase tracking-wider text-white/60 mb-2">
+        What&apos;s going on? <span className="font-normal normal-case text-white/40">· optional</span>
+      </p>
+
+      <div className="flex flex-wrap gap-1.5 mb-2">
+        {SITUATION_CHIPS.map((chip) => {
+          const active = value.toLowerCase().includes(chip.toLowerCase())
+          return (
+            <button
+              key={chip}
+              onClick={() => appendPhrase(chip)}
+              className={`text-[11px] px-2.5 py-1 rounded-full border transition-all ${
+                active ? 'bg-white text-indigo-700 border-white font-semibold' : 'bg-white/10 text-white/90 border-white/15 hover:bg-white/20'
+              }`}
+            >
+              {chip}
+            </button>
+          )
+        })}
+      </div>
+
+      <div className="relative">
+        <textarea
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          rows={2}
+          placeholder={transcribing ? 'Transcribing…' : 'Tap a chip, talk, or type…'}
+          className="w-full text-sm rounded-lg pl-3 pr-11 py-2 bg-white/90 text-slate-900 placeholder:text-slate-400 focus:outline-none resize-none leading-relaxed"
+        />
+        <button
+          onClick={recording ? stopRecording : startRecording}
+          aria-label={recording ? 'Stop recording' : 'Record what\'s going on'}
+          className={`absolute top-2 right-2 w-7 h-7 rounded-lg flex items-center justify-center transition-colors ${
+            recording ? 'bg-rose-500 text-white animate-pulse' : 'bg-indigo-100 text-indigo-600 hover:bg-indigo-200'
+          }`}
+        >
+          {transcribing ? <Loader2 size={14} className="animate-spin" /> : recording ? <Square size={13} /> : <Mic size={14} />}
+        </button>
+      </div>
     </div>
   )
 }

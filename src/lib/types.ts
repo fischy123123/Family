@@ -224,6 +224,22 @@ export interface MomentGuidance {
   mood?: MomentMood
 }
 
+// A logged check-in — every time the user tells the coach how they feel and
+// what's going on, we persist it. This becomes trending data: the coach reads
+// recent entries to notice patterns ("drained every evening," "overwhelmed at
+// pickup three days running") and treat them as durable context, not just a
+// one-off. One document per check-in, in the signed-in person's own log.
+export interface MomentCheckIn {
+  id: string
+  email: string                 // whose check-in (the signed-in person)
+  ts: string                    // ISO timestamp of the check-in
+  energy: MomentEnergy
+  mood?: MomentMood
+  situation?: string            // free-text / transcribed "what's going on right now"
+  primaryTitle?: string         // the move the coach suggested (for follow-through tracking)
+  outcome?: 'did_it' | 'dismissed'  // set later if they act on or move past it
+}
+
 export type GroceryCategory = 'produce' | 'dairy' | 'meat' | 'bakery' | 'pantry' | 'frozen' | 'household' | 'other'
 
 export interface GroceryItem {

@@ -6,7 +6,7 @@ import {
   MOMENT_COACH_MODEL, MOMENT_COACH_MAX_TOKENS, MOMENT_COACH_SYSTEM_PROMPT,
 } from '@/lib/momentCoachPrompt'
 import type {
-  PersonalProfile, MomentEnergy, MomentMood, MomentGuidance, MomentMove,
+  PersonalProfile, MomentEnergy, MomentMood, MomentGuidance, MomentMove, MomentCheckIn,
 } from '@/lib/types'
 
 const MODEL = MOMENT_COACH_MODEL
@@ -19,8 +19,14 @@ type CoachNowInput = FamilyContextInput & {
   personalProfile?: PersonalProfile | null
   energy?: MomentEnergy
   mood?: MomentMood
+  // Free-text / transcribed "what's going on right now" — the highest-signal
+  // situational input, true only for this moment and present nowhere in the data.
+  situation?: string
   // Titles of tasks the user has already completed today — momentum to build on.
   completedToday?: string[]
+  // The user's recent logged check-ins, so the coach can read trends across
+  // days (recurring drain, repeated situations) and address the pattern.
+  recentCheckins?: MomentCheckIn[]
 }
 
 // Render the "ABOUT ME" block from the user's personal profile. This is the
@@ -54,6 +60,39 @@ function buildCheckIn(energy?: MomentEnergy, mood?: MomentMood, completedToday?:
   }
   if (!parts.length) return ''
   return `\n\nRIGHT-NOW CHECK-IN (decisive — match the move to this state; a drained person should not be handed the hardest task):\n${parts.join('\n')}`
+}
+
+// The free-text "what's going on right now." This is the single highest-signal
+// input — it's true only for this moment and appears nowhere else in the data.
+function buildSituation(situation?: string): string {
+  const s = (situation ?? '').trim()
+  if (!s) return ''
+  return `\n\nWHAT'S HAPPENING RIGHT NOW (the user just told you, in their own words — TREAT THIS AS THE MOST IMPORTANT INPUT. It overrides assumptions; build the move around what they actually said):\n"${s.slice(0, 800)}"`
+}
+
+// Recent check-ins → a compact trend block. Lets the coach notice patterns
+// across days (recurring drain, the same situation repeating, moves that never
+// get done) and speak to the pattern instead of treating each moment in
+// isolation. Most-recent first; capped so the prompt stays tight.
+function buildTrends(recent?: MomentCheckIn[]): string {
+  const items = (recent ?? [])
+    .filter((c) => c && c.ts)
+    .sort((a, b) => new Date(b.ts).getTime() - new Date(a.ts).getTime())
+    .slice(0, 12)
+  if (items.length < 2) return ''  // need at least a couple to be a "trend"
+  const lines = items.map((c) => {
+    const when = (() => {
+      try {
+        return new Date(c.ts).toLocaleString('en-US', { weekday: 'short', hour: 'numeric', minute: '2-digit' })
+      } catch { return c.ts }
+    })()
+    const bits = [`energy ${c.energy}`]
+    if (c.mood) bits.push(`mood ${c.mood}`)
+    if (c.situation) bits.push(`"${c.situation.slice(0, 100)}"`)
+    if (c.outcome) bits.push(c.outcome === 'did_it' ? '✓ acted on it' : 'moved past it')
+    return `  - ${when}: ${bits.join(', ')}`
+  })
+  return `\n\nRECENT CHECK-INS (this person's last several moments with you — newest first. Look for PATTERNS: a recurring low/drain at a certain time, the same situation coming up again and again, or suggestions that keep going undone. When you see a real pattern, gently name it and let the move address the pattern, not just this instant. Don't force a pattern that isn't there):\n${lines.join('\n')}`
 }
 
 // Coerce one move object from the model into a typed MomentMove, dropping junk.
@@ -92,6 +131,8 @@ export async function POST(request: NextRequest) {
   const { timeHeader, dataBlock } = buildFamilyContextParts(ctx)
   const aboutMe = buildAboutMe(ctx.personalProfile)
   const checkIn = buildCheckIn(ctx.energy, ctx.mood, ctx.completedToday)
+  const situation = buildSituation(ctx.situation)
+  const trends = buildTrends(ctx.recentCheckins)
 
   const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
@@ -108,8 +149,9 @@ export async function POST(request: NextRequest) {
           content: [
             // Reuse the same cached family data block as the attention engine.
             { type: 'text', text: `FAMILY CONTEXT:\n\n${dataBlock}`, cache_control: { type: 'ephemeral', ttl: '1h' } },
-            // Fresh tail: time anchor + this person + how they feel right now.
-            { type: 'text', text: timeHeader + aboutMe + checkIn },
+            // Fresh tail: time anchor + this person + how they feel right now +
+            // what they said is happening + their recent-check-in trends.
+            { type: 'text', text: timeHeader + aboutMe + checkIn + situation + trends },
           ],
         }],
       },
