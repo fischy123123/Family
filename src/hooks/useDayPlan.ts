@@ -320,13 +320,11 @@ export function useDayPlan() {
     await updatePlan({ ...todayPlan, items: [...todayPlan.items, item], updatedAt: new Date().toISOString() })
   }, [todayPlan, updatePlan])
 
-  const moveItem = useCallback(async (itemId: string, dir: -1 | 1) => {
+  // Persist an explicit item order/content (used by manual reordering, which
+  // computes the swap with full display context — swapping times for timed
+  // items or order for untimed ones).
+  const applyItems = useCallback(async (items: DayPlanItem[]) => {
     if (!todayPlan) return
-    const items = [...todayPlan.items]
-    const i = items.findIndex((it) => it.id === itemId)
-    const j = i + dir
-    if (i < 0 || j < 0 || j >= items.length) return
-    ;[items[i], items[j]] = [items[j], items[i]]
     await updatePlan({ ...todayPlan, items, updatedAt: new Date().toISOString() })
   }, [todayPlan, updatePlan])
 
@@ -354,7 +352,7 @@ export function useDayPlan() {
     hasProfile: !!personalProfile,
     working, error,
     draftPlan, refinePlan, replanRest, finalizePlan,
-    toggleItem, removeItem, addItem, moveItem, discardPlan,
+    toggleItem, removeItem, addItem, applyItems, discardPlan,
     savePersonalProfile,
   }
 }

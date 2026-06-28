@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import {
-  CalendarDays, Sparkles, ArrowRight, Loader2, Check, X, Clock,
+  CalendarDays, Sparkles, ArrowRight, Loader2, Check, X, Clock, ChevronUp, ChevronDown,
   ChevronLeft, ChevronRight, Plus, Send, RefreshCw, Lock, Pin, LifeBuoy, Trash2, SlidersHorizontal, TrendingUp,
 } from 'lucide-react'
 import { useDayPlan, dateStrOffset, sortByTime } from '@/hooks/useDayPlan'
@@ -53,7 +53,7 @@ export function DayPlanner() {
     plan, selectedDate, setSelectedDate, isToday, targetDateLabel,
     personalProfile, working, error,
     draftPlan, refinePlan, replanRest, finalizePlan,
-    toggleItem, removeItem, addItem, discardPlan,
+    toggleItem, removeItem, addItem, applyItems, discardPlan,
     savePersonalProfile,
   } = useDayPlan()
 
@@ -320,6 +320,31 @@ export function DayPlanner() {
     else belowNow.push(it)
   })
 
+  // Manual reorder: swap an item with its neighbor WITHIN the same group (we
+  // don't let arrows push an item across the now line). For two timed items we
+  // swap their times (so the timeline stays sorted); otherwise we swap their
+  // order in the stored array (untimed items keep order via the sort tiebreak).
+  function swapWithin(group: DayPlanItem[], idx: number, dir: -1 | 1) {
+    const j = idx + dir
+    if (j < 0 || j >= group.length) return
+    const a = group[idx]
+    const b = group[j]
+    if (a.startTime && b.startTime) {
+      applyItems(items.map((it) =>
+        it.id === a.id ? { ...it, startTime: b.startTime }
+        : it.id === b.id ? { ...it, startTime: a.startTime }
+        : it,
+      ))
+    } else {
+      const arr = [...items]
+      const ia = arr.findIndex((x) => x.id === a.id)
+      const ib = arr.findIndex((x) => x.id === b.id)
+      if (ia < 0 || ib < 0) return
+      ;[arr[ia], arr[ib]] = [arr[ib], arr[ia]]
+      applyItems(arr)
+    }
+  }
+
   return (
     <section className="rounded-2xl p-5 bg-white shadow-card">
       {header}
@@ -371,10 +396,11 @@ export function DayPlanner() {
       )}
 
       {/* Items — chronological. Done / past items sit above the live "now" line;
-          only what's still ahead sits below it. */}
+          only what's still ahead sits below it. Up/down arrows reorder within a
+          group. */}
       <div className="space-y-2">
         {(() => {
-          const renderRow = (it: DayPlanItem) => (
+          const renderGroup = (group: DayPlanItem[], reorderable: boolean) => group.map((it, idx) => (
             <ItemRow
               key={it.id}
               item={it}
@@ -382,14 +408,19 @@ export function DayPlanner() {
               busy={working}
               onToggle={() => toggleItem(it.id)}
               onRemove={() => removeItem(it.id)}
+              onUp={reorderable && idx > 0 ? () => swapWithin(group, idx, -1) : undefined}
+              onDown={reorderable && idx < group.length - 1 ? () => swapWithin(group, idx, 1) : undefined}
               onReschedule={!isDraft && !it.done ? async (msg) => { setReply(null); const r = await refinePlan(msg, it.title); setReply(r) } : undefined}
             />
-          )
+          ))
           return (
             <>
-              {aboveNow.map(renderRow)}
+              {/* Above-now is reorderable on a draft/future plan (it's the whole
+                  list); on today's committed plan it's the done/past block, which
+                  we leave fixed. The upcoming (below) block is always reorderable. */}
+              {renderGroup(aboveNow, !showNow)}
               {showNow && <NowLine now={now} />}
-              {belowNow.map(renderRow)}
+              {renderGroup(belowNow, true)}
             </>
           )
         })()}
@@ -578,7 +609,7 @@ function StyleChoice({ active, onClick, label, hint }: { active: boolean; onClic
 }
 
 function ItemRow({
-  item, isDraft, busy, onToggle, onRemove, onReschedule,
+  item, isDraft, busy, onToggle, onRemove, onReschedule, onUp, onDown,
 }: {
   item: DayPlanItem
   isDraft: boolean
@@ -586,6 +617,8 @@ function ItemRow({
   onToggle: () => void
   onRemove: () => void
   onReschedule?: (message: string) => void | Promise<void>
+  onUp?: () => void
+  onDown?: () => void
 }) {
   const isAnchor = item.kind === 'anchor'
   const cat = item.category ? MOMENT_KIND_META[item.category] : null
@@ -679,21 +712,35 @@ function ItemRow({
         )}
       </div>
 
-      {/* Right: remove (draft) or reschedule (committed, not done). */}
-      {isDraft ? (
-        <button onClick={onRemove} aria-label="Remove" className="p-1 text-slate-300 hover:text-red-500 transition-colors shrink-0">
-          <X size={15} />
-        </button>
-      ) : onReschedule && !item.done ? (
-        <button
-          onClick={() => setFbOpen((v) => !v)}
-          aria-label="Reschedule this"
-          title="Reschedule / adjust this"
-          className={`p-1.5 rounded-lg transition-colors shrink-0 ${fbOpen ? 'text-indigo-600 bg-indigo-50' : 'text-slate-300 hover:text-indigo-600 hover:bg-indigo-50'}`}
-        >
-          <Clock size={15} />
-        </button>
-      ) : null}
+      {/* Right: reorder arrows + (remove on draft / reschedule on committed). */}
+      {(onUp || onDown || isDraft || (onReschedule && !item.done)) && (
+        <div className="flex flex-col items-center gap-0.5 shrink-0">
+          {(onUp || onDown) && (
+            <button onClick={onUp} disabled={!onUp} aria-label="Move up" className="p-0.5 text-slate-300 hover:text-indigo-600 disabled:opacity-0 transition-colors">
+              <ChevronUp size={16} />
+            </button>
+          )}
+          {isDraft ? (
+            <button onClick={onRemove} aria-label="Remove" className="p-1 text-slate-300 hover:text-red-500 transition-colors">
+              <X size={15} />
+            </button>
+          ) : onReschedule && !item.done ? (
+            <button
+              onClick={() => setFbOpen((v) => !v)}
+              aria-label="Reschedule this"
+              title="Reschedule / adjust this"
+              className={`p-1.5 rounded-lg transition-colors ${fbOpen ? 'text-indigo-600 bg-indigo-50' : 'text-slate-300 hover:text-indigo-600 hover:bg-indigo-50'}`}
+            >
+              <Clock size={15} />
+            </button>
+          ) : null}
+          {(onUp || onDown) && (
+            <button onClick={onDown} disabled={!onDown} aria-label="Move down" className="p-0.5 text-slate-300 hover:text-indigo-600 disabled:opacity-0 transition-colors">
+              <ChevronDown size={16} />
+            </button>
+          )}
+        </div>
+      )}
     </div>
   )
 }
