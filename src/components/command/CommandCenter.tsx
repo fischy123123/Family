@@ -1026,12 +1026,10 @@ export function CommandCenter() {
       lastRunSig.current === lastCtxSig.current &&
       timeSinceLastRun < ENGINE_DATA_UNCHANGED_TTL_MS
     ) return
-    // Auto-refresh is disabled — the briefing regenerates ONLY when the user
-    // taps Refresh. We still do the initial cold-start load (when there's no
-    // report yet) so a first visit isn't an empty screen; after that it never
-    // refreshes on its own.
-    if (reportRef.current) return
-    scheduleEngine(false)
+    // Fully manual: the briefing NEVER regenerates on its own — not on data
+    // changes, not on foreground, and not on cold start. The last briefing is
+    // restored from cache (localStorage + Firestore) so there's always content
+    // to show. Generation happens only when the user taps Refresh.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hydrated, googleLoaded, members.length, events.length > 0, tasks.length, reminders.length])
 
@@ -1734,6 +1732,22 @@ export function CommandCenter() {
         </div>
       )}
 
+
+      {/* No briefing yet (brand-new device / cleared cache) — the engine no
+          longer runs on its own, so prompt the user to generate one. */}
+      {!report && !loading && !engineError && hydrated && (
+        <div className="rounded-2xl p-6 bg-slate-50 border border-slate-200 text-center animate-slide-up">
+          <p className="text-2xl mb-2">📋</p>
+          <p className="text-sm font-semibold text-slate-700">No briefing yet</p>
+          <p className="text-xs text-slate-500 mt-1 mb-3">Tap refresh to generate your briefing for today.</p>
+          <button
+            onClick={() => { forceDirectRef.current = true; runEngine(undefined, false) }}
+            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 transition-colors"
+          >
+            <RefreshCw size={14} /> Generate briefing
+          </button>
+        </div>
+      )}
 
       {/* Empty state — shown when the engine ran but found nothing for this person.
           Problems/recommendations are lazy sections below, so only the items array
