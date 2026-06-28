@@ -83,8 +83,10 @@ export function DayPlanner() {
   const relLabel = selectedDate === today0 ? 'Today' : selectedDate === dateStrOffset(1) ? 'Tomorrow' : null
   const weekday = targetDateLabel.split(',')[0]
   const title = relLabel ? `${relLabel}’s plan` : `${weekday}’s plan`
-  const canGoPrev = selectedDate > today0          // no planning the past
-  const canGoNext = selectedDate < dateStrOffset(14)  // up to two weeks out
+  const isPast = selectedDate < today0
+  const readOnly = isPast                          // past days are view-only history
+  const canGoPrev = selectedDate > dateStrOffset(-60)  // look back up to ~2 months
+  const canGoNext = selectedDate < dateStrOffset(14)   // plan up to two weeks out
 
   async function sendRefine() {
     const msg = chat.trim()
@@ -210,6 +212,20 @@ export function DayPlanner() {
           onSave={async (patch) => { await savePersonalProfile(patch); setEditingProfile(false) }}
           onCancel={() => setEditingProfile(false)}
         />
+      </section>
+    )
+  }
+
+  // ── Past day with no plan — nothing to draft, just history ──────────────────
+  if (!plan && isPast) {
+    return (
+      <section className="rounded-2xl p-5 bg-white shadow-card">
+        {header}
+        <div className="py-8 text-center">
+          <p className="text-2xl mb-2">🗓️</p>
+          <p className="text-sm font-semibold text-slate-600">No plan for this day</p>
+          <p className="text-xs text-slate-400 mt-1">You didn&apos;t make a plan on {targetDateLabel}.</p>
+        </div>
       </section>
     )
   }
@@ -414,9 +430,9 @@ export function DayPlanner() {
             item: it,
             isDraft,
             busy: working,
-            onToggle: () => toggleItem(it.id),
+            onToggle: readOnly ? () => {} : () => toggleItem(it.id),
             onRemove: () => removeItem(it.id),
-            onReschedule: !isDraft && !it.done
+            onReschedule: !readOnly && !isDraft && !it.done
               ? async (msg: string) => { setReply(null); const r = await refinePlan(msg, it.title); setReply(r) }
               : undefined,
           })
@@ -446,18 +462,19 @@ export function DayPlanner() {
           }
           return (
             <>
-              {/* On a draft/future plan the whole list is reorderable; on today's
-                  committed plan the done/past block above the line is fixed. */}
-              <Group group={aboveNow} reorderable={!showNow} />
+              {/* Past days are read-only. Otherwise: on a draft/future plan the
+                  whole list is reorderable; on today's committed plan the
+                  done/past block above the line is fixed. */}
+              <Group group={aboveNow} reorderable={!readOnly && !showNow} />
               {showNow && <NowLine now={now} />}
-              <Group group={belowNow} reorderable />
+              <Group group={belowNow} reorderable={!readOnly} />
             </>
           )
         })()}
       </div>
 
       {/* Draft controls: add, chat-refine, finalize */}
-      {isDraft && (
+      {isDraft && !readOnly && (
         <div className="mt-4 space-y-3">
           {/* Flip how prescriptive the plan is — regenerates from the same inputs. */}
           <button
@@ -531,7 +548,7 @@ export function DayPlanner() {
       )}
 
       {/* Active/done controls: nudge, replan, start over */}
-      {!isDraft && (
+      {!isDraft && !readOnly && (
         <div className="mt-5 space-y-2">
           {reply && (
             <div className="flex items-start gap-2 rounded-lg bg-indigo-50 px-3 py-2">
@@ -611,7 +628,7 @@ export function DayPlanner() {
 
       {/* Consider fitting in — optional ideas drawn from your goals & standing
           commitments that could slot into the time you have. */}
-      {!isDone && (
+      {!isDone && !readOnly && (
         <div className="mt-5 pt-4 border-t border-slate-100">
           <div className="flex items-center justify-between mb-2">
             <div className="flex items-center gap-1.5">

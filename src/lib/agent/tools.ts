@@ -97,6 +97,16 @@ export const TOOLS: Anthropic.Tool[] = [
     },
   },
   {
+    name: 'get_day_plan',
+    description: "Get the signed-in user's structured plan for a day from the Coach planner — the ordered list of timed anchors and flexible 'moves' (each with done state, a why, and steps), the headline, and status. ALWAYS call this when the user asks what they should be doing now, what's next, how their day is going, or anything about their plan/schedule for a day. Defaults to today.",
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        date: { type: 'string', description: "The day to fetch, as YYYY-MM-DD. Omit for today." },
+      },
+    },
+  },
+  {
     name: 'get_member_profile',
     description: "Get the structured profile data stored directly on a family member — their importantInfo (medical, education, logistics, personal, work), routines, preferences, and profile notes. Call this BEFORE update_member_info or remove_member_info to see what already exists (so you don't add duplicates or use stale IDs).",
     input_schema: {
@@ -924,6 +934,22 @@ export async function executeTool(
       const snap = await col('memories').get()
       const memories = snap.docs.map((d) => ({ id: d.id, ...d.data() }))
       return { memories }
+    }
+
+    case 'get_day_plan': {
+      if (!db) return { error: 'Firestore admin not configured', plan: null }
+      // Day plans are keyed `${sanitizedEmail}_${YYYY-MM-DD}` per person per day.
+      const localToday = (() => {
+        try {
+          const parts = new Intl.DateTimeFormat('en-CA', { timeZone: ctx.timezone || 'UTC', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date())
+          return parts // en-CA gives YYYY-MM-DD
+        } catch { return new Date().toISOString().slice(0, 10) }
+      })()
+      const date = typeof input.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(input.date) ? input.date : localToday
+      const emailKey = ctx.userEmail.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase()
+      const doc = await col('dayPlans').doc(`${emailKey}_${date}`).get()
+      if (!doc.exists) return { date, plan: null, note: 'No plan exists for that day.' }
+      return { date, plan: { id: doc.id, ...doc.data() } }
     }
 
     // -----------------------------------------------------------------------
