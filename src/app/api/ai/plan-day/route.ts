@@ -7,6 +7,7 @@ import {
 } from '@/lib/dayPlanPrompt'
 import type {
   PersonalProfile, MomentEnergy, DayPlanItem, DayPlanItemKind,
+  FamilyGoal, Reflection,
 } from '@/lib/types'
 
 const MODEL = DAY_PLAN_MODEL
@@ -26,6 +27,44 @@ type PlanDayInput = FamilyContextInput & {
   currentItems?: DayPlanItem[]
   // The user's chat instruction (refine) or replan note.
   message?: string
+  // Standing commitments + recent reflections — not part of the shared context
+  // block, so the planner renders them itself (see buildCommitments).
+  goals?: FamilyGoal[]
+  reflections?: Reflection[]
+}
+
+// Standing commitments + recent reflections → a block the planner should mine
+// for moves. The shared family-context builder doesn't include these, so we
+// render them here. Commitments ("family dinner 4x/week", "monthly date night")
+// are exactly the "who we want to be" signals the user felt were being ignored.
+function buildCommitmentsBlock(goals?: FamilyGoal[], reflections?: Reflection[]): string {
+  const out: string[] = []
+  const active = (goals ?? []).filter((g) => g.active)
+  if (active.length) {
+    const lines = active.map((g) => {
+      const bits = [g.text]
+      if (g.cadence) bits.push(`(${g.cadence})`)
+      if (g.why) bits.push(`— why it matters: ${g.why}`)
+      return `  - [${g.area}] ${bits.join(' ')}`
+    })
+    out.push(`STANDING COMMITMENTS (the family's ongoing intentions for how they want to live — NOT one-off tasks. Actively look for chances to honor these in today's plan: turn a relevant commitment into a concrete move for today when the day has room and it fits, e.g. a "family dinner 4x/week" commitment → a move to cook or plan dinner tonight; a "move my body daily" commitment → a walk or workout. Don't force every commitment in every day, but never ignore them):\n${lines.join('\n')}`)
+  }
+  const recent = (reflections ?? [])
+    .slice()
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+    .slice(0, 2)
+  if (recent.length) {
+    const lines = recent.map((r) => {
+      const parts: string[] = []
+      if (r.wentWell) parts.push(`went well: ${r.wentWell}`)
+      if (r.wasHard) parts.push(`was hard: ${r.wasHard}`)
+      if (r.wouldChange) parts.push(`would change: ${r.wouldChange}`)
+      if (r.gratitude) parts.push(`grateful: ${r.gratitude}`)
+      return `  - ${parts.join('; ')}`
+    })
+    out.push(`RECENT REFLECTIONS (what the user has said about how things are really going — use these to shape what today should protect or repair):\n${lines.join('\n')}`)
+  }
+  return out.length ? `\n\n${out.join('\n\n')}` : ''
 }
 
 function fmtItem(it: DayPlanItem): string {
@@ -113,6 +152,7 @@ export async function POST(request: NextRequest) {
         ctx.personalProfile.freeform ? `Also: ${ctx.personalProfile.freeform}.` : '',
       ].filter(Boolean).join(' ')}`
     : ''
+  const commitments = buildCommitmentsBlock(ctx.goals, ctx.reflections)
   const modeInstruction = buildModeInstruction(ctx)
 
   const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
@@ -129,7 +169,7 @@ export async function POST(request: NextRequest) {
           role: 'user',
           content: [
             { type: 'text', text: `FAMILY CONTEXT:\n\n${dataBlock}`, cache_control: { type: 'ephemeral', ttl: '1h' } },
-            { type: 'text', text: timeHeader + aboutMe + modeInstruction },
+            { type: 'text', text: timeHeader + aboutMe + commitments + modeInstruction },
           ],
         }],
       },

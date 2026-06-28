@@ -8,6 +8,7 @@ import type {
   FamilyMember, CalendarEvent, Task, Chore, Plan, SmartList,
   FamilyProfile, FamilyMemory, FamilyReminder,
   PersonalProfile, MomentEnergy, DayPlan, DayPlanItem,
+  FamilyGoal, Reflection,
 } from '@/lib/types'
 
 function emailKey(email: string): string {
@@ -39,6 +40,10 @@ export function useDayPlan() {
   const { data: memories } = useFirestore<FamilyMemory>('memories')
   const { data: profiles } = useFirestore<FamilyProfile>('profile')
   const { data: personalProfiles } = useFirestore<PersonalProfile>('personalProfiles')
+  // Standing commitments + recent reflections — the "who we want to be" layer
+  // the planner should translate into concrete moves for today.
+  const { data: goals } = useFirestore<FamilyGoal>('goals')
+  const { data: reflections } = useFirestore<Reflection>('reflections')
   const {
     data: dayPlans, create: createPlan, update: updatePlan, remove: removePlan,
   } = useFirestore<DayPlan>('dayPlans')
@@ -75,11 +80,13 @@ export function useDayPlan() {
   const baseBody = useCallback(() => ({
     members, events, tasks: allTasks.filter((t) => !t.isCompleted), chores, plans, lists,
     profile, memories, personalProfile,
+    goals: goals.filter((g) => g.active),
+    reflections,
     currentUserEmail: user?.email ?? undefined,
     currentUserName: user?.displayName ?? undefined,
     now: new Date().toISOString(),
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-  }), [members, events, allTasks, chores, plans, lists, profile, memories, personalProfile, user])
+  }), [members, events, allTasks, chores, plans, lists, profile, memories, personalProfile, goals, reflections, user])
 
   // Persist a set of items (with a headline) as today's plan doc, preserving
   // status. Items get stable ids so later toggles/edits address the right one.
