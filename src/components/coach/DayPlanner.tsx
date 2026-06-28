@@ -430,7 +430,10 @@ export function DayPlanner() {
             item: it,
             isDraft,
             busy: working,
-            onToggle: readOnly ? () => {} : () => toggleItem(it.id),
+            // Tracking (complete / not-complete) and delete work on ANY day —
+            // including past ones, so you can reconcile what actually happened
+            // for accountability. Only structural edits are present/future-only.
+            onToggle: () => toggleItem(it.id),
             onRemove: () => removeItem(it.id),
             onReschedule: !readOnly && !isDraft && !it.done
               ? async (msg: string) => { setReply(null); const r = await refinePlan(msg, it.title); setReply(r) }
@@ -837,27 +840,32 @@ function ItemRow({ item, isDraft, busy, onToggle, onRemove, onReschedule, draggi
         )}
       </div>
 
-      {/* Right: remove (draft) / reschedule (committed, not done). The whole
-          card is the drag handle, so no separate grip here.
-          stopPropagation keeps a button tap from starting a drag. */}
-      {(isDraft || (onReschedule && !item.done)) && (
-        <div className="shrink-0" onPointerDownCapture={(e) => e.stopPropagation()}>
-          {isDraft ? (
-            <button onClick={onRemove} aria-label="Remove" className="p-1 text-slate-300 hover:text-red-500 transition-colors">
-              <X size={15} />
+      {/* Right controls. The whole card is the drag handle, so stopPropagation
+          keeps a button tap from starting a drag. Draft: remove. Committed:
+          reschedule (not-done) + delete (always — removes from this day). */}
+      <div className="flex flex-col items-center gap-0.5 shrink-0" onPointerDownCapture={(e) => e.stopPropagation()}>
+        {isDraft ? (
+          <button onClick={onRemove} aria-label="Remove" className="p-1 text-slate-300 hover:text-red-500 transition-colors">
+            <X size={15} />
+          </button>
+        ) : (
+          <>
+            {onReschedule && !item.done && (
+              <button
+                onClick={() => setFbOpen((v) => !v)}
+                aria-label="Reschedule this"
+                title="Reschedule / adjust this"
+                className={`p-1.5 rounded-lg transition-colors ${fbOpen ? 'text-indigo-600 bg-indigo-50' : 'text-slate-300 hover:text-indigo-600 hover:bg-indigo-50'}`}
+              >
+                <Clock size={15} />
+              </button>
+            )}
+            <button onClick={onRemove} aria-label="Delete" title="Delete from this day" className="p-1 text-slate-300 hover:text-red-500 transition-colors">
+              <Trash2 size={14} />
             </button>
-          ) : onReschedule && !item.done ? (
-            <button
-              onClick={() => setFbOpen((v) => !v)}
-              aria-label="Reschedule this"
-              title="Reschedule / adjust this"
-              className={`p-1.5 rounded-lg transition-colors ${fbOpen ? 'text-indigo-600 bg-indigo-50' : 'text-slate-300 hover:text-indigo-600 hover:bg-indigo-50'}`}
-            >
-              <Clock size={15} />
-            </button>
-          ) : null}
-        </div>
-      )}
+          </>
+        )}
+      </div>
     </div>
   )
 }

@@ -1,12 +1,13 @@
 'use client'
 
 import { useRouter } from 'next/navigation'
-import { ArrowLeft, Flame, Target, CheckCircle2, TrendingUp, HeartPulse, Sparkles } from 'lucide-react'
+import { ArrowLeft, Flame, Target, CheckCircle2, TrendingUp, HeartPulse, Sparkles, Loader2, RefreshCw, Award } from 'lucide-react'
 import { useInsights } from '@/hooks/useInsights'
+import { useGoalScorecard } from '@/hooks/useGoalScorecard'
 import {
-  MOMENT_ENERGY_META, MOMENT_MOOD_META, MOMENT_KIND_META, LIFE_AREAS,
+  MOMENT_ENERGY_META, MOMENT_MOOD_META, MOMENT_KIND_META, LIFE_AREAS, GOAL_GRADE_META,
 } from '@/lib/types'
-import type { MomentEnergy, MomentMood } from '@/lib/types'
+import type { MomentEnergy, MomentMood, FamilyGoal } from '@/lib/types'
 
 const CAT_LABEL: Record<string, { label: string; emoji: string; color: string }> = {
   ...MOMENT_KIND_META,
@@ -28,6 +29,7 @@ function barColor(pct: number): string {
 export function InsightsView() {
   const router = useRouter()
   const d = useInsights()
+  const sc = useGoalScorecard()
   const today = (() => { const x = new Date(); return `${x.getFullYear()}-${`${x.getMonth() + 1}`.padStart(2, '0')}-${`${x.getDate()}`.padStart(2, '0')}` })()
 
   return (
@@ -134,26 +136,64 @@ export function InsightsView() {
             </Section>
           )}
 
-          {/* Goals */}
-          {d.goals.length > 0 && (
-            <Section title="What you're working toward" sub="Your standing commitments">
-              <div className="space-y-2">
-                {d.goals.map((g) => {
-                  const area = LIFE_AREAS.find((a) => a.area === g.area)
-                  return (
-                    <div key={g.id} className="rounded-xl p-3 bg-white shadow-card flex items-start gap-3" style={{ borderLeft: `3px solid ${area?.color ?? '#94a3b8'}` }}>
-                      <span className="text-base mt-0.5">{area?.emoji ?? '🎯'}</span>
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium text-slate-900">{g.text}</p>
-                        {(area?.label || g.cadence) && (
-                          <p className="text-xs text-slate-400 mt-0.5">{area?.label}{g.cadence ? ` · ${g.cadence}` : ''}</p>
-                        )}
-                      </div>
-                    </div>
-                  )
-                })}
+          {/* Goal scorecard — graded against what you actually planned/did */}
+          {sc.goals.length > 0 && (
+            <section className="rounded-2xl p-5 bg-white shadow-card">
+              <div className="flex items-start justify-between mb-3">
+                <div className="flex items-center gap-2">
+                  <Award size={16} className="text-amber-500" />
+                  <div>
+                    <h2 className="text-sm font-bold text-slate-800">Goal scorecard</h2>
+                    <p className="text-xs text-slate-400 mt-0.5">
+                      {sc.scorecard ? 'Graded from your recent plans' : 'How you’re tracking against each commitment'}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={sc.generate}
+                  disabled={sc.loading}
+                  className="inline-flex items-center gap-1 text-xs font-semibold text-indigo-600 hover:text-indigo-700 disabled:opacity-50 transition-colors"
+                >
+                  {sc.loading ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={11} />}
+                  {sc.scorecard ? 'Refresh' : 'Grade me'}
+                </button>
               </div>
-            </Section>
+
+              {sc.error && <p className="text-xs text-red-600 bg-red-50 rounded-lg px-3 py-2 mb-2">{sc.error}</p>}
+
+              {sc.scorecard ? (
+                <div className="space-y-3">
+                  {sc.scorecard.overall && (
+                    <div className="rounded-xl bg-indigo-50 px-3 py-2.5 flex items-start gap-2">
+                      <Sparkles size={13} className="text-indigo-500 mt-0.5 shrink-0" />
+                      <p className="text-xs text-indigo-900 leading-relaxed">{sc.scorecard.overall}</p>
+                    </div>
+                  )}
+                  {sc.scorecard.cards.map((card) => (
+                    <ScoreRow key={card.goalId} goal={sc.goals.find((g) => g.id === card.goalId)} card={card} />
+                  ))}
+                </div>
+              ) : (
+                // Not graded yet — show the plain commitments + a prompt.
+                <div className="space-y-2">
+                  {sc.loading && <p className="text-xs text-slate-400 mb-1">Grading against your recent plans…</p>}
+                  {sc.goals.map((g) => {
+                    const area = LIFE_AREAS.find((a) => a.area === g.area)
+                    return (
+                      <div key={g.id} className="rounded-xl p-3 bg-slate-50 flex items-start gap-3" style={{ borderLeft: `3px solid ${area?.color ?? '#94a3b8'}` }}>
+                        <span className="text-base mt-0.5">{area?.emoji ?? '🎯'}</span>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium text-slate-900">{g.text}</p>
+                          {(area?.label || g.cadence) && (
+                            <p className="text-xs text-slate-400 mt-0.5">{area?.label}{g.cadence ? ` · ${g.cadence}` : ''}</p>
+                          )}
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </section>
           )}
 
           <button
@@ -164,6 +204,31 @@ export function InsightsView() {
           </button>
         </>
       )}
+    </div>
+  )
+}
+
+function ScoreRow({ goal, card }: { goal?: FamilyGoal; card: import('@/lib/types').GoalScoreCard }) {
+  const grade = GOAL_GRADE_META[card.status]
+  return (
+    <div className="rounded-xl border border-slate-100 p-3" style={{ borderLeft: `3px solid ${grade.color}` }}>
+      <div className="flex items-start gap-3">
+        {/* Score badge */}
+        <div className="shrink-0 w-11 h-11 rounded-xl flex flex-col items-center justify-center" style={{ background: `${grade.color}18` }}>
+          <span className="text-sm font-bold tabular-nums leading-none" style={{ color: grade.color }}>{card.score}</span>
+          <span className="text-[8px] font-semibold uppercase tracking-wide" style={{ color: grade.color }}>/100</span>
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <p className="text-sm font-semibold text-slate-900 leading-snug">{goal?.text ?? card.headline}</p>
+            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full" style={{ background: `${grade.color}18`, color: grade.color }}>
+              {grade.label}
+            </span>
+          </div>
+          {card.headline && <p className="text-xs font-medium text-slate-500 mt-0.5">{card.headline}</p>}
+          {card.story && <p className="text-xs text-slate-500 mt-1 leading-relaxed">{card.story}</p>}
+        </div>
+      </div>
     </div>
   )
 }

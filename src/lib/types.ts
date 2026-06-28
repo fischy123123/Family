@@ -309,6 +309,35 @@ export interface DayPlan {
   updatedAt?: string
 }
 
+// ============================================================
+// GOAL SCORECARD — how you're performing against each commitment
+// ============================================================
+// Grades each standing goal/commitment against what you actually planned and
+// completed (and missed) over recent days, with a score and a short story.
+
+export type GoalGrade = 'on_track' | 'building' | 'slipping' | 'stalled'
+
+export interface GoalScoreCard {
+  goalId: string
+  status: GoalGrade
+  score: number          // 0-100
+  headline: string       // a few words
+  story: string          // 2-3 honest sentences citing real evidence + a nudge
+}
+
+export interface GoalScorecard {
+  overall: string        // 1-2 sentence summary across all goals
+  cards: GoalScoreCard[]
+  generatedAt: string
+}
+
+export const GOAL_GRADE_META: Record<GoalGrade, { label: string; color: string; emoji: string }> = {
+  on_track: { label: 'On track', color: '#22C55E', emoji: '🟢' },
+  building:  { label: 'Building', color: '#3B82F6', emoji: '🔵' },
+  slipping:  { label: 'Slipping', color: '#F59E0B', emoji: '🟠' },
+  stalled:   { label: 'Stalled',  color: '#EF4444', emoji: '🔴' },
+}
+
 export type GroceryCategory = 'produce' | 'dairy' | 'meat' | 'bakery' | 'pantry' | 'frozen' | 'household' | 'other'
 
 export interface GroceryItem {
