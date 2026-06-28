@@ -1026,9 +1026,12 @@ export function CommandCenter() {
       lastRunSig.current === lastCtxSig.current &&
       timeSinceLastRun < ENGINE_DATA_UNCHANGED_TTL_MS
     ) return
-    // 15+ minutes have passed — silently update in the background if a cached
-    // report is already on screen. Only run in foreground on cold starts.
-    scheduleEngine(!!reportRef.current)
+    // Auto-refresh is disabled — the briefing regenerates ONLY when the user
+    // taps Refresh. We still do the initial cold-start load (when there's no
+    // report yet) so a first visit isn't an empty screen; after that it never
+    // refreshes on its own.
+    if (reportRef.current) return
+    scheduleEngine(false)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hydrated, googleLoaded, members.length, events.length > 0, tasks.length, reminders.length])
 
@@ -1048,34 +1051,13 @@ export function CommandCenter() {
   useEffect(() => {
     if (!hydrated) return
     if (lastCtxSig.current === ctxSignature) return
-    const prev = lastCtxSig.current
-    const prevEmailCount = lastEmailCount.current
-    const prevEventCount = lastEventCount.current
+    // Track the data signature + caches so a manual refresh knows the latest
+    // state — but DON'T auto-regenerate the briefing when data changes. The
+    // briefing only refreshes when the user taps Refresh.
     lastCtxSig.current = ctxSignature
     lastEmailCount.current = emailSuggestions.length
     lastEventCount.current = events.length
     writeCache(ctxSigKey, ctxSignature)
-    // Skip on the very first hydration pass (prev was '' or the cached value).
-    if (prev === '') return
-    // Bypass the throttle when high-value data arrives for the first time after
-    // the initial run. Both inbox signals and calendar events make the difference
-    // between a shallow and a complete briefing, so we re-run immediately rather
-    // than making the user wait up to 60 seconds or manually refresh.
-    const inboxJustArrived = prevEmailCount === 0 && emailSuggestions.length > 0
-    const eventsJustArrived = prevEventCount === 0 && events.length > 0
-    if (!inboxJustArrived && !eventsJustArrived && Date.now() - lastRun.current < ENGINE_THROTTLE_MS) return
-    // A cold-start run is mid-flight (no report yet) and late data just arrived —
-    // typically the Google Calendar sync landing a new event a few seconds in.
-    // DON'T abort the in-flight run to restart; that throws away a nearly-done
-    // briefing and doubles perceived load time. Mark a deferred refresh instead;
-    // runEngine fires one silent re-run when the cold-start run completes.
-    if (coldRunInFlight.current && !reportRef.current) {
-      deferredRerun.current = true
-      return
-    }
-    // Data arrived mid-session — stay silent (buffered) so content doesn't jump
-    // while the user is reading. Only inbox/event first-arrivals bypass the throttle.
-    scheduleEngine(!!report)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ctxSignature, hydrated])
 
@@ -1088,42 +1070,17 @@ export function CommandCenter() {
     return () => clearInterval(interval)
   }, [isConnected])
 
-  // Auto-retry when the user returns to the app. iOS Safari aborts in-flight
-  // fetches when a PWA is backgrounded; when the user comes back we want a
-  // seamless retry rather than a stale error screen. Also kick a calendar
-  // refresh on every foreground return so events are always up to date.
+  // Keep calendar DATA fresh when the app returns to the foreground (so events
+  // are current the next time you look), but never auto-regenerate the briefing
+  // — that only happens on the Refresh button now.
   useEffect(() => {
     function handleVisible() {
       if (document.visibilityState !== 'visible') return
-      // Always refresh calendar data when foregrounded.
       if (isConnected) setCalSyncKey((k) => k + 1)
-      // If Copilot (or voice) made a calendar change, force a briefing re-run
-      // so stale events don't linger. The flag is set by CopilotChat after any
-      // confirmed action and by useRealtimeVoice after any tool execution.
-      const calChanged = sessionStorage.getItem('cal-changed')
-      if (calChanged) {
-        try { sessionStorage.removeItem('cal-changed') } catch { /* non-fatal */ }
-        lastRun.current = 0
-      }
-      const hasError = !!engineErrorRef.current
-      const hasNoReport = !reportRef.current
-      // Run briefing on foreground if: Copilot changed something, error needs
-      // retry, no report yet, OR the cached briefing is older than REPORT_TTL_MS.
-      // Simple foregrounding (switching apps briefly) does NOT trigger a run —
-      // that's handled by the throttle and ctxSignature paths.
-      const isStale = Date.now() - lastRun.current > REPORT_TTL_MS
-      if (hasError || hasNoReport || calChanged || isStale) {
-        setEngineError(null)
-        // Only bypass the throttle for forced cases — stale checks respect it.
-        if (calChanged || hasError || hasNoReport) lastRun.current = 0
-        // Silent when a valid report is showing — don't replace it with a skeleton.
-        const shouldBeSilent = !!(reportRef.current && !hasError && !hasNoReport)
-        runEngine(undefined, shouldBeSilent)
-      }
     }
     document.addEventListener('visibilitychange', handleVisible)
     return () => document.removeEventListener('visibilitychange', handleVisible)
-  }, [isConnected, runEngine])
+  }, [isConnected])
 
   // Assign an item to people. Two-sided: `forIds` is who it concerns (e.g. the
   // kids); `responsibleId` is who handles it (e.g. a parent). Keyed by member ID
