@@ -20,8 +20,8 @@ import { ConnectGooglePrompt } from '@/components/dashboard/ConnectGooglePrompt'
 import { generateId, cn } from '@/lib/utils'
 import { resolveMemberRef } from '@/lib/members'
 import { isAiDebugEnabled } from '@/lib/aiDebug'
-import { BUCKET_META } from '@/lib/types'
 import { Markdown } from '@/components/ui/Markdown'
+import { DayPlanner } from '@/components/coach/DayPlanner'
 import type { PendingAction } from '@/components/copilot/ProposedActions'
 import type {
   FamilyMember, CalendarEvent, Task, Chore, Plan, SmartList,
@@ -47,7 +47,6 @@ type EmailSuggestion = {
   forNames?: string[]
 }
 
-const BUCKET_ORDER: AttentionBucket[] = ['now', 'next', 'later', 'upcoming']
 const BUCKET_PRIORITY: Record<AttentionBucket, number> = { now: 0, next: 1, later: 2, upcoming: 3 }
 
 type ItemGroup = {
@@ -157,76 +156,6 @@ function groupItems(items: AttentionItem[]): ItemGroup[] {
       : null
     return { key, groupTitle, items: groupedItems, bucket }
   })
-}
-
-// Resolve which ownership tier an item belongs to. The plate tag set at merge
-// time is authoritative (the scoped call that produced it was told to emit only
-// that tier). For older cached items that predate the tag, fall back to
-// resolving the responsible person (assigneeEmail) against the signed-in user.
-function isOnSelfPlate(
-  item: AttentionItem,
-  members: FamilyMember[],
-  currentUserEmail: string | null | undefined,
-): boolean {
-  if (item.plate) return item.plate === 'self'
-  const who = item.assigneeEmail
-  if (!who) return true // unassigned obligation defaults to the viewer's plate
-  const email = (currentUserEmail ?? '').toLowerCase()
-  if (who.toLowerCase() === email) return true
-  const m = resolveMemberRef(members, who)
-  return !!m && m.email?.toLowerCase() === email
-}
-
-// The human-readable owner of an item on the "others" plate — the responsible
-// person, resolved to a member for the name + color chip. Falls back to who the
-// item is about (section / forEmails) when no explicit assignee resolves.
-function resolveOwner(
-  item: AttentionItem,
-  members: FamilyMember[],
-): { name: string; member: FamilyMember | null } {
-  const refs = [item.assigneeEmail, item.section, item.forEmails?.[0]].filter(Boolean) as string[]
-  for (const ref of refs) {
-    const m = resolveMemberRef(members, ref) ?? members.find((x) => x.name === ref)
-    if (m) return { name: m.name, member: m }
-  }
-  return { name: item.section || 'Family', member: null }
-}
-
-type Plates = {
-  yours: ItemGroup[]
-  others: { name: string; member: FamilyMember | null; groups: ItemGroup[] }[]
-}
-
-function buildPlates(
-  items: AttentionItem[],
-  members: FamilyMember[],
-  currentUserEmail: string | null | undefined,
-): Plates {
-  const yours: AttentionItem[] = []
-  const others: AttentionItem[] = []
-  for (const item of items) {
-    (isOnSelfPlate(item, members, currentUserEmail) ? yours : others).push(item)
-  }
-
-  // Others' plate: one compact feed, grouped by owner so each person's items sit
-  // together under their chip. Heaviest owner first; people with nothing simply
-  // never appear.
-  const byOwner = new Map<string, { member: FamilyMember | null; items: AttentionItem[] }>()
-  for (const item of others) {
-    const { name, member } = resolveOwner(item, members)
-    const cur = byOwner.get(name) ?? { member, items: [] }
-    cur.items.push(item)
-    byOwner.set(name, cur)
-  }
-  const othersList = Array.from(byOwner.entries())
-    .map(([name, v]) => ({ name, member: v.member, groups: groupItems(v.items) }))
-    .sort((a, b) => {
-      const an = a.groups.reduce((n, g) => n + g.items.length, 0)
-      const bn = b.groups.reduce((n, g) => n + g.items.length, 0)
-      return bn - an
-    })
-
-  return { yours: groupItems(yours), others: othersList }
 }
 
 // ── Local cache (stale-while-revalidate) ────────────────────
@@ -1425,8 +1354,6 @@ export function CommandCenter() {
     .filter((e) => new Date(e.start).toDateString() === new Date().toDateString())
     .sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime())
 
-  const itemsByBucket = (b: AttentionBucket) => (report?.items ?? []).filter((i) => i.bucket === b)
-
   // Resolve per-item display props (members, task backing) once, then reuse for
   // both grouped and solo AttentionCard rendering.
   type ResolvedItem = {
@@ -1562,69 +1489,90 @@ export function CommandCenter() {
     )
   }
 
-  // Render a plate's groups with a "Needs Attention" (action) / "Logistics"
-  // (awareness) split when both kinds exist, each internally bucketed by time.
-  function renderPlateContent(groups: ItemGroup[], color: string) {
-    const actionGroups = groups.filter((g) => g.items.some((i) => i.kind === 'action'))
-    const logisticsGroups = groups.filter((g) => g.items.every((i) => i.kind !== 'action'))
-    const hasBothKinds = actionGroups.length > 0 && logisticsGroups.length > 0
-
-    function renderBucketedGroups(grps: ItemGroup[]) {
-      return BUCKET_ORDER.map((bucket) => {
-        const filtered = grps.filter((g) => g.bucket === bucket)
-        if (!filtered.length) return null
-        const meta = BUCKET_META[bucket]
-        return (
-          <div key={bucket}>
-            <div className="flex items-center gap-2 mb-2">
-              <span className="w-2 h-2 rounded-full" style={{ background: meta.color }} />
-              <span className="text-xs font-semibold uppercase tracking-wider" style={{ color: meta.color }}>
-                {meta.label}
-              </span>
-            </div>
-            <div className="space-y-2 stagger-children">
-              {filtered.map((g) => renderGroup(g, color))}
-            </div>
-          </div>
-        )
-      })
-    }
-
-    return (
-      <>
-        {actionGroups.length > 0 && (
-          <div className="space-y-4">
-            {hasBothKinds && (
-              <p className="text-[11px] font-semibold text-slate-600 uppercase tracking-wider">Needs Attention</p>
-            )}
-            {renderBucketedGroups(actionGroups)}
-          </div>
-        )}
-        {logisticsGroups.length > 0 && (
-          <div className={`space-y-4 ${hasBothKinds ? 'mt-5' : ''}`}>
-            {hasBothKinds && (
-              <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">Logistics</p>
-            )}
-            {renderBucketedGroups(logisticsGroups)}
-          </div>
-        )}
-      </>
-    )
-  }
-
-  // Visible items split into two ownership tiers: your plate (what you handle)
-  // and others' plates (what everyone else is handling, for visibility).
-  const plates = useMemo(() => {
-    const visible = (report?.items ?? []).filter((i) => showInList(i.title))
-    return buildPlates(visible, members, user?.email)
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [report?.items, dismissedTitles, completedTitles, members, user?.email])
-
   const selfMember = useMemo(
     () => members.find((m) => m.email?.toLowerCase() === user?.email?.toLowerCase()) ?? null,
     [members, user?.email],
   )
-  const selfColor = selfMember?.colorHex ?? '#3B82F6'
+
+  // Minute ticker so Now/Next countdowns drift without a manual refresh.
+  const [nowTick, setNowTick] = useState(() => Date.now())
+  useEffect(() => {
+    const id = setInterval(() => setNowTick(Date.now()), 60_000)
+    return () => clearInterval(id)
+  }, [])
+
+  // ── Fixed dashboard sections (all deterministic — no AI in the path) ──────
+
+  // NOW / NEXT: what's happening right now and the next thing on the calendar.
+  const nowNext = useMemo(() => {
+    const current = todayEvents.find((e) => {
+      const s = new Date(e.start).getTime()
+      const en = new Date(e.end ?? e.start).getTime()
+      return !e.isAllDay && s <= nowTick && en > nowTick
+    })
+    const next = todayEvents.find((e) => !e.isAllDay && new Date(e.start).getTime() > nowTick)
+    return { current, next }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [todayEvents, nowTick])
+
+  // NEEDS YOU: open tasks/reminders that are overdue, due today, or high
+  // priority — straight from the database, completable in place.
+  type NeedsYouEntry = { kind: 'task' | 'reminder'; id: string; title: string; dueDate?: string; priority: string; overdue: boolean; raw: Task | FamilyReminder }
+  const needsYou = useMemo<NeedsYouEntry[]>(() => {
+    const endOfToday = new Date()
+    endOfToday.setHours(23, 59, 59, 999)
+    const startOfToday = new Date()
+    startOfToday.setHours(0, 0, 0, 0)
+    const entries: NeedsYouEntry[] = [
+      ...tasks.map((t) => ({ kind: 'task' as const, id: t.id, title: t.title, dueDate: t.dueDate, priority: t.priority, overdue: false, raw: t as Task | FamilyReminder, isCompleted: t.isCompleted })),
+      ...reminders.filter((r) => !tasks.some((t) => t.id === r.id))
+        .map((r) => ({ kind: 'reminder' as const, id: r.id, title: r.title, dueDate: r.dueDate, priority: r.priority, overdue: false, raw: r as Task | FamilyReminder, isCompleted: r.isCompleted })),
+    ]
+      .filter((e) => !e.isCompleted)
+      .filter((e) => (e.dueDate && new Date(e.dueDate) <= endOfToday) || e.priority === 'high')
+      .map((e) => ({ ...e, overdue: !!e.dueDate && new Date(e.dueDate) < startOfToday }))
+      .sort((a, b) => {
+        if (a.overdue !== b.overdue) return a.overdue ? -1 : 1
+        if (!!a.dueDate !== !!b.dueDate) return a.dueDate ? -1 : 1
+        return (a.dueDate ?? '').localeCompare(b.dueDate ?? '')
+      })
+    return entries.slice(0, 6)
+  }, [tasks, reminders])
+
+  async function completeNeedsYou(e: NeedsYouEntry) {
+    const now = new Date().toISOString()
+    if (e.kind === 'task') await updateTask({ ...(e.raw as Task), isCompleted: true, completedAt: now })
+    else await updateReminder({ ...(e.raw as FamilyReminder), isCompleted: true, completedAt: now })
+  }
+
+  // FAMILY RADAR: one row per family member (other than you) with their events
+  // today, matched by calendar ownership / for / responsible fields.
+  const familyToday = useMemo(() => {
+    return members
+      .filter((m) => m.id !== selfMember?.id)
+      .map((m) => ({
+        member: m,
+        events: todayEvents.filter((e) =>
+          (m.email && e.ownerEmail?.toLowerCase() === m.email.toLowerCase())
+          || e.forIds?.includes(m.id)
+          || e.assigneeId === m.id,
+        ),
+      }))
+      .filter((x) => x.events.length > 0)
+      .sort((a, b) => b.events.length - a.events.length)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [members, todayEvents, selfMember?.id])
+
+  // HEADS UP (AI): the one section where the model gets to talk. Only items
+  // that add judgment beyond restating the calendar survive: actions, tasks,
+  // inferred/email-derived signals. Pure event-awareness items are dropped —
+  // the calendar sections above already show those facts correctly.
+  const headsUpGroups = useMemo(() => {
+    const visible = (report?.items ?? []).filter((i) => showInList(i.title))
+    const beyond = visible.filter((i) => !(i.sourceType === 'event' && i.kind !== 'action'))
+    return groupItems(beyond).slice(0, 4)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [report?.items, dismissedTitles, completedTitles, teachPrompt])
 
   const busy = loading || refreshing
 
@@ -1728,149 +1676,191 @@ export function CommandCenter() {
         </section>
       )}
 
-      {/* AI greeting / briefing line */}
-      {/* Engine error — shown instead of a blank screen when something goes wrong */}
-      {engineError && !loading && (
-        <div className="rounded-2xl p-4 bg-red-50 border border-red-200 flex items-start gap-3 animate-slide-up">
-          <AlertTriangle size={16} className="text-red-500 mt-0.5 shrink-0" />
-          <div className="flex-1 min-w-0">
-            <p className="text-sm font-semibold text-red-800">Couldn't load your briefing</p>
-            <p className="text-xs text-red-600 mt-0.5">{engineError}</p>
-          </div>
-          <button
-            onClick={() => { setEngineError(null); runEngine(undefined, false) }}
-            className="shrink-0 text-xs font-semibold text-red-700 hover:text-red-900 px-3 py-1.5 rounded-lg hover:bg-red-100 transition-colors"
-          >
-            Retry
-          </button>
-        </div>
-      )}
+      {/* ══ FIXED DASHBOARD — same sections, same order, every visit. Facts are
+          rendered straight from the database; the AI only speaks inside the
+          clearly-marked "Heads up" box at the bottom. ══ */}
 
-
-      {/* No briefing yet (brand-new device / cleared cache) — the engine no
-          longer runs on its own, so prompt the user to generate one. */}
-      {!report && !loading && !engineError && hydrated && (
-        <div className="rounded-2xl p-6 bg-slate-50 border border-slate-200 text-center animate-slide-up">
-          <p className="text-2xl mb-2">📋</p>
-          <p className="text-sm font-semibold text-slate-700">No briefing yet</p>
-          <p className="text-xs text-slate-500 mt-1 mb-3">Tap refresh to generate your briefing for today.</p>
-          <button
-            onClick={() => { forceDirectRef.current = true; runEngine(undefined, false) }}
-            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 transition-colors"
-          >
-            <RefreshCw size={14} /> Generate briefing
-          </button>
-        </div>
-      )}
-
-      {/* Empty state — shown when the engine ran but found nothing for this person.
-          Problems/recommendations are lazy sections below, so only the items array
-          gates the "all clear" message. */}
-      {report && !loading &&
-        (report.items ?? []).filter((i) => !dismissedTitles.has(i.title) && !completedTitles.has(i.title)).length === 0 && (
-        <div className="rounded-2xl p-5 bg-slate-50 border border-slate-200 text-center animate-slide-up">
-          <p className="text-2xl mb-2">✓</p>
-          <p className="text-sm font-semibold text-slate-700">All clear</p>
-          <p className="text-xs text-slate-500 mt-1">Nothing urgent for you right now. Have a great day!</p>
-        </div>
-      )}
-
-      {/* Streaming view — shown for all foreground (loading=true) runs, which
-          covers cold starts, manual refreshes, and stale-report auto-runs.
-          Silent background refreshes use refreshing=true instead so the
-          existing report never jumps while the user is scrolling. */}
-      {loading && (
-        <div className="space-y-6 animate-fade-in">
-          {streamingItems.length > 0 ? (
-            // Cards stream in one-by-one as the model writes them. These are slim
-            // previews (title + reason); the full grouped/assignable cards render
-            // once the authoritative 'final' report replaces this block.
-            <div className="space-y-2 stagger-children">
-              {streamingItems.map((it) => (
-                <div
-                  key={it.id}
-                  className="rounded-2xl bg-white shadow-card p-4 animate-slide-up"
-                  style={{ borderLeft: '3px solid #94a3b8' }}
-                >
-                  <p className="text-sm font-semibold text-slate-900">{it.title}</p>
-                  {it.reason && (
-                    <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">{it.reason}</p>
+      {/* NOW / NEXT — deterministic calendar math. */}
+      {(nowNext.current || nowNext.next) && (
+        <section className="rounded-2xl bg-white shadow-card p-4">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-slate-900 flex items-center justify-center shrink-0">
+              <Clock size={17} className="text-white" />
+            </div>
+            <div className="flex-1 min-w-0">
+              {nowNext.current ? (
+                <>
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-rose-500">Now</p>
+                  <p className="text-sm font-semibold text-slate-900 truncate">
+                    {nowNext.current.title}
+                    <span className="font-normal text-slate-400"> · until {new Date(nowNext.current.end ?? nowNext.current.start).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</span>
+                  </p>
+                </>
+              ) : (
+                <>
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Next up</p>
+                  <p className="text-sm font-semibold text-slate-900 truncate">
+                    {nowNext.next!.title}
+                    <span className="font-normal text-slate-400">
+                      {' '}· {new Date(nowNext.next!.start).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
+                      {(() => {
+                        const mins = Math.round((new Date(nowNext.next!.start).getTime() - nowTick) / 60000)
+                        if (mins < 60) return ` — in ${mins} min`
+                        const h = Math.floor(mins / 60)
+                        return ` — in ${h}h ${mins % 60}m`
+                      })()}
+                    </span>
+                  </p>
+                  {nowNext.next!.location && (
+                    <p className="text-xs text-slate-400 truncate">{nowNext.next!.location}</p>
                   )}
-                </div>
-              ))}
-              {/* A trailing shimmer hints more cards are still arriving. */}
-              <div className="skeleton h-16 w-full rounded-2xl opacity-60" />
+                </>
+              )}
             </div>
-          ) : (
-            <div className="space-y-3">
-              <div className="skeleton h-4 w-24 rounded" />
-              <div className="skeleton h-20 w-full rounded-2xl" />
-              <div className="skeleton h-20 w-full rounded-2xl" />
-            </div>
-          )}
-        </div>
+          </div>
+        </section>
       )}
 
-      {/* PLATES — hidden while streaming is active (loading=true). Two tiers:
-          YOUR PLATE (what you handle — the hero) and OTHERS' PLATES (what
-          everyone else is handling, for visibility). */}
-      {!loading && report && (plates.yours.length > 0 || plates.others.length > 0) && (
-        <div className="space-y-8">
-          {/* YOUR PLATE */}
-          {plates.yours.length > 0 && (
-            <section>
-              <div className="flex items-center gap-2.5 mb-4">
-                <div
-                  className="w-8 h-8 rounded-xl flex items-center justify-center shrink-0"
-                  style={{ background: `${selfColor}20` }}
+      {/* YOUR DAY — the plan is the backbone; draft and track it right here. */}
+      <DayPlanner />
+
+      {/* NEEDS YOU — open tasks due/overdue/high-priority, completable in place. */}
+      <section className="rounded-2xl bg-white shadow-card p-4">
+        <div className="flex items-center gap-2 mb-3">
+          <Check size={15} className="text-slate-700" />
+          <h2 className="text-sm font-bold text-slate-800">Needs you</h2>
+          {needsYou.length > 0 && (
+            <span className="text-xs font-medium text-slate-400 bg-slate-100 px-2 py-0.5 rounded-full">{needsYou.length}</span>
+          )}
+          <button onClick={() => router.push('/tasks')} className="ml-auto text-[11px] font-medium text-slate-400 hover:text-slate-600 transition-colors">
+            All tasks →
+          </button>
+        </div>
+        {needsYou.length === 0 ? (
+          <p className="text-xs text-slate-400">Nothing due — you&apos;re caught up. ✓</p>
+        ) : (
+          <div className="space-y-1.5">
+            {needsYou.map((e) => (
+              <div key={e.id} className="flex items-center gap-2.5 py-1">
+                <button
+                  onClick={() => completeNeedsYou(e)}
+                  aria-label="Complete"
+                  className="w-5 h-5 rounded-md border border-slate-300 hover:border-green-500 hover:bg-green-50 flex items-center justify-center shrink-0 transition-colors"
+                />
+                <p className="flex-1 min-w-0 text-sm text-slate-800 truncate">{e.title}</p>
+                {e.overdue ? (
+                  <span className="text-[11px] font-semibold text-red-500 shrink-0">
+                    ⚠ {e.dueDate ? new Date(e.dueDate).toLocaleDateString([], { month: 'short', day: 'numeric' }) : 'overdue'}
+                  </span>
+                ) : e.dueDate ? (
+                  <span className="text-[11px] font-medium text-slate-400 shrink-0">today</span>
+                ) : (
+                  <span className="text-[11px] font-medium text-orange-400 shrink-0">high</span>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+
+      {/* FAMILY RADAR — who's doing what today, one row per person. */}
+      <section className="rounded-2xl bg-white shadow-card p-4">
+        <div className="flex items-center gap-2 mb-3">
+          <Users size={15} className="text-slate-700" />
+          <h2 className="text-sm font-bold text-slate-800">Family today</h2>
+        </div>
+        {familyToday.length === 0 ? (
+          <p className="text-xs text-slate-400">Nothing on anyone else&apos;s calendar today.</p>
+        ) : (
+          <div className="space-y-2.5">
+            {familyToday.map(({ member: m, events: evs }) => (
+              <div key={m.id} className="flex items-start gap-2.5">
+                <span
+                  className="w-6 h-6 rounded-full flex items-center justify-center text-xs shrink-0 mt-0.5"
+                  style={{ background: `${m.colorHex}25` }}
                 >
-                  {selfMember?.emoji ?? '🫵'}
+                  {m.emoji}
+                </span>
+                <div className="flex-1 min-w-0">
+                  <p className="text-xs font-semibold text-slate-700">{m.name}</p>
+                  <p className="text-xs text-slate-500 leading-relaxed">
+                    {evs.map((e, i) => (
+                      <span key={e.id}>
+                        {i > 0 && <span className="text-slate-300"> · </span>}
+                        {!e.isAllDay && (
+                          <span className="font-medium text-slate-600">
+                            {new Date(e.start).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }).replace(' ', '')}{' '}
+                          </span>
+                        )}
+                        {e.title}
+                      </span>
+                    ))}
+                  </p>
                 </div>
-                <h2 className="text-lg font-bold text-slate-900">Your plate</h2>
               </div>
-              <div className="space-y-4">
-                {renderPlateContent(plates.yours, selfColor)}
-              </div>
-            </section>
-          )}
+            ))}
+          </div>
+        )}
+      </section>
 
-          {/* OTHERS' PLATES — compact visibility feed, grouped by owner. */}
-          {plates.others.length > 0 && (
-            <section>
-              <div className="flex items-baseline gap-2 mb-4">
-                <h2 className="text-base font-bold text-slate-500">Others’ plates</h2>
-                <span className="text-[11px] font-medium text-slate-400">for visibility</span>
-              </div>
-              <div className="space-y-5">
-                {plates.others.map((owner) => {
-                  const color = owner.member?.colorHex ?? '#94A3B8'
-                  return (
-                    <div key={owner.name}>
-                      <div className="flex items-center gap-2 mb-2">
-                        <span
-                          className="w-5 h-5 rounded-lg flex items-center justify-center text-[11px] shrink-0"
-                          style={{ background: `${color}20` }}
-                        >
-                          {owner.member?.emoji ?? '•'}
-                        </span>
-                        <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">
-                          {owner.name}
-                        </span>
-                      </div>
-                      <div className="space-y-2 stagger-children pl-1">
-                        {owner.groups
-                          .slice()
-                          .sort((a, b) => BUCKET_PRIORITY[a.bucket] - BUCKET_PRIORITY[b.bucket])
-                          .map((group) => renderGroup(group, color))}
-                      </div>
-                    </div>
-                  )
-                })}
-              </div>
-            </section>
+      {/* HEADS UP (AI) — the one box where the model speaks: only insights that
+          go beyond restating the calendar. Clearly marked, easy to ignore. */}
+      <section className="rounded-2xl p-4 bg-violet-50/60 border border-violet-100">
+        <div className="flex items-center gap-2 mb-3">
+          <Sparkles size={15} className="text-violet-500" />
+          <h2 className="text-sm font-bold text-slate-800">Heads up</h2>
+          <span className="text-[10px] font-bold uppercase tracking-wider text-violet-400 bg-violet-100 px-1.5 py-0.5 rounded-full">AI</span>
+          {report?.generatedAt && !loading && (
+            <span className="ml-auto text-[10px] text-slate-400">
+              {new Date(report.generatedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
+            </span>
           )}
         </div>
-      )}
+
+        {engineError && !loading ? (
+          <div className="flex items-start gap-3">
+            <AlertTriangle size={15} className="text-red-500 mt-0.5 shrink-0" />
+            <div className="flex-1 min-w-0">
+              <p className="text-xs text-red-600">{engineError}</p>
+            </div>
+            <button
+              onClick={() => { setEngineError(null); runEngine(undefined, false) }}
+              className="shrink-0 text-xs font-semibold text-red-600 hover:text-red-800 px-2.5 py-1 rounded-lg hover:bg-red-100 transition-colors"
+            >
+              Retry
+            </button>
+          </div>
+        ) : loading ? (
+          <div className="space-y-2">
+            {streamingItems.slice(0, 4).map((it) => (
+              <div key={it.id} className="rounded-xl bg-white/80 p-3">
+                <p className="text-sm font-medium text-slate-800">{it.title}</p>
+                {it.reason && <p className="text-xs text-slate-400 mt-0.5">{it.reason}</p>}
+              </div>
+            ))}
+            <div className="flex items-center gap-2 text-xs text-slate-400 py-1">
+              <span className="w-3.5 h-3.5 border-2 border-violet-300 border-t-transparent rounded-full animate-spin" />
+              Looking for anything beyond the obvious…
+            </div>
+          </div>
+        ) : !report ? (
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-xs text-slate-500">I can scan everything — calendar, tasks, email signals — for things worth flagging.</p>
+            <button
+              onClick={() => { forceDirectRef.current = true; runEngine(undefined, false) }}
+              className="shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-violet-600 text-white text-xs font-semibold hover:bg-violet-700 transition-colors"
+            >
+              <Sparkles size={12} /> Scan
+            </button>
+          </div>
+        ) : headsUpGroups.length === 0 ? (
+          <p className="text-xs text-slate-400">Nothing beyond the obvious — your calendar and plan above cover it.</p>
+        ) : (
+          <div className="space-y-2 stagger-children">
+            {headsUpGroups.map((g) => renderGroup(g, '#8B5CF6'))}
+          </div>
+        )}
+      </section>
 
       {/* POTENTIAL PROBLEMS — lazy on-demand section. Off the briefing's critical
           path: only generated (and only paid for) when the user taps Check/Refresh. */}
@@ -2007,40 +1997,6 @@ export function CommandCenter() {
       })()}
 
 
-      {/* TODAY */}
-      <section>
-        <SectionLabel icon={CalIcon} color="#0f172a">Today</SectionLabel>
-        {todayEvents.length === 0 ? (
-          <div className="rounded-2xl p-6 bg-white shadow-card text-center">
-            <p className="text-sm text-slate-400">Nothing scheduled today.</p>
-            <button onClick={() => openCapture()} className="text-xs text-blue-600 font-medium mt-1">Capture something →</button>
-          </div>
-        ) : (
-          <div className="rounded-2xl bg-white shadow-card divide-y divide-slate-50 overflow-hidden">
-            {todayEvents.map((e) => (
-              <div key={e.id} className="flex items-center gap-3 p-4">
-                <div className="text-center w-12 shrink-0">
-                  {e.isAllDay ? (
-                    <span className="text-[10px] text-slate-400 font-medium uppercase">All day</span>
-                  ) : (
-                    <>
-                      <p className="text-sm font-semibold text-slate-700">
-                        {new Date(e.start).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }).replace(' ', '')}
-                      </p>
-                    </>
-                  )}
-                </div>
-                <span className="w-1 self-stretch rounded-full" style={{ background: e.color || '#3B82F6' }} />
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-slate-900 truncate">{e.title}</p>
-                  {e.location && <p className="text-xs text-slate-400 truncate">{e.location}</p>}
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </section>
-
       {/* Calendar link */}
       <div className="text-center -mt-1">
         <button
@@ -2050,15 +2006,6 @@ export function CommandCenter() {
           Open full calendar →
         </button>
       </div>
-
-      {/* Empty-state nudge */}
-      {report && (report.items?.length ?? 0) === 0 && (
-        <div className="rounded-2xl p-8 bg-white shadow-card text-center">
-          <div className="text-4xl mb-3">🌤️</div>
-          <p className="text-sm font-medium text-slate-700">You&apos;re all clear.</p>
-          <p className="text-xs text-slate-400 mt-1">Nothing needs your attention right now.</p>
-        </div>
-      )}
 
     </div>
   )
@@ -2196,15 +2143,6 @@ function greeting() {
   if (h < 12) return 'morning'
   if (h < 18) return 'afternoon'
   return 'evening'
-}
-
-function SectionLabel({ icon: Icon, color, children }: { icon: typeof Clock; color: string; children: React.ReactNode }) {
-  return (
-    <div className="flex items-center gap-2 mb-3">
-      <Icon size={16} style={{ color }} />
-      <h2 className="text-base font-bold text-slate-900">{children}</h2>
-    </div>
-  )
 }
 
 // Header for a lazily-loaded section: title on the left, a Check/Refresh control
