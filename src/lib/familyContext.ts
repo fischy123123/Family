@@ -61,6 +61,18 @@ function notedOn(iso: string, tz?: string): string {
   }
 }
 
+// A memory that hasn't been written or re-confirmed in a while may no longer be
+// true (priorities shift, phases end). Flag it so every engine treats it with
+// healthy skepticism instead of confidently acting on a stale fact. Pinned
+// memories are exempt — the user marked those as durable.
+const STALE_AFTER_MS = 45 * 24 * 60 * 60 * 1000
+function staleFlag(m: FamilyMemory, now: Date): string {
+  if (m.pinned) return ''
+  const freshest = new Date(m.confirmedAt ?? m.createdAt).getTime()
+  if (Number.isNaN(freshest) || now.getTime() - freshest < STALE_AFTER_MS) return ''
+  return ' [AGING — may be outdated; do not treat as a current priority without corroboration]'
+}
+
 // Onboarding historically saved routines/importantInfo as free-text strings,
 // while the structured editors save arrays. Render either shape gracefully.
 function flattenRoutines(v: FamilyMember['routines']): string {
@@ -376,7 +388,7 @@ export function buildFamilyContextParts(input: FamilyContextInput): {
       }).slice(0, PERSONAL_MEMORY_CAP)
       lensLines.push(
         `What I have learned about this person:\n${sorted
-          .map((m) => `  - ${m.category ? `[${m.category}] ` : ''}${m.text}${m.expiresAt ? ` (until ${fmtDate(m.expiresAt, tz)})` : ''} (noted ${notedOn(m.createdAt, tz)})`)
+          .map((m) => `  - ${m.category ? `[${m.category}] ` : ''}${m.text}${m.expiresAt ? ` (until ${fmtDate(m.expiresAt, tz)})` : ''} (noted ${notedOn(m.confirmedAt ?? m.createdAt, tz)})${staleFlag(m, nowDate)}`)
           .join('\n')}`
       )
     }
@@ -419,7 +431,7 @@ export function buildFamilyContextParts(input: FamilyContextInput): {
           const lt = m.relatedTaskId ? taskTitleById.get(m.relatedTaskId) : undefined
           const linkStr = le ? ` [about event: "${le}"]` : lt ? ` [about task: "${lt}"]` : ''
           const expStr = m.expiresAt ? ` (until ${fmtDate(m.expiresAt, tz)})` : ''
-          return `- ${cat}${m.text}${who}${expStr}${linkStr} (noted ${notedOn(m.createdAt, tz)})`
+          return `- ${cat}${m.text}${who}${expStr}${linkStr} (noted ${notedOn(m.confirmedAt ?? m.createdAt, tz)})${staleFlag(m, nowDate)}`
         })
         .join('\n')}`
     )

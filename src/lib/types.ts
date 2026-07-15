@@ -68,6 +68,10 @@ export interface FamilyMemory {
   // an expiry date (YYYY-MM-DD). Once past, they're filtered out before reaching
   // the model so stale facts stop polluting briefings — no manual forget needed.
   expiresAt?: string
+  // Set when the user re-confirms an aging fact is still true (via the
+  // interview/refresh flow). Context freshness reads confirmedAt ?? createdAt,
+  // so a confirmation makes the fact read as fresh everywhere at once.
+  confirmedAt?: string
   // ── Provenance links (factual, set at creation time — never inferred) ──
   relatedEventId?: string             // the calendar event this memory annotates
   relatedTaskId?: string              // the task this memory annotates
@@ -396,6 +400,7 @@ export interface AttentionItem {
   groupTitle?: string           // human-readable header shown for the grouped card (e.g. "Maddie's therapy")
   section?: string              // person's first name exactly, or "Family" for shared items
   detail?: string               // optional 1-2 sentence expanded context, shown on tap
+  nextMove?: string             // radar items: the concrete first action to move this forward
   kind?: 'action' | 'awareness' // action = something to do/decide; awareness = logistics/info
   plate?: 'self' | 'others'     // which ownership tier produced it — tagged client-side from the scoped call that returned it
 }

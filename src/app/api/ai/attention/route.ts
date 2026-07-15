@@ -20,11 +20,31 @@ type EngineScope =
   // handle + their own events); 'others' = everyone else's, surfaced for the
   // user's visibility only. Two of these replace the old per-person shards.
   | { kind: 'plate'; owner: 'self' | 'others'; maxItems?: number }
+  // Blind-spot sweep: ONLY things the user is probably NOT already thinking
+  // about, each with a concrete next move. Powers Home's "On your radar" box.
+  | { kind: 'radar'; maxItems?: number }
   | { kind: 'problems' }
   | { kind: 'recommendations' }
 
 function buildScopeSuffix(scope?: EngineScope): string {
   if (!scope) return ''
+  if (scope.kind === 'radar') {
+    const cap = scope.maxItems ?? 5
+    return `\n\nSCOPE OVERRIDE (highest priority — overrides the output shape above): You are running a RADAR SWEEP. Output ONLY {"items":[ ... ]} — no greeting, problems, or recommendations.
+
+THE RADAR CONTRACT — surface ONLY what the signed-in user is probably NOT already thinking about. They can see their calendar, their task list, and their day plan; every item here must EARN its place by adding judgment those views cannot. HARD FILTER: before emitting any item ask "would a reasonable person with this calendar and task list already have this on their mind?" If yes, DROP IT. Never restate an event, a task, or routine logistics.
+
+Sweep these lenses, in order of value:
+1. SECOND-ORDER CONSEQUENCES — what upcoming events imply but nobody wrote down (a guest coming Saturday → the spare room; back-to-back evenings → no dinner plan; a trip in 10 days → refills, pet care, time-off request).
+2. NEGLECTED PRIORITIES — compare their stated goals, standing commitments, and PERSONAL LENS against what their days have actually contained. If relationships matter and the calendar shows three solo-parenting evenings, say so and propose a SPECIFIC move that fits their real openings ("Thursday after 8 is clear — plan the date, I can hold it"). Name the person, the gap, and the slot.
+3. MISSING ARRANGEMENTS — a booked thing with no ride/sitter/prep arranged, an email signal never turned into a calendar entry, an obligation drifting toward a deadline.
+4. RELATIONSHIP MAINTENANCE — the partner or kid who's carried extra load or gotten the least attention lately, with one concrete gesture matched to what you know about them.
+5. GOING STALE — a commitment, thread, or intention that has sat untouched long enough that letting it slide is becoming a decision. Items flagged [AGING] in the context are candidates to question, not to repeat as priorities.
+
+EVERY item MUST include "nextMove": the concrete first action, ≤ 15 words, doable this week, specific to their real data ("Text Sarah's mom about carpool before Thursday", not "coordinate logistics"). "title" names the insight (≤ 9 words); "reason" ties it to their stated goals/values or the data that reveals it (≤ 20 words). Set "kind" ("action" for nearly all), "section"/"forEmails"/"assigneeEmail" per the usual rules, and "priority".
+
+Return the ${cap} highest-value items at most — fewer is better than padded. If the family's life is genuinely covered, return {"items":[]}; an empty radar is a trustworthy radar. OUTPUT THE JSON OBJECT AND NOTHING ELSE — your first character must be {.`
+  }
   if (scope.kind === 'problems') {
     return `\n\nSCOPE OVERRIDE (highest priority — overrides the output shape above): Output ONLY the "problems" array. Your entire response must be a JSON object of exactly this shape: {"problems":[ ... ]}. Do NOT include "greeting", "items", or "recommendations". Apply every "problems" rule from above.
 
@@ -196,13 +216,15 @@ export async function POST(request: NextRequest) {
         ? ATTENTION_MAX_TOKENS
         : scope.kind === 'items'
           ? 2000  // 3-5 items at ~100-150 tok each = 300-750 tok; 2000 is a safe ceiling
-          : scope.kind === 'plate'
-            ? scope.owner === 'self'
-              ? 2400  // self plate: up to 8 items, some detail allowed (~130 tok/item × 8 ≈ 1040 + headroom)
-              : 1000  // others plate: ≤4 ultra-compact items at ~50 tok/item ≈ 200 + overhead; hard ceiling forces brevity
-            : scope.kind === 'problems'
-              ? 1200  // max 4 problems at ~200 tok each
-              : 800   // max 3 recommendations at ~150 tok each
+          : scope.kind === 'radar'
+            ? 1600  // ≤5 insight items with nextMove (~180 tok each) + headroom
+            : scope.kind === 'plate'
+              ? scope.owner === 'self'
+                ? 2400  // self plate: up to 8 items, some detail allowed (~130 tok/item × 8 ≈ 1040 + headroom)
+                : 1000  // others plate: ≤4 ultra-compact items at ~50 tok/item ≈ 200 + overhead; hard ceiling forces brevity
+              : scope.kind === 'problems'
+                ? 1200  // max 4 problems at ~200 tok each
+                : 800   // max 3 recommendations at ~150 tok each
 
       try {
         const aiStart = Date.now()

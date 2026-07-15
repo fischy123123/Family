@@ -22,11 +22,12 @@ import { resolveMemberRef } from '@/lib/members'
 import { isAiDebugEnabled } from '@/lib/aiDebug'
 import { Markdown } from '@/components/ui/Markdown'
 import { DayPlanner } from '@/components/coach/DayPlanner'
+import { KnowMeCard } from '@/components/command/KnowMeCard'
 import type { PendingAction } from '@/components/copilot/ProposedActions'
 import type {
   FamilyMember, CalendarEvent, Task, Chore, Plan, SmartList,
   AttentionReport, AttentionItem, AttentionBucket, PotentialProblem, Recommendation,
-  FamilyMemory, FamilyProfile, FamilyReminder,
+  FamilyMemory, FamilyProfile, FamilyReminder, DayPlan, DayPlanItem,
 } from '@/lib/types'
 
 type EventContext = {
@@ -281,6 +282,8 @@ export function CommandCenter() {
   const { data: localEvents } = useFirestore<CalendarEvent>('events')
   const { data: tasks, update: updateTask, create: createTask } = useFirestore<Task>('tasks')
   const { data: reminders, update: updateReminder } = useFirestore<FamilyReminder>('reminders')
+  // Today's day plan — so a radar insight can be dropped straight into the plan.
+  const { data: homeDayPlans, update: updateHomeDayPlan } = useFirestore<DayPlan>('dayPlans')
   const { data: chores } = useFirestore<Chore>('chores')
   const { data: plans } = useFirestore<Plan>('plans')
   const { data: lists } = useFirestore<SmartList>('lists')
@@ -489,6 +492,20 @@ export function CommandCenter() {
     setDoc(
       doc(db, 'families', familyId, 'briefings', emailKey),
       { forEmail: user.email, generatedAt: report.generatedAt, report },
+    ).catch(() => { /* non-fatal */ })
+    // Also snapshot the radar items to their own per-user doc (keyed like day
+    // plans) so the Day Planner can weave surfaced blind spots into drafts and
+    // suggestions — the radar → plan feedback loop.
+    const planKey = user.email.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase()
+    setDoc(
+      doc(db, 'families', familyId, 'radar', planKey),
+      {
+        email: user.email,
+        generatedAt: report.generatedAt,
+        items: (report.items ?? []).slice(0, 5).map((i) => ({
+          title: i.title, reason: i.reason ?? '', nextMove: i.nextMove ?? '',
+        })),
+      },
     ).catch(() => { /* non-fatal */ })
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [report?.generatedAt, familyId, user?.email])
@@ -718,56 +735,30 @@ export function CommandCenter() {
 
       const baseBody = buildEngineBody(eventContext, 'fast')
 
-      // Two ownership-scoped calls replace the old per-person shards. Each call
-      // sees the full (cached) family context but emits only its tier:
-      //   • "self"   — what the signed-in user is responsible for + their own
-      //                events. The hero. Fired first; streams progressively.
-      //   • "others" — what everyone ELSE is handling, for visibility only.
-      // Routing by responsibility (not by who an item is about) means the split
-      // is meaningful instead of positional — no arbitrary person groupings, and
-      // empty people simply produce nothing rather than a wasted call.
-      const SELF_MAX = 8    // your plate is the hero — allow a fuller list
-      const OTHERS_MAX = 4  // others' plate is a compact visibility feed — 4 keeps wall-time under 10s
-      console.log(`[perf:engine] start members=${members.length} → 2 plate calls (self, others)`)
+      // ONE radar call replaces the old two-plate briefing. The dashboard's
+      // fixed sections already render every calendar/task fact deterministically,
+      // so the model's only job is the blind-spot sweep: things the user is
+      // probably NOT thinking about, each with a concrete next move.
+      console.log(`[perf:engine] start → radar sweep`)
 
-      // Progressive cards (cold start only): show each card the instant either
-      // call finishes writing it. Tag with the plate that produced it so the
-      // streaming preview and final merge can keep the two tiers apart.
+      // Progressive cards: show each insight the moment the model finishes it.
       const progressive = !report
       if (progressive) setStreamingItems([])
       const seenStream = new Set<string>()
       let sid = 0
-      const onStreamItem = (plate: 'self' | 'others') => (it: AttentionItem) => {
+      const onStreamItem = (it: AttentionItem) => {
         if (!progressive) return
         const k = `${it.section ?? ''}|${it.title ?? ''}`
         if (seenStream.has(k)) return
         seenStream.add(k)
-        setStreamingItems((prev) => [...prev, { ...it, plate, id: `sid-${sid++}` }])
+        setStreamingItems((prev) => [...prev, { ...it, id: `sid-${sid++}` }])
       }
 
-      // Cache-warming: fire the "self" call first; the moment its first token
-      // arrives the shared prompt cache is written, so the "others" call reads it
-      // at ~1/10th cost instead of both racing to write a cold cache.
-      let fanout!: () => void
-      const warm = new Promise<void>((resolve) => { fanout = resolve })
-      const selfCall = streamEngine(
-        { ...baseBody, scope: { kind: 'plate', owner: 'self', maxItems: SELF_MAX } },
-        {
-          signal: controller.signal,
-          onFirstToken: () => { fanout() },
-          onItem: onStreamItem('self'),
-        },
+      const radarCall = streamEngine(
+        { ...baseBody, scope: { kind: 'radar', maxItems: 5 } },
+        { signal: controller.signal, onItem: onStreamItem },
       )
-      // If the self call settles without ever emitting a token, release the gate.
-      selfCall.then(() => fanout(), () => fanout())
-      await warm
-
-      const othersCall = streamEngine(
-        { ...baseBody, scope: { kind: 'plate', owner: 'others', maxItems: OTHERS_MAX } },
-        { signal: controller.signal, onItem: onStreamItem('others') },
-      )
-      // settled[0] = self, settled[1] = others — order matters for plate tagging.
-      const settled = await Promise.allSettled([selfCall, othersCall])
+      const settled = await Promise.allSettled([radarCall])
 
       // A background abort (iOS) cancels everything mid-flight — bail quietly so
       // the visibilitychange handler can retry without surfacing an error.
@@ -782,38 +773,14 @@ export function CommandCenter() {
         lastRun.current = 0
         return
       }
+      const isPartialRun = false
 
-      // Partial run: one of the two calls was killed (iOS background abort) before
-      // finishing. Show what we have, but don't record this as a completed run —
-      // leave lastRunSig stale so the next visibilitychange trigger retries rather
-      // than skipping it as "already up to date."
-      const isPartialRun = oks.length < settled.length
-
-      // Tag each call's items with its plate ('self' from settled[0], 'others'
-      // from settled[1]) — that tag is the authoritative ownership signal, since
-      // each call was told to emit only its own tier. Dedup by section+title,
-      // preferring the self tier when the model accidentally returns an item in
-      // both (your plate wins — you'd rather see it as yours than as FYI).
-      const tagged: AttentionItem[] = []
-      const plateOf: ('self' | 'others')[] = ['self', 'others']
-      settled.forEach((s, i) => {
-        if (s.status !== 'fulfilled') return
-        for (const it of (s.value.items ?? [])) tagged.push({ ...it, plate: plateOf[i] })
-      })
-      const merged: AttentionItem[] = []
-      const seen = new Set<string>()
-      for (const it of tagged) {
-        const k = `${it.section ?? ''}|${it.title ?? ''}`
-        if (seen.has(k)) continue
-        seen.add(k)
-        merged.push(it)
-      }
+      const merged = (oks[0].value.items ?? []).slice()
       merged.sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0))
       const items = merged.map((it, i) => ({ ...it, id: `att-${i}` }))
 
       const total = Math.round(performance.now() - engineStart)
-      const selfCount = items.filter((i) => i.plate === 'self').length
-      console.log(`[perf:engine] DONE total=${total}ms | calls_ok=${oks.length}/${settled.length} | items=${items.length} (self=${selfCount} others=${items.length - selfCount})`)
+      console.log(`[perf:engine] DONE total=${total}ms | radar items=${items.length}`)
 
       // Problems + recommendations are no longer part of this payload — they load
       // lazily via their own on-demand requests. Keep empty arrays so cached
@@ -1563,16 +1530,52 @@ export function CommandCenter() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [members, todayEvents, selfMember?.id])
 
-  // HEADS UP (AI): the one section where the model gets to talk. Only items
-  // that add judgment beyond restating the calendar survive: actions, tasks,
-  // inferred/email-derived signals. Pure event-awareness items are dropped —
-  // the calendar sections above already show those facts correctly.
-  const headsUpGroups = useMemo(() => {
-    const visible = (report?.items ?? []).filter((i) => showInList(i.title))
-    const beyond = visible.filter((i) => !(i.sourceType === 'event' && i.kind !== 'action'))
-    return groupItems(beyond).slice(0, 4)
+  // ON YOUR RADAR: the one section where the model gets to talk. The radar
+  // scope's contract is blind-spots only — things the user is probably NOT
+  // already thinking about, each with a concrete next move.
+  const radarItems = useMemo(() => {
+    return (report?.items ?? []).filter((i) => showInList(i.title)).slice(0, 5)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [report?.items, dismissedTitles, completedTitles, teachPrompt])
+
+  // "Plan it" on a radar card: drop the insight into today's plan as a flexible
+  // move (the insight is the why, the nextMove is the tiny first step). Falls
+  // back to a task when there's no committed plan for today yet. Either way the
+  // card is marked handled so it doesn't linger or resurface.
+  async function planRadarItem(item: AttentionItem) {
+    const myKey = user?.email?.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase()
+    const d = new Date()
+    const todayId = `${myKey}_${d.getFullYear()}-${`${d.getMonth() + 1}`.padStart(2, '0')}-${`${d.getDate()}`.padStart(2, '0')}`
+    const plan = myKey ? homeDayPlans.find((p) => p.id === todayId && p.status !== 'done') : undefined
+    if (plan) {
+      const move: DayPlanItem = {
+        id: generateId(),
+        title: item.title,
+        why: item.reason || undefined,
+        firstStep: item.nextMove || undefined,
+        kind: 'move',
+        done: false,
+      }
+      await updateHomeDayPlan({ ...plan, items: [...plan.items, move], updatedAt: new Date().toISOString() })
+      toast(`Added to today's plan`, 'success')
+    } else {
+      await saveItemAsTask(item.title, [item.reason, item.nextMove ? `Next: ${item.nextMove}` : ''].filter(Boolean).join(' — '))
+    }
+    setCompletedTitles((prev) => {
+      const next = new Set(prev).add(item.title)
+      writeCache(completedKey, Array.from(next))
+      return next
+    })
+  }
+
+  async function taskRadarItem(item: AttentionItem) {
+    await saveItemAsTask(item.title, [item.reason, item.nextMove ? `Next: ${item.nextMove}` : ''].filter(Boolean).join(' — '))
+    setCompletedTitles((prev) => {
+      const next = new Set(prev).add(item.title)
+      writeCache(completedKey, Array.from(next))
+      return next
+    })
+  }
 
   const busy = loading || refreshing
 
@@ -1803,12 +1806,18 @@ export function CommandCenter() {
         )}
       </section>
 
-      {/* HEADS UP (AI) — the one box where the model speaks: only insights that
-          go beyond restating the calendar. Clearly marked, easy to ignore. */}
+      {/* GETTING TO KNOW YOU — the app asks ONE question a day (or re-verifies
+          an aging fact) and distills the answer into structured knowledge.
+          This is how the radar and planner get sharper without the user ever
+          having to think about "what should I tell it". */}
+      <KnowMeCard />
+
+      {/* ON YOUR RADAR (AI) — the one box where the model speaks: blind spots
+          only, each with a concrete next move. Clearly marked, easy to ignore. */}
       <section className="rounded-2xl p-4 bg-violet-50/60 border border-violet-100">
         <div className="flex items-center gap-2 mb-3">
           <Sparkles size={15} className="text-violet-500" />
-          <h2 className="text-sm font-bold text-slate-800">Heads up</h2>
+          <h2 className="text-sm font-bold text-slate-800">On your radar</h2>
           <span className="text-[10px] font-bold uppercase tracking-wider text-violet-400 bg-violet-100 px-1.5 py-0.5 rounded-full">AI</span>
           {report?.generatedAt && !loading && (
             <span className="ml-auto text-[10px] text-slate-400">
@@ -1816,6 +1825,7 @@ export function CommandCenter() {
             </span>
           )}
         </div>
+        <p className="text-[11px] text-slate-400 -mt-2 mb-3">Things you&apos;re probably not thinking about — each with a way forward.</p>
 
         {engineError && !loading ? (
           <div className="flex items-start gap-3">
@@ -1832,32 +1842,78 @@ export function CommandCenter() {
           </div>
         ) : loading ? (
           <div className="space-y-2">
-            {streamingItems.slice(0, 4).map((it) => (
+            {streamingItems.slice(0, 5).map((it) => (
               <div key={it.id} className="rounded-xl bg-white/80 p-3">
                 <p className="text-sm font-medium text-slate-800">{it.title}</p>
                 {it.reason && <p className="text-xs text-slate-400 mt-0.5">{it.reason}</p>}
+                {it.nextMove && <p className="text-xs text-violet-600 mt-1"><span className="font-semibold">Next:</span> {it.nextMove}</p>}
               </div>
             ))}
             <div className="flex items-center gap-2 text-xs text-slate-400 py-1">
               <span className="w-3.5 h-3.5 border-2 border-violet-300 border-t-transparent rounded-full animate-spin" />
-              Looking for anything beyond the obvious…
+              Sweeping for blind spots…
             </div>
           </div>
         ) : !report ? (
           <div className="flex items-center justify-between gap-3">
-            <p className="text-xs text-slate-500">I can scan everything — calendar, tasks, email signals — for things worth flagging.</p>
+            <p className="text-xs text-slate-500">I&apos;ll sweep everything — calendar, tasks, goals, email signals — for what&apos;s slipping through.</p>
             <button
               onClick={() => { forceDirectRef.current = true; runEngine(undefined, false) }}
               className="shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-violet-600 text-white text-xs font-semibold hover:bg-violet-700 transition-colors"
             >
-              <Sparkles size={12} /> Scan
+              <Sparkles size={12} /> Sweep
             </button>
           </div>
-        ) : headsUpGroups.length === 0 ? (
-          <p className="text-xs text-slate-400">Nothing beyond the obvious — your calendar and plan above cover it.</p>
+        ) : radarItems.length === 0 ? (
+          <p className="text-xs text-slate-400">Radar&apos;s clear — nothing slipping through that your plan doesn&apos;t already cover.</p>
         ) : (
           <div className="space-y-2 stagger-children">
-            {headsUpGroups.map((g) => renderGroup(g, '#8B5CF6'))}
+            {radarItems.map((item) => (
+              teachPrompt?.title === item.title ? (
+                <TeachPrompt
+                  key={item.id}
+                  title={item.title}
+                  onTeach={(feedback) => teachAssistant(item.title, feedback)}
+                  onDismiss={() => setTeachPrompt(null)}
+                  onUndo={() => undoDismiss(item.title)}
+                />
+              ) : (
+                <div key={item.id} className="rounded-xl bg-white p-3.5 shadow-card">
+                  <div className="flex items-start gap-2">
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-semibold text-slate-900 leading-snug">{item.title}</p>
+                      {item.reason && <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">{item.reason}</p>}
+                    </div>
+                    <button
+                      onClick={() => dismissItem(item.title)}
+                      aria-label="Dismiss"
+                      className="p-1 -m-1 text-slate-300 hover:text-slate-500 transition-colors shrink-0"
+                    >
+                      <X size={14} />
+                    </button>
+                  </div>
+                  {item.nextMove && (
+                    <div className="mt-2 rounded-lg bg-violet-50 border border-violet-100 px-2.5 py-1.5">
+                      <p className="text-xs text-violet-800"><span className="font-bold text-violet-500 uppercase text-[10px] mr-1">Next</span>{item.nextMove}</p>
+                    </div>
+                  )}
+                  <div className="flex items-center gap-2 mt-2.5">
+                    <button
+                      onClick={() => planRadarItem(item)}
+                      className="flex-1 py-1.5 rounded-lg bg-violet-600 text-white text-xs font-semibold hover:bg-violet-700 transition-colors"
+                    >
+                      Add to today&apos;s plan
+                    </button>
+                    <button
+                      onClick={() => taskRadarItem(item)}
+                      className="flex-1 py-1.5 rounded-lg bg-slate-100 text-slate-600 text-xs font-semibold hover:bg-slate-200 transition-colors"
+                    >
+                      Save as task
+                    </button>
+                  </div>
+                </div>
+              )
+            ))}
           </div>
         )}
       </section>

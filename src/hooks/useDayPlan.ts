@@ -163,6 +163,9 @@ export function useDayPlan() {
   // the planner should translate into concrete moves for today.
   const { data: goals } = useFirestore<FamilyGoal>('goals')
   const { data: reflections } = useFirestore<Reflection>('reflections')
+  // The user's latest radar sweep (blind spots surfaced on Home) — candidate
+  // moves the planner should consider weaving into the day.
+  const { data: radarDocs } = useFirestore<{ id: string; items?: { title: string; reason?: string; nextMove?: string }[]; generatedAt?: string }>('radar')
   const {
     data: dayPlans, create: createPlan, update: updatePlan, remove: removePlan,
   } = useFirestore<DayPlan>('dayPlans')
@@ -223,6 +226,7 @@ export function useDayPlan() {
     goals: goals.filter((g) => g.active),
     reflections,
     inbox: readCachedInbox(familyId),
+    radarItems: (myKey ? radarDocs.find((d) => d.id === myKey)?.items ?? [] : []).slice(0, 5),
     currentUserEmail: user?.email ?? undefined,
     currentUserName: user?.displayName ?? undefined,
     now: new Date().toISOString(),
@@ -231,7 +235,7 @@ export function useDayPlan() {
     targetDate: selectedDate,
     targetDateLabel,
     isToday,
-  }), [members, events, allTasks, chores, plans, lists, profile, memories, personalProfile, goals, reflections, familyId, user, selectedDate, targetDateLabel, isToday])
+  }), [members, events, allTasks, chores, plans, lists, profile, memories, personalProfile, goals, reflections, radarDocs, myKey, familyId, user, selectedDate, targetDateLabel, isToday])
 
   // Persist a set of items (with a headline) as today's plan doc, preserving
   // status. Items get stable ids so later toggles/edits address the right one.

@@ -34,6 +34,8 @@ type PlanDayInput = FamilyContextInput & {
   // block, so the planner renders them itself (see buildCommitments).
   goals?: FamilyGoal[]
   reflections?: Reflection[]
+  // Blind spots the radar sweep surfaced on Home — candidate moves for the day.
+  radarItems?: { title: string; reason?: string; nextMove?: string }[]
   // Which day to plan. Defaults to today; isToday=false means a future day
   // (plan the whole day, not "from now forward").
   targetDate?: string
@@ -56,8 +58,18 @@ function structureClause(structure?: DayPlanStructure): string {
 // for moves. The shared family-context builder doesn't include these, so we
 // render them here. Commitments ("family dinner 4x/week", "monthly date night")
 // are exactly the "who we want to be" signals the user felt were being ignored.
-function buildCommitmentsBlock(goals?: FamilyGoal[], reflections?: Reflection[]): string {
+function buildCommitmentsBlock(
+  goals?: FamilyGoal[],
+  reflections?: Reflection[],
+  radarItems?: { title: string; reason?: string; nextMove?: string }[],
+): string {
   const out: string[] = []
+  if (radarItems?.length) {
+    const lines = radarItems.map((r) =>
+      `  - ${r.title}${r.reason ? ` — ${r.reason}` : ''}${r.nextMove ? ` (first move: ${r.nextMove})` : ''}`,
+    )
+    out.push(`ON THE USER'S RADAR (blind spots the assistant recently surfaced — things they weren't thinking about, with a suggested first move. Treat these as strong CANDIDATE moves: when one fits the day's capacity and energy, weave it in as a concrete plan item using its first move; don't force ones that don't fit today):\n${lines.join('\n')}`)
+  }
   const active = (goals ?? []).filter((g) => g.active)
   if (active.length) {
     const lines = active.map((g) => {
@@ -249,7 +261,7 @@ export async function POST(request: NextRequest) {
 
   const { timeHeader, dataBlock } = buildFamilyContextParts(ctx)
   const aboutMe = buildPersonalProfileBlock(ctx.personalProfile)
-  const commitments = buildCommitmentsBlock(ctx.goals, ctx.reflections)
+  const commitments = buildCommitmentsBlock(ctx.goals, ctx.reflections, ctx.radarItems)
   const modeInstruction = buildModeInstruction(ctx)
 
   // Caching layout (most stable → most volatile, so the cached PREFIX stays
