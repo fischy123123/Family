@@ -119,7 +119,9 @@ export function KnowMeCard() {
       const data = await res.json()
       if (res.ok && data.question?.text) {
         setQuestion(data.question)
-        setShowAnswerBox(data.question.kind !== 'refresh')
+        // Buttons only make sense for a refresh that targets a specific fact;
+        // anything else (learn, or a refresh with no target) gets the text box.
+        setShowAnswerBox(!(data.question.kind === 'refresh' && data.question.target))
         setAnswer('')
         saveState({ currentQuestion: data.question, lastAskedAt: new Date().toISOString() })
       }
@@ -134,7 +136,7 @@ export function KnowMeCard() {
     if (state === null && states.length === 0) return  // still hydrating
     if (state?.currentQuestion?.text) {
       setQuestion(state.currentQuestion)
-      setShowAnswerBox(state.currentQuestion.kind !== 'refresh')
+      setShowAnswerBox(!(state.currentQuestion.kind === 'refresh' && state.currentQuestion.target))
       autoFetched.current = true
       return
     }
