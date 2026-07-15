@@ -7,7 +7,6 @@ import {
   ChevronDown, ChevronUp, Wand2, Bot, Loader2,
 } from 'lucide-react'
 import { InsightCardWithThread } from './InsightCardWithThread'
-import { DayPlanner } from './DayPlanner'
 import { Markdown } from '@/components/ui/Markdown'
 import { useCoaching } from '@/hooks/useCoaching'
 import { useFirestore } from '@/hooks/useFirestore'
@@ -211,17 +210,8 @@ export function CoachView() {
 
   return (
     <div className="max-w-2xl mx-auto px-4 sm:px-6 py-6 space-y-6">
-      {/* Today's Plan — the backbone. Built with you, then tracked to done. The
-          in-the-moment "Right now" coach lives in the global FAB (and the
-          planner's "get a nudge"); the family-reflection layer sits below. */}
-      <DayPlanner />
-
-      <div className="flex items-center gap-3 pt-2">
-        <div className="h-px flex-1 bg-slate-200" />
-        <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">The bigger picture</span>
-        <div className="h-px flex-1 bg-slate-200" />
-      </div>
-
+      {/* The day plan lives on Home now; the coach tab is the family-reflection
+          layer. The in-the-moment "Right now" coach lives in the global FAB. */}
       {/* Header */}
       <div className="flex items-start justify-between">
         <div className="flex items-center gap-2.5">
