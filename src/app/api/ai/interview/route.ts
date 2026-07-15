@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
 import { logUsage } from '@/lib/ai'
+import { buildDigest, OPS_SPEC, type KnowledgeDigest } from '@/lib/interviewShared'
 
 const MODEL = 'claude-sonnet-4-6'
 
@@ -14,50 +15,12 @@ const MODEL = 'claude-sonnet-4-6'
 //     client applies — new memories, profile updates, expiring stale facts,
 //     goal changes. The user never fills a form; they just answer one question.
 
-type KnowledgeDigest = {
-  members?: { name: string; role?: string }[]
-  profile?: Record<string, unknown> | null
-  personalProfile?: Record<string, unknown> | null
-  memories?: { id: string; text: string; category?: string; notedOn: string; aging?: boolean; pinned?: boolean }[]
-  goals?: { id: string; text: string; area?: string; cadence?: string }[]
-  recentQuestions?: string[]
-  now?: string
-  timezone?: string
-}
-
 type InterviewInput = KnowledgeDigest & {
   mode: 'question' | 'ingest'
   question?: string
   questionKind?: 'learn' | 'refresh'
   target?: { type: 'memory' | 'goal'; id: string; currentText: string }
   answer?: string
-}
-
-function buildDigest(ctx: KnowledgeDigest): string {
-  const parts: string[] = []
-  if (ctx.members?.length) {
-    parts.push(`FAMILY: ${ctx.members.map((m) => `${m.name}${m.role ? ` (${m.role})` : ''}`).join(', ')}`)
-  }
-  if (ctx.personalProfile && Object.keys(ctx.personalProfile).length) {
-    parts.push(`SIGNED-IN USER'S PROFILE (their "about me"):\n${JSON.stringify(ctx.personalProfile, null, 1).slice(0, 2400)}`)
-  }
-  if (ctx.profile) {
-    parts.push(`HOUSEHOLD PROFILE:\n${JSON.stringify(ctx.profile, null, 1).slice(0, 1200)}`)
-  }
-  if (ctx.goals?.length) {
-    parts.push(`ACTIVE GOALS/COMMITMENTS:\n${ctx.goals.map((g) => `  - id:${g.id} [${g.area ?? '?'}] ${g.text}${g.cadence ? ` (${g.cadence})` : ''}`).join('\n')}`)
-  }
-  if (ctx.memories?.length) {
-    parts.push(`KNOWN FACTS/MEMORIES (with when they were last noted or confirmed; "AGING" = old enough it may no longer be true):\n${ctx.memories
-      .slice(0, 80)
-      .map((m) => `  - id:${m.id}${m.category ? ` [${m.category}]` : ''} ${m.text} (${m.notedOn}${m.aging ? ', AGING' : ''}${m.pinned ? ', pinned' : ''})`)
-      .join('\n')}`)
-  }
-  if (ctx.recentQuestions?.length) {
-    parts.push(`RECENTLY ASKED (do NOT repeat these or near-duplicates):\n${ctx.recentQuestions.map((q) => `  - ${q}`).join('\n')}`)
-  }
-  parts.push(`Current time: ${ctx.now ?? new Date().toISOString()}${ctx.timezone ? ` (${ctx.timezone})` : ''}`)
-  return parts.join('\n\n')
 }
 
 const QUESTION_PROMPT = `You are the "getting to know you" engine inside a family assistant. The user finds it hard to think of what to tell the app, so YOU carry that load: study everything already known about them, find the highest-value gap or the most-likely-stale fact, and ask ONE question.
@@ -77,17 +40,9 @@ Rules for the question itself:
 
 Output ONLY JSON: {"question":{"text":"...","why":"...","kind":"learn"|"refresh","target":{"type":"memory"|"goal","id":"<exact id>","currentText":"..."} (refresh only, omit for learn)}}`
 
-const INGEST_PROMPT = `You are the knowledge-distiller inside a family assistant. The user just answered a getting-to-know-you question. Convert their answer into the SMALLEST set of precise knowledge operations. You can see everything already known — never duplicate an existing fact; prefer updating/expiring over adding parallel versions.
+const INGEST_PROMPT = `You are the knowledge-distiller inside a family assistant. The user just answered a getting-to-know-you question. Convert their answer into the SMALLEST set of precise knowledge operations (usually 1-3). You can see everything already known.
 
-Available ops (emit only what the answer justifies, usually 1-3):
-- {"op":"add_memory","text":"...","category":"fact|preference|routine|health|logistics|relationship|other","subjectNames":["Name"] (optional),"expiresAt":"YYYY-MM-DD" (only for clearly time-bound facts)}
-  · "text" must be a durable, third-person-useful statement ("Eric's top work priority is the Q3 board deck, due mid-August"), not a transcript.
-- {"op":"update_memory","id":"<existing id>","text":"<corrected text>"} — when the answer changes an existing fact.
-- {"op":"expire_memory","id":"<existing id>"} — when the answer says a fact is no longer true.
-- {"op":"refresh_memory","id":"<existing id>"} — when the answer confirms an existing fact unchanged.
-- {"op":"deactivate_goal","id":"<goal id>"} — a commitment they say no longer matters.
-- {"op":"add_goal","text":"...","area":"health|relationships|kids|finances|home|personal|work-life|fun","cadence":"..." (optional),"why":"..." (optional)} — ONLY when they clearly state an ongoing intention.
-- {"op":"update_profile","patch":{...}} — for facts that belong on their personal profile. Allowed keys ONLY: goals (string[]), biggestStruggle, energizers (string[]), drainers (string[]), startStrategies (string[]), avoiding (string[]), rhythm, fixedAnchors (string[]), householdRoles, careSchedule, planStyle ("minimal"|"balanced"|"packed"), protectRest (boolean), nonNegotiables (string[]), freeform. For array keys, return the FULL merged array (existing values plus/minus changes) — the patch replaces the field.
+${OPS_SPEC}
 
 Also return "learned": one warm sentence, second person, confirming what you took away ("Got it — your work focus shifted to the hiring push; I'll drop the old launch priority.").
 

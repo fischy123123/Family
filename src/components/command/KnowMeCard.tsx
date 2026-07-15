@@ -1,13 +1,11 @@
 'use client'
 
 import { useState, useEffect, useRef, useMemo } from 'react'
-import { MessageCircleQuestion, Send, Mic, Square, Loader2, Check, X, Sparkles } from 'lucide-react'
+import { MessageCircleQuestion, Send, Mic, Square, Loader2, Check, X, Sparkles, GraduationCap } from 'lucide-react'
 import { useFirestore } from '@/hooks/useFirestore'
-import { useAuth } from '@/contexts/AuthContext'
 import { useToast } from '@/contexts/ToastContext'
-import { generateId } from '@/lib/utils'
-import { resolveMemberRef } from '@/lib/members'
-import type { FamilyMember, FamilyMemory, FamilyGoal, FamilyProfile, PersonalProfile, LifeArea } from '@/lib/types'
+import { useKnowledgeOps, type IngestOp } from '@/hooks/useKnowledgeOps'
+import { DeepDiveSheet } from './DeepDiveSheet'
 
 type InterviewQuestion = {
   text: string
@@ -24,41 +22,19 @@ type InterviewState = {
   recentQuestions?: string[]
 }
 
-type IngestOp =
-  | { op: 'add_memory'; text: string; category?: FamilyMemory['category']; subjectNames?: string[]; expiresAt?: string }
-  | { op: 'update_memory'; id: string; text: string }
-  | { op: 'expire_memory'; id: string }
-  | { op: 'refresh_memory'; id: string }
-  | { op: 'deactivate_goal'; id: string }
-  | { op: 'add_goal'; text: string; area?: LifeArea; cadence?: string; why?: string }
-  | { op: 'update_profile'; patch: Partial<PersonalProfile> }
-
-const PROFILE_KEYS: (keyof PersonalProfile)[] = [
-  'goals', 'biggestStruggle', 'energizers', 'drainers', 'startStrategies', 'avoiding',
-  'rhythm', 'fixedAnchors', 'householdRoles', 'careSchedule', 'planStyle', 'protectRest',
-  'nonNegotiables', 'freeform',
-]
-
-const STALE_MS = 45 * 24 * 60 * 60 * 1000
 const ASK_EVERY_MS = 20 * 60 * 60 * 1000  // roughly one question per day
 
 // The "getting to know you" card. The app decides what it most needs to know
 // (or which aging fact to re-verify), asks ONE conversational question, and
 // distills the answer into structured knowledge automatically. This flips the
-// burden: the user never has to think about what to tell the app.
+// burden: the user never has to think about what to tell the app. For a real
+// sit-down, the Deep Dive button opens a full multi-turn training session.
 export function KnowMeCard() {
-  const { user } = useAuth()
   const { toast } = useToast()
-  const { data: members } = useFirestore<FamilyMember>('members')
-  const { data: memories, create: createMemory, update: updateMemory } = useFirestore<FamilyMemory>('memories')
-  const { data: goals, create: createGoal, update: updateGoal } = useFirestore<FamilyGoal>('goals')
-  const { data: profiles } = useFirestore<FamilyProfile>('profile')
-  const { data: personalProfiles, create: createPP, update: updatePP } = useFirestore<PersonalProfile>('personalProfiles')
+  const { user, myKey, members, buildDigest, applyOps } = useKnowledgeOps()
   const { data: states, create: createState, update: updateState } = useFirestore<InterviewState>('interviewState')
 
-  const myKey = user?.email ? user.email.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase() : null
   const state = useMemo(() => (myKey ? states.find((s) => s.id === myKey) ?? null : null), [states, myKey])
-  const myProfile = useMemo(() => (myKey ? personalProfiles.find((p) => p.id === myKey) ?? null : null), [personalProfiles, myKey])
 
   const [question, setQuestion] = useState<InterviewQuestion | null>(null)
   const [fetching, setFetching] = useState(false)
@@ -66,36 +42,13 @@ export function KnowMeCard() {
   const [showAnswerBox, setShowAnswerBox] = useState(false)
   const [applying, setApplying] = useState(false)
   const [learned, setLearned] = useState<string | null>(null)
+  const [deepDive, setDeepDive] = useState(false)
   const autoFetched = useRef(false)
 
   const [recording, setRecording] = useState(false)
   const [transcribing, setTranscribing] = useState(false)
   const recorderRef = useRef<MediaRecorder | null>(null)
   const chunksRef = useRef<Blob[]>([])
-
-  // Compact digest of everything known — the engine picks its question from this.
-  function buildDigest() {
-    const today = new Date().toISOString().slice(0, 10)
-    const active = memories.filter((m) => !m.expiresAt || m.expiresAt >= today)
-    return {
-      members: members.map((m) => ({ name: m.name, role: m.role })),
-      profile: profiles[0] ?? null,
-      personalProfile: myProfile,
-      memories: active.slice(0, 80).map((m) => {
-        const freshest = m.confirmedAt ?? m.createdAt
-        return {
-          id: m.id, text: m.text, category: m.category,
-          notedOn: (freshest ?? '').slice(0, 10),
-          aging: !m.pinned && Date.now() - new Date(freshest).getTime() > STALE_MS,
-          pinned: m.pinned,
-        }
-      }),
-      goals: goals.filter((g) => g.active).map((g) => ({ id: g.id, text: g.text, area: g.area, cadence: g.cadence })),
-      recentQuestions: state?.recentQuestions ?? [],
-      now: new Date().toISOString(),
-      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-    }
-  }
 
   async function saveState(patch: Partial<InterviewState>) {
     if (!myKey) return
@@ -114,7 +67,7 @@ export function KnowMeCard() {
       const res = await fetch('/api/ai/interview', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode: 'question', ...buildDigest() }),
+        body: JSON.stringify({ mode: 'question', ...buildDigest(state?.recentQuestions) }),
       })
       const data = await res.json()
       if (res.ok && data.question?.text) {
@@ -164,53 +117,6 @@ export function KnowMeCard() {
     // no learned line → the idle chip renders on next paint
   }
 
-  async function applyOps(ops: IngestOp[]) {
-    const now = new Date().toISOString()
-    const today = now.slice(0, 10)
-    for (const op of ops) {
-      try {
-        if (op.op === 'add_memory' && op.text?.trim()) {
-          const subjectEmails = (op.subjectNames ?? [])
-            .map((n) => resolveMemberRef(members, n))
-            .filter(Boolean)
-            .map((m) => m!.email || m!.id)
-          await createMemory({
-            id: generateId(), text: op.text.trim(), category: op.category ?? 'fact',
-            ...(subjectEmails.length ? { subjectEmails } : {}),
-            ...(op.expiresAt ? { expiresAt: op.expiresAt } : {}),
-            source: 'manual', createdAt: now,
-          } as FamilyMemory)
-        } else if (op.op === 'update_memory') {
-          const m = memories.find((x) => x.id === op.id)
-          if (m) await updateMemory({ ...m, text: op.text, confirmedAt: now })
-        } else if (op.op === 'expire_memory') {
-          const m = memories.find((x) => x.id === op.id)
-          if (m) await updateMemory({ ...m, expiresAt: today })
-        } else if (op.op === 'refresh_memory') {
-          const m = memories.find((x) => x.id === op.id)
-          if (m) await updateMemory({ ...m, confirmedAt: now })
-        } else if (op.op === 'deactivate_goal') {
-          const g = goals.find((x) => x.id === op.id)
-          if (g) await updateGoal({ ...g, active: false })
-        } else if (op.op === 'add_goal' && op.text?.trim()) {
-          await createGoal({
-            id: generateId(), text: op.text.trim(), area: (op.area ?? 'personal') as LifeArea,
-            ...(op.cadence ? { cadence: op.cadence } : {}), ...(op.why ? { why: op.why } : {}),
-            active: true, createdAt: now,
-          } as FamilyGoal)
-        } else if (op.op === 'update_profile' && op.patch && user?.email && myKey) {
-          const patch: Partial<PersonalProfile> = {}
-          for (const k of PROFILE_KEYS) {
-            if (k in op.patch) (patch as Record<string, unknown>)[k] = (op.patch as Record<string, unknown>)[k]
-          }
-          const next = { ...(myProfile ?? { id: myKey, email: user.email }), ...patch, id: myKey, email: user.email, updatedAt: now }
-          if (myProfile) await updatePP(next as PersonalProfile)
-          else await createPP(next as PersonalProfile)
-        }
-      } catch { /* apply the rest — one failed op shouldn't lose the answer */ }
-    }
-  }
-
   async function submitAnswer() {
     const a = answer.trim()
     if (!a || !question || applying) return
@@ -221,7 +127,7 @@ export function KnowMeCard() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           mode: 'ingest', question: question.text, questionKind: question.kind,
-          target: question.target, answer: a, ...buildDigest(),
+          target: question.target, answer: a, ...buildDigest(state?.recentQuestions),
         }),
       })
       const data = await res.json()
@@ -235,25 +141,21 @@ export function KnowMeCard() {
     }
   }
 
-  // Refresh quick-actions: confirm or retire without an AI round-trip.
+  // Refresh quick-actions: confirm or retire without an AI round-trip —
+  // expressed as the same knowledge ops the engines emit.
   async function quickStillTrue() {
     if (!question?.target) return
-    const now = new Date().toISOString()
     if (question.target.type === 'memory') {
-      const m = memories.find((x) => x.id === question.target!.id)
-      if (m) await updateMemory({ ...m, confirmedAt: now })
+      await applyOps([{ op: 'refresh_memory', id: question.target.id } as IngestOp])
     }
     await finishQuestion('Noted — still true. I’ll keep treating it as current.')
   }
   async function quickNoLonger() {
     if (!question?.target) return
-    if (question.target.type === 'memory') {
-      const m = memories.find((x) => x.id === question.target!.id)
-      if (m) await updateMemory({ ...m, expiresAt: new Date().toISOString().slice(0, 10) })
-    } else {
-      const g = goals.find((x) => x.id === question.target!.id)
-      if (g) await updateGoal({ ...g, active: false })
-    }
+    const op: IngestOp = question.target.type === 'memory'
+      ? { op: 'expire_memory', id: question.target.id }
+      : { op: 'deactivate_goal', id: question.target.id }
+    await applyOps([op])
     await finishQuestion('Cleared it — I’ll stop bringing that up.')
   }
 
@@ -285,29 +187,52 @@ export function KnowMeCard() {
 
   if (!user?.email) return null
 
+  const sheet = deepDive ? (
+    <DeepDiveSheet
+      onClose={() => setDeepDive(false)}
+      onFinished={(captured) => {
+        // A session counts as "answered" — don't fire the daily question right after.
+        saveState({ lastAnsweredAt: new Date().toISOString() })
+        if (captured > 0) setLearned(`Deep dive done — ${captured} thing${captured === 1 ? '' : 's'} captured.`)
+      }}
+    />
+  ) : null
+
   // Collapsed chip / learned confirmation — keep the card tiny when idle.
   if (!question && !fetching) {
     return (
-      <div className="flex items-center justify-between gap-3 rounded-2xl bg-white shadow-card px-4 py-3">
-        <div className="flex items-center gap-2 min-w-0">
-          <MessageCircleQuestion size={15} className="text-teal-500 shrink-0" />
-          {learned ? (
-            <p className="text-xs text-slate-600 leading-relaxed">{learned}</p>
-          ) : (
-            <p className="text-xs text-slate-400">The more I know, the sharper the radar and plans get.</p>
-          )}
+      <>
+        <div className="flex items-center justify-between gap-3 rounded-2xl bg-white shadow-card px-4 py-3">
+          <div className="flex items-center gap-2 min-w-0">
+            <MessageCircleQuestion size={15} className="text-teal-500 shrink-0" />
+            {learned ? (
+              <p className="text-xs text-slate-600 leading-relaxed">{learned}</p>
+            ) : (
+              <p className="text-xs text-slate-400">The more I know, the sharper the radar and plans get.</p>
+            )}
+          </div>
+          <div className="flex items-center gap-3 shrink-0">
+            <button
+              onClick={fetchQuestion}
+              className="text-xs font-semibold text-teal-600 hover:text-teal-700 transition-colors"
+            >
+              {learned ? 'Ask me another' : 'Ask me something'}
+            </button>
+            <button
+              onClick={() => setDeepDive(true)}
+              className="inline-flex items-center gap-1 text-xs font-semibold text-white bg-teal-600 hover:bg-teal-700 rounded-lg px-2.5 py-1.5 transition-colors"
+            >
+              <GraduationCap size={13} /> Deep dive
+            </button>
+          </div>
         </div>
-        <button
-          onClick={fetchQuestion}
-          className="shrink-0 text-xs font-semibold text-teal-600 hover:text-teal-700 transition-colors"
-        >
-          {learned ? 'Ask me another' : 'Ask me something'}
-        </button>
-      </div>
+        {sheet}
+      </>
     )
   }
 
   return (
+    <>
     <section className="rounded-2xl bg-white shadow-card p-4 border-l-[3px] border-teal-400">
       <div className="flex items-center gap-2 mb-2">
         <MessageCircleQuestion size={15} className="text-teal-500" />
@@ -315,15 +240,25 @@ export function KnowMeCard() {
         {question?.kind === 'refresh' && (
           <span className="text-[10px] font-bold uppercase tracking-wider text-amber-500 bg-amber-50 px-1.5 py-0.5 rounded-full">Still true?</span>
         )}
-        {question && (
+        <div className="ml-auto flex items-center gap-1">
           <button
-            onClick={() => finishQuestion(null)}
-            aria-label="Skip"
-            className="ml-auto p-1 -m-1 text-slate-300 hover:text-slate-500 transition-colors"
+            onClick={() => setDeepDive(true)}
+            aria-label="Start a deep-dive session"
+            title="Deep dive — a real training session"
+            className="p-1 text-teal-500 hover:text-teal-700 transition-colors"
           >
-            <X size={14} />
+            <GraduationCap size={15} />
           </button>
-        )}
+          {question && (
+            <button
+              onClick={() => finishQuestion(null)}
+              aria-label="Skip"
+              className="p-1 text-slate-300 hover:text-slate-500 transition-colors"
+            >
+              <X size={14} />
+            </button>
+          )}
+        </div>
       </div>
 
       {fetching ? (
@@ -400,5 +335,7 @@ export function KnowMeCard() {
         </div>
       ) : null}
     </section>
+    {sheet}
+    </>
   )
 }
