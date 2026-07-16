@@ -5,7 +5,7 @@ import { useFirestore } from '@/hooks/useFirestore'
 import { useAuth } from '@/contexts/AuthContext'
 import { generateId } from '@/lib/utils'
 import { resolveMemberRef } from '@/lib/members'
-import type { FamilyMember, FamilyMemory, FamilyGoal, FamilyProfile, PersonalProfile, LifeArea } from '@/lib/types'
+import type { FamilyMember, FamilyMemory, FamilyGoal, FamilyProfile, PersonalProfile, LifeArea, ProspectiveTrigger } from '@/lib/types'
 
 // The client half of the interview system's knowledge pipeline: building the
 // "everything we know" digest the engines read, and applying the structured
@@ -19,6 +19,7 @@ export type IngestOp =
   | { op: 'refresh_memory'; id: string }
   | { op: 'deactivate_goal'; id: string }
   | { op: 'add_goal'; text: string; area?: LifeArea; cadence?: string; why?: string }
+  | { op: 'add_trigger'; condition: string; action: string }
   | { op: 'update_profile'; patch: Partial<PersonalProfile> }
 
 const PROFILE_KEYS: (keyof PersonalProfile)[] = [
@@ -38,6 +39,7 @@ export function describeOp(op: IngestOp): string {
     case 'refresh_memory': return 'Re-confirmed a known fact'
     case 'deactivate_goal': return 'Retired a goal that no longer matters'
     case 'add_goal': return `New goal: ${op.text}`
+    case 'add_trigger': return `I'll remind you when ${op.condition}: ${op.action}`
     case 'update_profile': return `Profile updated (${Object.keys(op.patch ?? {}).join(', ')})`
     default: return 'Noted'
   }
@@ -50,6 +52,7 @@ export function useKnowledgeOps() {
   const { data: goals, create: createGoal, update: updateGoal } = useFirestore<FamilyGoal>('goals')
   const { data: profiles } = useFirestore<FamilyProfile>('profile')
   const { data: personalProfiles, create: createPP, update: updatePP } = useFirestore<PersonalProfile>('personalProfiles')
+  const { create: createTrigger } = useFirestore<ProspectiveTrigger>('triggers')
 
   const myKey = user?.email ? user.email.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase() : null
   const myProfile = useMemo(() => (myKey ? personalProfiles.find((p) => p.id === myKey) ?? null : null), [personalProfiles, myKey])
@@ -116,6 +119,12 @@ export function useKnowledgeOps() {
             ...(op.cadence ? { cadence: op.cadence } : {}), ...(op.why ? { why: op.why } : {}),
             active: true, createdAt: now,
           } as FamilyGoal)
+        } else if (op.op === 'add_trigger' && op.condition?.trim() && op.action?.trim()) {
+          await createTrigger({
+            id: generateId(), condition: op.condition.trim(), action: op.action.trim(),
+            ...(user?.email ? { createdBy: user.email } : {}),
+            status: 'armed', createdAt: now,
+          } as ProspectiveTrigger)
         } else if (op.op === 'update_profile' && op.patch && user?.email && myKey) {
           const patch: Partial<PersonalProfile> = {}
           for (const k of PROFILE_KEYS) {

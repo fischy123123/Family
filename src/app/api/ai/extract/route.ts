@@ -68,10 +68,12 @@ Analyze the input and extract every actionable outcome. Each outcome has a "kind
 - "packing_item": something to pack for a trip
 - "memory": a fact worth remembering about the family (relationships, preferences, important context)
 - "follow_up": an open loop to track until resolved
+- "trigger": a dormant intention tied to a future CONDITION rather than a date — "when/next time Y happens, do X" ("next time we're at Grandma's, bring the dish back", "when report cards come out, check on math", "remind me about the ladder when Dave visits"). The system sleeps on these and resurfaces them when the condition looks live. If the input pins a concrete DATE to it, it's a task or event instead, not a trigger.
 
 For each outcome provide:
 - kind
-- title (concise, action-oriented, with corrected family names — e.g. "Sign Mia's permission slip")
+- title (concise, action-oriented, with corrected family names — e.g. "Sign Mia's permission slip"). For a trigger, title = the ACTION to take.
+- condition (trigger only, REQUIRED for triggers): the "when Y" in plain language, e.g. "next time you visit Grandma".
 - date (ISO 8601 if there's a clear date/time, else omit). Resolve relative dates ("next Tuesday", "tomorrow") against today.
 - assignee (the EXACT name of the responsible family member from the list above — including phonetic matches — if clearly implied, else omit). Always use the person's name, never an email. This works for children and pets who have no email.
 - notes (optional short context)

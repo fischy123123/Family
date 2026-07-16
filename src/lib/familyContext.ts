@@ -3,7 +3,7 @@
 
 import type {
   FamilyMember, CalendarEvent, Task, Chore, Plan, SmartList,
-  FamilyProfile, FamilyMemory,
+  FamilyProfile, FamilyMemory, ProspectiveTrigger,
 } from '@/lib/types'
 import { memorySubjects, memoryConcernsMember } from '@/lib/types'
 import { resolveAssignee, memberById } from '@/lib/members'
@@ -41,6 +41,9 @@ export interface FamilyContextInput {
   memories?: FamilyMemory[]
   // Actionable signals pulled from the family's email inbox.
   inbox?: InboxSignal[]
+  // Armed "when Y, do X" prospective-memory triggers. Dormant until their
+  // condition looks live in the calendar/context — then the engines surface them.
+  triggers?: ProspectiveTrigger[]
   // Who is signed in / asking right now, so the AI can address them as "you".
   currentUserEmail?: string
   currentUserName?: string
@@ -155,7 +158,7 @@ export function buildFamilyContextParts(input: FamilyContextInput): {
 } {
   const {
     members, events, tasks, chores, plans, lists, now, timezone, eventContext,
-    profile, memories, inbox, currentUserEmail, currentUserName,
+    profile, memories, inbox, triggers, currentUserEmail, currentUserName,
   } = input
   const tz = resolveTimezone(timezone)
   const nowDate = new Date(now)
@@ -433,6 +436,16 @@ export function buildFamilyContextParts(input: FamilyContextInput): {
           const expStr = m.expiresAt ? ` (until ${fmtDate(m.expiresAt, tz)})` : ''
           return `- ${cat}${m.text}${who}${expStr}${linkStr} (noted ${notedOn(m.confirmedAt ?? m.createdAt, tz)})${staleFlag(m, nowDate)}`
         })
+        .join('\n')}`
+    )
+  }
+
+  const armedTriggers = (triggers ?? []).filter((t) => t.status === 'armed')
+  if (armedTriggers.length) {
+    dataSections.push(
+      `DORMANT INTENTIONS — "when X, do Y" triggers the user has set (prospective memory). These are NOT tasks and have no dates. Stay SILENT about each one until its condition looks LIVE given the calendar, events, or context below (e.g. the visit is on the calendar, the season/situation has arrived). When a condition is live, surface the action prominently — this is the user trusting the app to remember FOR them, so a missed live trigger is a broken promise:\n${armedTriggers
+        .slice(0, 25)
+        .map((t) => `- [trigger:${t.id}] WHEN: ${t.condition} → DO: ${t.action}${t.subjectNames?.length ? ` (involves ${t.subjectNames.join(', ')})` : ''} (set ${notedOn(t.createdAt, tz)})`)
         .join('\n')}`
     )
   }

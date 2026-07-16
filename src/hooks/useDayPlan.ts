@@ -9,7 +9,7 @@ import type {
   FamilyMember, CalendarEvent, Task, Chore, Plan, SmartList,
   FamilyProfile, FamilyMemory, FamilyReminder,
   PersonalProfile, MomentEnergy, DayPlan, DayPlanItem, DayPlanStructure,
-  FamilyGoal, Reflection,
+  FamilyGoal, Reflection, ProspectiveTrigger,
 } from '@/lib/types'
 
 function emailKey(email: string): string {
@@ -163,6 +163,7 @@ export function useDayPlan() {
   // the planner should translate into concrete moves for today.
   const { data: goals } = useFirestore<FamilyGoal>('goals')
   const { data: reflections } = useFirestore<Reflection>('reflections')
+  const { data: triggers } = useFirestore<ProspectiveTrigger>('triggers')
   // The user's latest radar sweep (blind spots surfaced on Home) — candidate
   // moves the planner should consider weaving into the day.
   const { data: radarDocs } = useFirestore<{ id: string; items?: { title: string; reason?: string; nextMove?: string }[]; generatedAt?: string }>('radar')
@@ -226,6 +227,7 @@ export function useDayPlan() {
     goals: goals.filter((g) => g.active),
     reflections,
     inbox: readCachedInbox(familyId),
+    triggers: triggers.filter((t) => t.status === 'armed'),
     radarItems: (myKey ? radarDocs.find((d) => d.id === myKey)?.items ?? [] : []).slice(0, 5),
     currentUserEmail: user?.email ?? undefined,
     currentUserName: user?.displayName ?? undefined,
@@ -235,7 +237,7 @@ export function useDayPlan() {
     targetDate: selectedDate,
     targetDateLabel,
     isToday,
-  }), [members, events, allTasks, chores, plans, lists, profile, memories, personalProfile, goals, reflections, radarDocs, myKey, familyId, user, selectedDate, targetDateLabel, isToday])
+  }), [members, events, allTasks, chores, plans, lists, profile, memories, personalProfile, goals, reflections, triggers, radarDocs, myKey, familyId, user, selectedDate, targetDateLabel, isToday])
 
   // Persist a set of items (with a headline) as today's plan doc, preserving
   // status. Items get stable ids so later toggles/edits address the right one.

@@ -558,15 +558,31 @@ export type CaptureInputType = 'text' | 'voice' | 'image' | 'email' | 'document'
 export type CaptureStatus = 'pending' | 'processed' | 'error'
 
 export interface ExtractedOutcome {
-  kind: 'task' | 'event' | 'shopping_item' | 'packing_item' | 'plan' | 'memory' | 'follow_up'
+  kind: 'task' | 'event' | 'shopping_item' | 'packing_item' | 'plan' | 'memory' | 'follow_up' | 'trigger'
   title: string
   date?: string
   assignee?: string             // AI-emitted member name (resolves to id; works for emailless members)
   assigneeEmail?: string        // legacy
   notes?: string
+  condition?: string            // trigger only — the "when Y" this intention waits for
   targetListId?: string
   targetPlanId?: string
   applied?: boolean
+}
+
+// A prospective-memory trigger: "when Y happens, do X". Not a task (no date)
+// and not a memory (it's a dormant intention). It sleeps until the radar spots
+// its condition going live in the calendar/context, then resurfaces with the
+// action attached. This is the app remembering FOR a working memory that won't.
+export interface ProspectiveTrigger {
+  id: string
+  condition: string             // plain language: "next time we visit Grandma", "when school break starts"
+  action: string                // what to do when it fires: "bring the casserole dish back"
+  subjectNames?: string[]       // who it involves, if anyone specific
+  createdBy?: string            // email of whoever set it
+  status: 'armed' | 'done' | 'dismissed'
+  createdAt: string
+  resolvedAt?: string
 }
 
 export interface Capture {

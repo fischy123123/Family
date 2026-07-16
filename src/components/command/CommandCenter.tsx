@@ -8,7 +8,7 @@ import {
 import { db } from '@/lib/firebase'
 import {
   RefreshCw, AlertTriangle, Lightbulb, Clock,
-  Calendar as CalIcon, Sparkles, Check, X, MessageCircle, Users, Bookmark, Plus, ChevronDown, ChevronRight, Bug, Send,
+  Calendar as CalIcon, Sparkles, Check, X, MessageCircle, Users, Bookmark, Plus, ChevronDown, ChevronRight, Bug, Send, Hourglass,
 } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { useFirestore } from '@/hooks/useFirestore'
@@ -27,7 +27,7 @@ import type { PendingAction } from '@/components/copilot/ProposedActions'
 import type {
   FamilyMember, CalendarEvent, Task, Chore, Plan, SmartList,
   AttentionReport, AttentionItem, AttentionBucket, PotentialProblem, Recommendation,
-  FamilyMemory, FamilyProfile, FamilyReminder, DayPlan, DayPlanItem,
+  FamilyMemory, FamilyProfile, FamilyReminder, DayPlan, DayPlanItem, ProspectiveTrigger,
 } from '@/lib/types'
 
 type EventContext = {
@@ -290,6 +290,15 @@ export function CommandCenter() {
   const { data: memories, create: createMemory, update: updateMemory } = useFirestore<FamilyMemory>('memories')
   const { data: profiles } = useFirestore<FamilyProfile>('profile')
   const { data: eventContexts, create: createEventContext } = useFirestore<EventContext>('eventContext')
+  const { data: allTriggers, update: updateTrigger } = useFirestore<ProspectiveTrigger>('triggers')
+  const armedTriggers = useMemo(
+    () => allTriggers.filter((t) => t.status === 'armed').sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+    [allTriggers]
+  )
+  const [triggersOpen, setTriggersOpen] = useState(false)
+  const resolveTrigger = useCallback(async (t: ProspectiveTrigger, status: 'done' | 'dismissed') => {
+    try { await updateTrigger({ ...t, status, resolvedAt: new Date().toISOString() }) } catch { /* stays armed */ }
+  }, [updateTrigger])
 
   const profile = profiles[0] ?? null
 
@@ -691,6 +700,7 @@ export function CommandCenter() {
     return {
       members, events: upcomingEvents, tasks: allTasks, chores, plans, lists, eventContext,
       profile, memories, inbox, tier,
+      triggers: allTriggers.filter((t) => t.status === 'armed'),
       currentUserEmail: user?.email ?? undefined,
       currentUserName: user?.displayName ?? undefined,
       now: new Date().toISOString(),
@@ -698,7 +708,7 @@ export function CommandCenter() {
       // Titles dismissed or already acted on — the engine must not re-surface them.
       suppressedTitles: [...Array.from(dismissedTitles), ...Array.from(completedTitles)],
     }
-  }, [members, events, tasks, reminders, chores, plans, lists, profile, memories, emailSuggestions, user, dismissedTitles, completedTitles])
+  }, [members, events, tasks, reminders, chores, plans, lists, profile, memories, emailSuggestions, user, dismissedTitles, completedTitles, allTriggers])
 
   const runEngine = useCallback(async (overrideContext?: { eventTitle: string; context: string }[], silent?: boolean) => {
     // Cancel any previous in-flight request before starting a new one.
@@ -1917,6 +1927,59 @@ export function CommandCenter() {
           </div>
         )}
       </section>
+
+      {/* WAITING FOR THE RIGHT MOMENT — armed prospective-memory triggers.
+          Dormant "when Y, do X" intentions; the radar fires them when their
+          condition goes live. This list exists so the user can see what the
+          app is holding for them (trust) and retire anything stale. */}
+      {armedTriggers.length > 0 && (
+        <section className="rounded-2xl bg-white shadow-card px-4 py-3">
+          <button
+            onClick={() => setTriggersOpen((v) => !v)}
+            className="w-full flex items-center gap-2 text-left"
+          >
+            <Hourglass size={14} className="text-teal-500 shrink-0" />
+            <span className="text-xs font-semibold text-slate-600">
+              Waiting for the right moment
+              <span className="ml-1.5 text-slate-400 font-normal">({armedTriggers.length})</span>
+            </span>
+            {triggersOpen
+              ? <ChevronDown size={14} className="ml-auto text-slate-300" />
+              : <ChevronRight size={14} className="ml-auto text-slate-300" />}
+          </button>
+          {triggersOpen && (
+            <div className="mt-2.5 space-y-2">
+              {armedTriggers.map((t) => (
+                <div key={t.id} className="flex items-start gap-2.5 rounded-xl bg-slate-50 px-3 py-2.5">
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm text-slate-800 leading-snug">{t.action}</p>
+                    <p className="text-[11px] text-slate-400 mt-0.5">When: {t.condition}</p>
+                  </div>
+                  <button
+                    onClick={() => resolveTrigger(t, 'done')}
+                    aria-label="Done"
+                    title="Done — it happened"
+                    className="p-1.5 rounded-lg text-green-600 hover:bg-green-50 transition-colors shrink-0"
+                  >
+                    <Check size={14} />
+                  </button>
+                  <button
+                    onClick={() => resolveTrigger(t, 'dismissed')}
+                    aria-label="Dismiss"
+                    title="Never mind"
+                    className="p-1.5 rounded-lg text-slate-300 hover:text-slate-500 hover:bg-slate-100 transition-colors shrink-0"
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
+              ))}
+              <p className="text-[10px] text-slate-400 leading-relaxed">
+                I&apos;ll bring each of these up when its moment arrives. Add more anytime — just capture &ldquo;next time X, remind me to Y&rdquo;.
+              </p>
+            </div>
+          )}
+        </section>
+      )}
 
       {/* POTENTIAL PROBLEMS — lazy on-demand section. Off the briefing's critical
           path: only generated (and only paid for) when the user taps Check/Refresh. */}

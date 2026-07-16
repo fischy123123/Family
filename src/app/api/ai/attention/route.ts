@@ -40,6 +40,7 @@ Sweep these lenses, in order of value:
 3. MISSING ARRANGEMENTS — a booked thing with no ride/sitter/prep arranged, an email signal never turned into a calendar entry, an obligation drifting toward a deadline.
 4. RELATIONSHIP MAINTENANCE — the partner or kid who's carried extra load or gotten the least attention lately, with one concrete gesture matched to what you know about them.
 5. GOING STALE — a commitment, thread, or intention that has sat untouched long enough that letting it slide is becoming a decision. Items flagged [AGING] in the context are candidates to question, not to repeat as priorities.
+6. LIVE TRIGGERS — scan any DORMANT INTENTIONS block. A trigger whose condition is now LIVE (its "when" is visible in the coming days' calendar/context) is a GUARANTEED radar item — the user explicitly asked to be reminded at this exact moment, so it outranks the hard filter above. title = the trigger's action; reason = a short "you asked to be reminded when <condition> — that's now"; nextMove = the concrete first step. Triggers whose condition is NOT live stay completely silent.
 
 EVERY item MUST include "nextMove": the concrete first action, ≤ 15 words, doable this week, specific to their real data ("Text Sarah's mom about carpool before Thursday", not "coordinate logistics"). "title" names the insight (≤ 9 words); "reason" ties it to their stated goals/values or the data that reveals it (≤ 20 words). Set "kind" ("action" for nearly all), "section"/"forEmails"/"assigneeEmail" per the usual rules, and "priority".
 

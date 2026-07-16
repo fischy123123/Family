@@ -1,14 +1,15 @@
 'use client'
 
 import { createContext, useContext, useState, useCallback, useRef, useEffect } from 'react'
-import { X, Sparkles, Camera, Loader2, Check, Calendar, ShoppingCart, ListTodo, Brain, CornerUpRight, Plane, ChevronDown } from 'lucide-react'
+import { X, Sparkles, Camera, Loader2, Check, Calendar, ShoppingCart, ListTodo, Brain, CornerUpRight, Plane, ChevronDown, Mic, Square, Hourglass } from 'lucide-react'
 import { useFamily } from '@/contexts/FamilyContext'
 import { useFirestore } from '@/hooks/useFirestore'
 import { useToast } from '@/contexts/ToastContext'
+import { useAuth } from '@/contexts/AuthContext'
 import { useGoogleTokens } from '@/hooks/useGoogleTokens'
 import { generateId } from '@/lib/utils'
 import { resolveMemberRef } from '@/lib/members'
-import type { FamilyMember, Task, CalendarEvent, SmartList, ExtractedOutcome, FamilyMemory, GroceryItem } from '@/lib/types'
+import type { FamilyMember, Task, CalendarEvent, SmartList, ExtractedOutcome, FamilyMemory, GroceryItem, ProspectiveTrigger } from '@/lib/types'
 
 interface GCalendar {
   id: string
@@ -32,6 +33,7 @@ const OUTCOME_META: Record<string, { icon: typeof Calendar; color: string; label
   packing_item: { icon: Plane, color: '#14B8A6', label: 'Packing' },
   memory: { icon: Brain, color: '#F59E0B', label: 'Memory' },
   follow_up: { icon: CornerUpRight, color: '#EC4899', label: 'Follow-up' },
+  trigger: { icon: Hourglass, color: '#0D9488', label: 'When the moment comes' },
 }
 
 export function CaptureProvider({ children }: { children: React.ReactNode }) {
@@ -54,8 +56,43 @@ export function CaptureProvider({ children }: { children: React.ReactNode }) {
   const { data: lists, update: updateList, create: createList } = useFirestore<SmartList>('lists')
   const { create: createMemory } = useFirestore<FamilyMemory>('memories')
   const { create: createGroceryItem } = useFirestore<GroceryItem>('groceryItems')
+  const { create: createTrigger } = useFirestore<ProspectiveTrigger>('triggers')
   const { toast } = useToast()
+  const { user } = useAuth()
   const { isConnected, getFreshTokens } = useGoogleTokens()
+
+  const [recording, setRecording] = useState(false)
+  const [transcribing, setTranscribing] = useState(false)
+  const recorderRef = useRef<MediaRecorder | null>(null)
+  const chunksRef = useRef<Blob[]>([])
+
+  // Voice brain-dump: hold a thought (or three minutes of them), we transcribe
+  // and extract. Same MediaRecorder → /api/transcribe pipeline as the coach.
+  async function startRecording() {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      const rec = new MediaRecorder(stream)
+      chunksRef.current = []
+      rec.ondataavailable = (e) => { if (e.data.size > 0) chunksRef.current.push(e.data) }
+      rec.onstop = async () => {
+        stream.getTracks().forEach((t) => t.stop())
+        const blob = new Blob(chunksRef.current, { type: rec.mimeType || 'audio/webm' })
+        setRecording(false)
+        if (blob.size === 0) return
+        setTranscribing(true)
+        try {
+          const fd = new FormData()
+          fd.append('file', blob, 'clip.webm')
+          const res = await fetch('/api/transcribe', { method: 'POST', body: fd })
+          const data = await res.json()
+          if (res.ok && data.text) setText((cur) => (cur.trim() ? `${cur.trim()} ${data.text}` : data.text))
+        } catch { /* keep typed text */ } finally { setTranscribing(false) }
+      }
+      recorderRef.current = rec
+      rec.start()
+      setRecording(true)
+    } catch { /* mic denied — typing still works */ }
+  }
 
   // Fetch writable Google Calendars once when connected and the panel opens.
   // Cached in state so reopening the panel within the same session is instant.
@@ -314,6 +351,17 @@ export function CaptureProvider({ children }: { children: React.ReactNode }) {
             items: [...target.items, { id: generateId(), name: o.title, isComplete: false, notes: o.notes }],
           })
         }
+      } else if (o.kind === 'trigger') {
+        // Prospective memory: sleeps until the radar sees the condition go live.
+        await createTrigger({
+          id: generateId(),
+          condition: o.condition ?? o.notes ?? 'when the time is right',
+          action: o.title,
+          ...(o.assignee ? { subjectNames: [o.assignee] } : {}),
+          ...(user?.email ? { createdBy: user.email } : {}),
+          status: 'armed',
+          createdAt: new Date().toISOString(),
+        } as ProspectiveTrigger)
       } else if (o.kind === 'memory') {
         // Durable family knowledge — stored at the family level so the
         // assistant reasons through it in every briefing.
@@ -377,10 +425,23 @@ export function CaptureProvider({ children }: { children: React.ReactNode }) {
                 <textarea
                   value={text}
                   onChange={(e) => setText(e.target.value)}
-                  placeholder="Speak or type… e.g. 'Soccer signup due Friday, bring snacks for 12 kids'"
+                  placeholder={transcribing
+                    ? 'Transcribing…'
+                    : recording
+                      ? 'Listening — ramble away, tap the square when done'
+                      : 'Brain-dump by voice or type… tasks, events, ‘next time we’re at Grandma’s, bring the dish’ — I’ll sort it all out'}
                   rows={3}
                   className="w-full input-premium px-4 py-3 pr-14 text-sm text-slate-800 resize-none"
                 />
+                <button
+                  onClick={recording ? () => recorderRef.current?.stop() : startRecording}
+                  aria-label={recording ? 'Stop recording' : 'Capture by voice'}
+                  className={`absolute top-3 right-3 w-9 h-9 rounded-xl flex items-center justify-center transition-colors ${
+                    recording ? 'bg-rose-500 text-white animate-pulse' : 'bg-blue-50 text-blue-600 hover:bg-blue-100'
+                  }`}
+                >
+                  {transcribing ? <Loader2 size={15} className="animate-spin" /> : recording ? <Square size={14} /> : <Mic size={15} />}
+                </button>
               </div>
 
               {/* Outcomes */}
@@ -408,7 +469,7 @@ export function CaptureProvider({ children }: { children: React.ReactNode }) {
                             <div className="flex-1 min-w-0">
                               <p className="text-sm font-medium text-slate-800 truncate">{o.title}</p>
                               <p className="text-xs text-slate-400">
-                                {meta.label}
+                                {o.kind === 'trigger' && o.condition ? `When: ${o.condition}` : meta.label}
                                 {o.date ? ` · ${new Date(o.date).toLocaleDateString()}` : ''}
                                 {(() => {
                                   const am = resolveMemberRef(members, o.assignee ?? o.assigneeEmail)
