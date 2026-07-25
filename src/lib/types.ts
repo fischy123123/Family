@@ -405,6 +405,31 @@ export interface AttentionItem {
   plate?: 'self' | 'others'     // which ownership tier produced it — tagged client-side from the scoped call that returned it
 }
 
+// ── CONNECTIONS — the connect-the-dots engine ────────────────────────────────
+// A Connection is an insight that only exists because two or more INDEPENDENT
+// sources were read together (an email + a goal, a calendar gap + a memory, a
+// trigger + a season). It carries the dots it joined so the reasoning is
+// inspectable — that is what makes it trustworthy rather than a "sprinkle" —
+// and 1-3 concrete moves so acting on it costs almost no executive function.
+export interface ConnectionMove {
+  label: string                 // the action, imperative and specific ("Text Sarah's mom about Thursday carpool")
+  detail?: string               // optional one-line how/why
+  kind?: 'plan' | 'task'        // where it should land by default
+  when?: string                 // 'today' | 'this-week' | ISO date
+  minutes?: number              // rough effort, so tiny wins are obvious
+}
+
+export interface Connection {
+  id: string
+  title: string                 // names the insight, ≤ 10 words
+  insight: string               // the synthesis — what joining these reveals (2-3 sentences)
+  dots: string[]                // the specific sources joined, each ≤ 10 words, prefixed by kind
+  why?: string                  // ties it to a stated goal or value
+  moves: ConnectionMove[]       // 1-3 concrete next actions
+  priority?: number             // 0-100
+  horizon?: 'today' | 'this-week' | 'this-month'
+}
+
 export interface PotentialProblem {
   id: string
   title: string                 // "No dinner planned for tonight"

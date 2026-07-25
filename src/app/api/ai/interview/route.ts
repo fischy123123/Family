@@ -33,6 +33,7 @@ Pick ONE of two kinds:
 • "learn" — new ground, OR an open check-in you can't reduce to a yes/no. Answered with a text box only. Highest-value unknowns, roughly in order: current work priorities & schedule shape; each key relationship and what "investing in it" looks like for them; what a good vs. bad day looks like; recurring weekly rhythm not on the calendar; what they're avoiding and why; each kid's current phase/needs; what they want more/less of. An open follow-up like "how has Maddie been doing since the grounding ended?" is a LEARN question, not a refresh.
 
 Rules for the question itself:
+- STRONGLY PREFER "learn". Default to it. The user's goal is to TEACH you their life, and a stream of "is this still true?" checks feels like admin, not progress. Only choose "refresh" when a specific fact is BOTH genuinely aging (flagged [AGING], or clearly time-sensitive like a work priority) AND consequential enough that acting on a stale version would visibly embarrass you. If in doubt, ask something new.
 - ONE question, conversational, specific, answerable in one or two sentences on a phone. Never a form, never multi-part ("and also...").
 - If it can't be answered with [Still true]/[It changed]/[No longer], it MUST be kind "learn" — do not label an open question "refresh".
 - Never ask anything already answered in the digest. Never repeat RECENTLY ASKED topics.

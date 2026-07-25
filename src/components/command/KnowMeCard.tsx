@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, useRef, useMemo } from 'react'
-import { MessageCircleQuestion, Send, Mic, Square, Loader2, Check, X, Sparkles, GraduationCap } from 'lucide-react'
+import { MessageCircleQuestion, Send, Mic, Square, Loader2, Check, X, Sparkles, GraduationCap, ChevronRight } from 'lucide-react'
 import { useFirestore } from '@/hooks/useFirestore'
 import { useToast } from '@/contexts/ToastContext'
 import { useKnowledgeOps, type IngestOp } from '@/hooks/useKnowledgeOps'
@@ -240,25 +240,15 @@ export function KnowMeCard() {
         {question?.kind === 'refresh' && (
           <span className="text-[10px] font-bold uppercase tracking-wider text-amber-500 bg-amber-50 px-1.5 py-0.5 rounded-full">Still true?</span>
         )}
-        <div className="ml-auto flex items-center gap-1">
+        {question && (
           <button
-            onClick={() => setDeepDive(true)}
-            aria-label="Start a deep-dive session"
-            title="Deep dive — a real training session"
-            className="p-1 text-teal-500 hover:text-teal-700 transition-colors"
+            onClick={() => finishQuestion(null)}
+            aria-label="Skip"
+            className="ml-auto p-1 -m-1 text-slate-300 hover:text-slate-500 transition-colors"
           >
-            <GraduationCap size={15} />
+            <X size={14} />
           </button>
-          {question && (
-            <button
-              onClick={() => finishQuestion(null)}
-              aria-label="Skip"
-              className="p-1 text-slate-300 hover:text-slate-500 transition-colors"
-            >
-              <X size={14} />
-            </button>
-          )}
-        </div>
+        )}
       </div>
 
       {fetching ? (
@@ -334,6 +324,20 @@ export function KnowMeCard() {
           )}
         </div>
       ) : null}
+
+      {/* Always visible, always labeled. One question a day is a trickle; this
+          is the door to a real sit-down where you teach it everything at once. */}
+      <button
+        onClick={() => setDeepDive(true)}
+        className="mt-3 w-full flex items-center gap-2.5 rounded-xl border border-teal-200 bg-teal-50/60 px-3 py-2.5 text-left hover:bg-teal-50 transition-colors"
+      >
+        <GraduationCap size={16} className="text-teal-600 shrink-0" />
+        <span className="flex-1 min-w-0">
+          <span className="block text-xs font-bold text-teal-800">Train me on your life</span>
+          <span className="block text-[11px] text-teal-600/80">A real 15–60 min conversation — I ask, you talk</span>
+        </span>
+        <ChevronRight size={15} className="text-teal-400 shrink-0" />
+      </button>
     </section>
     {sheet}
     </>

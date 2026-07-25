@@ -66,7 +66,7 @@ export default function SetupPage() {
         setError('No family found with that code. Check with your family member.')
         setLoading(false)
       } else {
-        router.replace('/dashboard')
+        router.replace('/command')
       }
     } catch {
       setError('Something went wrong. Check your Firebase config and try again.')

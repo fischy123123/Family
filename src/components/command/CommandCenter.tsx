@@ -8,7 +8,7 @@ import {
 import { db } from '@/lib/firebase'
 import {
   RefreshCw, AlertTriangle, Lightbulb, Clock,
-  Calendar as CalIcon, Sparkles, Check, X, MessageCircle, Users, Bookmark, Plus, ChevronDown, ChevronRight, Bug, Send, Hourglass,
+  Calendar as CalIcon, Sparkles, Check, X, MessageCircle, Users, Bookmark, Plus, ChevronDown, ChevronRight, Bug, Send, Hourglass, Mail,
 } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { useFirestore } from '@/hooks/useFirestore'
@@ -28,7 +28,14 @@ import type {
   FamilyMember, CalendarEvent, Task, Chore, Plan, SmartList,
   AttentionReport, AttentionItem, AttentionBucket, PotentialProblem, Recommendation,
   FamilyMemory, FamilyProfile, FamilyReminder, DayPlan, DayPlanItem, ProspectiveTrigger,
+  FamilyGoal, Connection, ConnectionMove,
 } from '@/lib/types'
+
+// Local date key (never UTC — a plan id must match the user's actual day).
+function todayDateStr(): string {
+  const d = new Date()
+  return `${d.getFullYear()}-${`${d.getMonth() + 1}`.padStart(2, '0')}-${`${d.getDate()}`.padStart(2, '0')}`
+}
 
 type EventContext = {
   id: string // == event id
@@ -46,15 +53,6 @@ type EmailSuggestion = {
   sourceEmailSubject: string
   messageId?: string
   forNames?: string[]
-}
-
-const BUCKET_PRIORITY: Record<AttentionBucket, number> = { now: 0, next: 1, later: 2, upcoming: 3 }
-
-type ItemGroup = {
-  key: string
-  groupTitle: string | null  // non-null when 2+ items share a groupKey
-  items: AttentionItem[]
-  bucket: AttentionBucket    // most-urgent bucket across items
 }
 
 // A single scoped call to the attention engine. Reads the NDJSON stream,
@@ -128,37 +126,6 @@ async function streamEngine(
   if (!final) throw new Error('Could not load your briefing. Tap refresh to try again.')
   return final
 }
-
-// Turn a lowercase-hyphenated groupKey slug into a readable title, as a fallback
-// for older/cached reports generated before the model emitted a groupTitle.
-function prettifyGroupKey(slug: string): string {
-  return slug
-    .replace(/[-_]+/g, ' ')
-    .trim()
-    .replace(/\b\w/g, (c) => c.toUpperCase())
-}
-
-function groupItems(items: AttentionItem[]): ItemGroup[] {
-  const byKey = new Map<string, AttentionItem[]>()
-  for (const item of items) {
-    const k = item.groupKey ?? `__solo__${item.id}`
-    byKey.set(k, [...(byKey.get(k) ?? []), item])
-  }
-  return Array.from(byKey.entries()).map(([key, groupedItems]) => {
-    const bucket = groupedItems.reduce<AttentionBucket>((best, i) => (
-      BUCKET_PRIORITY[i.bucket] < BUCKET_PRIORITY[best] ? i.bucket : best
-    ), groupedItems[0].bucket)
-    const isRealGroup = !!groupedItems[0].groupKey && groupedItems.length > 1
-    // Prefer the model's human-readable groupTitle; fall back to prettifying the
-    // slug so a raw key like "maddie-therapy-tue" never leaks into the UI.
-    const titled = groupedItems.find((i) => i.groupTitle?.trim())?.groupTitle?.trim()
-    const groupTitle = isRealGroup
-      ? (titled || prettifyGroupKey(groupedItems[0].groupKey!))
-      : null
-    return { key, groupTitle, items: groupedItems, bucket }
-  })
-}
-
 // ── Local cache (stale-while-revalidate) ────────────────────
 // Everything that gates the page is cached per-family so returning visits
 // render instantly and only update in the background.
@@ -291,6 +258,8 @@ export function CommandCenter() {
   const { data: profiles } = useFirestore<FamilyProfile>('profile')
   const { data: eventContexts, create: createEventContext } = useFirestore<EventContext>('eventContext')
   const { data: allTriggers, update: updateTrigger } = useFirestore<ProspectiveTrigger>('triggers')
+  const { data: goals } = useFirestore<FamilyGoal>('goals')
+  const { data: radarDocs } = useFirestore<{ id: string; connections?: Connection[]; generatedAt?: string }>('radar')
   const armedTriggers = useMemo(
     () => allTriggers.filter((t) => t.status === 'armed').sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
     [allTriggers]
@@ -393,6 +362,11 @@ export function CommandCenter() {
   const [completedTitles, setCompletedTitles] = useState<Set<string>>(new Set())
   // When a user dismisses something, offer to teach the assistant once.
   const [teachPrompt, setTeachPrompt] = useState<{ title: string; reason: string } | null>(null)
+  // Connection moves already acted on this session, keyed "connId::label", so a
+  // card visibly shows progress instead of re-offering what you just did.
+  const [doneMoves, setDoneMoves] = useState<Set<string>>(new Set())
+  // Sanitised signed-in email — the doc key for per-person plans and sweeps.
+  const myPlanKey = user?.email ? user.email.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase() : null
   // Optimistic assignment overrides keyed by item title, so the "for" / responsible
   // chips update instantly on assign without waiting for the engine to re-run.
   // Keyed by member ID (not email) because kids/pets often have no email — emails
@@ -1331,140 +1305,6 @@ export function CommandCenter() {
     .filter((e) => new Date(e.start).toDateString() === new Date().toDateString())
     .sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime())
 
-  // Resolve per-item display props (members, task backing) once, then reuse for
-  // both grouped and solo AttentionCard rendering.
-  type ResolvedItem = {
-    item: AttentionItem
-    responsible?: FamilyMember
-    forMembers: FamilyMember[]
-    backedByRealItem: boolean
-    isRecurring: boolean
-  }
-  function resolveItem(item: AttentionItem): ResolvedItem {
-    const ov = assignmentOverrides[item.title]
-    const byId = (id?: string) => members.find((m) => m.id === id)
-
-    // Find the backing calendar event (if any) once, so we can derive both
-    // backedByRealItem and isRecurring from the same lookup.
-    const backedEvent = item.sourceType === 'event' && item.sourceId
-      ? localEvents.find((e) => e.id === item.sourceId)
-      : undefined
-    const backedByRealItem = !!item.sourceId && (
-      backedEvent !== undefined
-      || tasks.some((t) => t.id === item.sourceId)
-      || reminders.some((r) => r.id === item.sourceId)
-    )
-    const isRecurring = !!backedEvent?.recurringEventId
-
-    // Priority 1: optimistic override set immediately when the user assigns
-    if (ov) {
-      return {
-        item,
-        responsible: byId(ov.responsibleId),
-        forMembers: (ov.forIds ?? []).map(byId).filter(Boolean) as FamilyMember[],
-        backedByRealItem,
-        isRecurring,
-      }
-    }
-
-    // Priority 2: read from Firestore entity when sourceId links us to one
-    if (item.sourceId) {
-      if (item.sourceType === 'event') {
-        if (backedEvent && ((backedEvent.forIds?.length ?? 0) > 0 || backedEvent.assigneeId)) {
-          return {
-            item,
-            responsible: byId(backedEvent.assigneeId),
-            forMembers: (backedEvent.forIds ?? []).map((id) => byId(id)).filter(Boolean) as FamilyMember[],
-            backedByRealItem: true,
-            isRecurring,
-          }
-        }
-      } else {
-        // Keep task and reminder as separate typed variables — forIds only exists on Task
-        const t = tasks.find((x) => x.id === item.sourceId)
-        const r = !t ? reminders.find((x) => x.id === item.sourceId) : undefined
-        const entity = t ?? r
-        if (entity && (entity.assigneeId || entity.assigneeEmail || t?.forIds?.length)) {
-          return {
-            item,
-            responsible: entity.assigneeId ? byId(entity.assigneeId) : (resolveMemberRef(members, entity.assigneeEmail) ?? undefined),
-            forMembers: (t?.forIds ?? []).map((id: string) => byId(id)).filter(Boolean) as FamilyMember[],
-            backedByRealItem: true,
-            isRecurring,
-          }
-        }
-      }
-    }
-
-    // Priority 3/4: fall back to AI output (hint when entity has no assignment yet; sole source for inferred items)
-    return {
-      item,
-      responsible: resolveMemberRef(members, item.assigneeEmail) ?? undefined,
-      forMembers: (item.forEmails ?? []).map((ref) => resolveMemberRef(members, ref)).filter(Boolean) as FamilyMember[],
-      backedByRealItem,
-      isRecurring,
-    }
-  }
-
-  // Render a single ItemGroup as either a GroupedAttentionCard or a solo AttentionCard/TeachPrompt.
-  function renderGroup(group: ItemGroup, color: string) {
-    if (group.groupTitle) {
-      const resolvedItems = group.items.map(resolveItem)
-      return (
-        <GroupedAttentionCard
-          key={group.key}
-          groupTitle={group.groupTitle}
-          resolvedItems={resolvedItems}
-          accent={color}
-          allMembers={members}
-          onCompleteItem={(item) => completeTaskFromItem(item)}
-          onDismissItem={(title) => dismissItem(title)}
-          onSaveTaskItem={(title, reason) => saveItemAsTask(title, reason)}
-          onAssignItem={(item, f, r) => assignItem(item, f, r)}
-          debugMode={debugMode}
-          onTraceItem={traceItem}
-          currentGreeting={report?.greeting ?? ''}
-          allGroupItems={group.items}
-          cardMembers={members}
-          onPatch={patchReport}
-        />
-      )
-    }
-    const item = group.items[0]
-    if (teachPrompt?.title === item.title) {
-      return (
-        <TeachPrompt
-          key={item.id}
-          title={item.title}
-          onTeach={(feedback) => teachAssistant(item.title, feedback)}
-          onDismiss={() => setTeachPrompt(null)}
-          onUndo={() => undoDismiss(item.title)}
-        />
-      )
-    }
-    const { responsible, forMembers, backedByRealItem, isRecurring } = resolveItem(item)
-    return (
-      <AttentionCard
-        key={item.id}
-        item={item}
-        accent={color}
-        allMembers={members}
-        responsible={responsible}
-        forMembers={forMembers}
-        backedByRealItem={backedByRealItem}
-        isRecurring={isRecurring}
-        onComplete={() => completeTaskFromItem(item)}
-        onDismiss={() => dismissItem(item.title)}
-        onSaveTask={() => saveItemAsTask(item.title, item.reason)}
-        onAssign={(f, r) => assignItem(item, f, r)}
-        debugMode={debugMode}
-        onTrace={() => traceItem(item)}
-        currentGreeting={report?.greeting ?? ''}
-        cardMembers={members}
-        onPatch={patchReport}
-      />
-    )
-  }
 
   const selfMember = useMemo(
     () => members.find((m) => m.email?.toLowerCase() === user?.email?.toLowerCase()) ?? null,
@@ -1540,52 +1380,157 @@ export function CommandCenter() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [members, todayEvents, selfMember?.id])
 
-  // ON YOUR RADAR: the one section where the model gets to talk. The radar
-  // scope's contract is blind-spots only — things the user is probably NOT
-  // already thinking about, each with a concrete next move.
-  const radarItems = useMemo(() => {
-    return (report?.items ?? []).filter((i) => showInList(i.title)).slice(0, 5)
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [report?.items, dismissedTitles, completedTitles, teachPrompt])
+  // FROM YOUR EMAIL: inbox signals that haven't been dismissed or acted on.
+  // Capped tight — this is a triage queue, not an inbox mirror.
+  const inboxSignals = useMemo(
+    () => emailSuggestions.filter((s) => showInList(s.title)).slice(0, 5),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [emailSuggestions, dismissedTitles, completedTitles],
+  )
 
-  // "Plan it" on a radar card: drop the insight into today's plan as a flexible
-  // move (the insight is the why, the nextMove is the tiny first step). Falls
-  // back to a task when there's no committed plan for today yet. Either way the
-  // card is marked handled so it doesn't linger or resurface.
-  async function planRadarItem(item: AttentionItem) {
-    const myKey = user?.email?.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase()
-    const d = new Date()
-    const todayId = `${myKey}_${d.getFullYear()}-${`${d.getMonth() + 1}`.padStart(2, '0')}-${`${d.getDate()}`.padStart(2, '0')}`
-    const plan = myKey ? homeDayPlans.find((p) => p.id === todayId && p.status !== 'done') : undefined
+  async function planEmailSignal(s: EmailSuggestion) {
+    const plan = myPlanKey
+      ? homeDayPlans.find((p) => p.id === `${myPlanKey}_${todayDateStr()}` && p.status !== 'done')
+      : undefined
     if (plan) {
-      const move: DayPlanItem = {
+      const item: DayPlanItem = {
         id: generateId(),
-        title: item.title,
-        why: item.reason || undefined,
-        firstStep: item.nextMove || undefined,
+        title: s.title,
+        why: s.sourceEmailSubject ? `From email: ${s.sourceEmailSubject}` : undefined,
+        firstStep: s.notes || undefined,
         kind: 'move',
         done: false,
       }
-      await updateHomeDayPlan({ ...plan, items: [...plan.items, move], updatedAt: new Date().toISOString() })
-      toast(`Added to today's plan`, 'success')
+      await updateHomeDayPlan({ ...plan, items: [...plan.items, item], updatedAt: new Date().toISOString() })
+      toast("Added to today's plan", 'success')
     } else {
-      await saveItemAsTask(item.title, [item.reason, item.nextMove ? `Next: ${item.nextMove}` : ''].filter(Boolean).join(' — '))
+      await saveItemAsTask(s.title, [s.notes, s.sourceEmailSubject && `From: ${s.sourceEmailSubject}`].filter(Boolean).join(' — '), s.forNames)
     }
+    markHandled(s.title)
+  }
+
+  async function taskEmailSignal(s: EmailSuggestion) {
+    await saveItemAsTask(s.title, [s.notes, s.sourceEmailSubject && `From: ${s.sourceEmailSubject}`].filter(Boolean).join(' — '), s.forNames)
+    markHandled(s.title)
+  }
+
+  function markHandled(title: string) {
     setCompletedTitles((prev) => {
-      const next = new Set(prev).add(item.title)
+      const next = new Set(prev).add(title)
       writeCache(completedKey, Array.from(next))
       return next
     })
   }
 
-  async function taskRadarItem(item: AttentionItem) {
-    await saveItemAsTask(item.title, [item.reason, item.nextMove ? `Next: ${item.nextMove}` : ''].filter(Boolean).join(' — '))
-    setCompletedTitles((prev) => {
-      const next = new Set(prev).add(item.title)
-      writeCache(completedKey, Array.from(next))
-      return next
-    })
+  // ── CONNECTIONS — the connect-the-dots engine ────────────────────────────
+  // The one section where the model genuinely reasons. Its contract is strict:
+  // every card must join 2+ independent sources and show which ones, so the
+  // insight is inspectable rather than another unexplained "sprinkle".
+  const [connections, setConnections] = useState<Connection[]>([])
+  const [connectAt, setConnectAt] = useState<string | null>(null)
+  const [connectLoading, setConnectLoading] = useState(false)
+  const [connectError, setConnectError] = useState<string | null>(null)
+  const connectAbortRef = useRef<AbortController | null>(null)
+
+  const visibleConnections = useMemo(
+    () => connections.filter((c) => showInList(c.title)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [connections, dismissedTitles, completedTitles],
+  )
+
+  // Restore the last sweep from Firestore so the section always has content
+  // without spending a call on every cold load.
+  useEffect(() => {
+    if (!myPlanKey) return
+    const saved = radarDocs.find((d) => d.id === myPlanKey)
+    if (saved?.connections?.length && connections.length === 0) {
+      setConnections(saved.connections)
+      setConnectAt(saved.generatedAt ?? null)
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [radarDocs, myPlanKey])
+
+  const runConnect = useCallback(async () => {
+    if (connectLoading) return
+    connectAbortRef.current?.abort()
+    const controller = new AbortController()
+    connectAbortRef.current = controller
+    setConnectLoading(true)
+    setConnectError(null)
+    try {
+      const body = {
+        ...buildEngineBody(eventContexts.map((e) => ({ eventTitle: e.eventTitle, context: e.context })), 'deep'),
+        goals: goals.filter((g) => g.active).map((g) => ({ text: g.text, area: g.area, cadence: g.cadence, why: g.why })),
+        maxItems: 5,
+      }
+      const res = await fetch('/api/ai/connect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error ?? 'Could not connect the dots')
+      const next: Connection[] = data.connections ?? []
+      setConnections(next)
+      setConnectAt(data.generatedAt ?? new Date().toISOString())
+      // Persist so the section survives reloads, and so the day planner can
+      // fold the same thinking into tomorrow's draft.
+      if (familyId && myPlanKey) {
+        try {
+          await setDoc(doc(db, 'families', familyId, 'radar', myPlanKey), {
+            connections: next,
+            items: next.slice(0, 5).map((c) => ({
+              title: c.title,
+              reason: c.insight,
+              nextMove: c.moves[0]?.label ?? '',
+            })),
+            generatedAt: data.generatedAt ?? new Date().toISOString(),
+          })
+        } catch { /* non-fatal — the section still renders from state */ }
+      }
+    } catch (e: unknown) {
+      if (e instanceof Error && e.name === 'AbortError') return
+      setConnectError(e instanceof Error ? e.message : 'Could not connect the dots')
+    } finally {
+      setConnectLoading(false)
+    }
+  }, [connectLoading, buildEngineBody, eventContexts, goals, familyId, myPlanKey])
+
+  // Acting on a move is the whole point — one tap, no decisions. "Plan it"
+  // drops it into today's plan (falling back to a task when no plan exists);
+  // "Save as task" always makes an open loop.
+  async function planMove(conn: Connection, move: ConnectionMove) {
+    const plan = myPlanKey
+      ? homeDayPlans.find((p) => p.id === `${myPlanKey}_${todayDateStr()}` && p.status !== 'done')
+      : undefined
+    if (plan && move.kind !== 'task') {
+      const item: DayPlanItem = {
+        id: generateId(),
+        title: move.label,
+        why: conn.title,
+        firstStep: move.detail || undefined,
+        kind: 'move',
+        done: false,
+      }
+      await updateHomeDayPlan({ ...plan, items: [...plan.items, item], updatedAt: new Date().toISOString() })
+      toast("Added to today's plan", 'success')
+    } else {
+      await saveItemAsTask(move.label, [conn.title, move.detail].filter(Boolean).join(' — '))
+    }
+    markMoveDone(conn, move)
   }
+
+  async function taskMove(conn: Connection, move: ConnectionMove) {
+    await saveItemAsTask(move.label, [conn.title, move.detail].filter(Boolean).join(' — '))
+    markMoveDone(conn, move)
+  }
+
+  // Strike a move off locally so the card shows progress without re-sweeping.
+  function markMoveDone(conn: Connection, move: ConnectionMove) {
+    setDoneMoves((prev) => new Set(prev).add(`${conn.id}::${move.label}`))
+  }
+
 
   const busy = loading || refreshing
 
@@ -1613,23 +1558,19 @@ export function CommandCenter() {
         <div className="flex items-center gap-2">
           <button
             onClick={() => {
-              // Refresh = pull fresh calendar (full re-sync) AND regenerate.
+              // Refresh = pull a fresh calendar (full re-sync) and re-run the
+              // Connections sweep, which is the screen's one AI surface now.
               setPendingReport(null)
-              forceDirectRef.current = true
               forceFullSyncRef.current = true
               setCalSyncKey((k) => k + 1)
-              runEngine(undefined, !!report)
+              runConnect()
             }}
-            disabled={loading || calendarFetching}
-            title={loading || calendarFetching ? 'Loading calendar…' : refreshing ? 'Updating — tap to refresh now' : 'Refresh briefing'}
-            className={`mt-1 p-2.5 rounded-xl border shadow-card transition-all disabled:opacity-60 ${
-              refreshing
-                ? 'bg-blue-50 border-blue-200 text-blue-500 hover:bg-blue-100'
-                : 'bg-white border-slate-200 text-slate-500 hover:text-blue-600 hover:border-blue-200'
-            }`}
+            disabled={connectLoading || calendarFetching}
+            title={calendarFetching ? 'Loading calendar…' : connectLoading ? 'Connecting the dots…' : 'Refresh calendar and connections'}
+            className="mt-1 p-2.5 rounded-xl border shadow-card transition-all disabled:opacity-60 bg-white border-slate-200 text-slate-500 hover:text-blue-600 hover:border-blue-200"
             aria-label="Refresh"
           >
-            <RefreshCw size={16} className={busy ? 'animate-spin' : ''} />
+            <RefreshCw size={16} className={connectLoading || calendarFetching ? 'animate-spin' : ''} />
           </button>
         </div>
       </div>
@@ -1776,6 +1717,66 @@ export function CommandCenter() {
         )}
       </section>
 
+      {/* FROM YOUR EMAIL — signals the inbox scan already found. These used to
+          feed the AI silently and never be shown; surfacing them means the
+          inbox stops being a place things go to be forgotten. */}
+      {inboxSignals.length > 0 && (
+        <section className="rounded-2xl bg-white shadow-card p-4">
+          <div className="flex items-center gap-2 mb-1">
+            <Mail size={15} className="text-blue-500" />
+            <h2 className="text-sm font-bold text-slate-800">From your email</h2>
+            <span className="ml-auto text-[11px] text-slate-400">{inboxSignals.length} to triage</span>
+          </div>
+          <p className="text-[11px] text-slate-400 mb-3">Things I spotted in your inbox that nothing has been done with yet.</p>
+          <div className="space-y-2">
+            {inboxSignals.map((s, i) => (
+              <div key={s.messageId ?? `${s.title}-${i}`} className="rounded-xl bg-slate-50 px-3 py-2.5">
+                <div className="flex items-start gap-2">
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm text-slate-800 leading-snug">{s.title}</p>
+                    <p className="text-[11px] text-slate-400 mt-0.5 truncate">
+                      {s.date ? `${new Date(s.date).toLocaleDateString([], { month: 'short', day: 'numeric' })} · ` : ''}
+                      {s.sourceEmailSubject}
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => dismissItem(s.title)}
+                    aria-label="Dismiss"
+                    className="p-1 -m-1 text-slate-300 hover:text-slate-500 transition-colors shrink-0"
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
+                <div className="flex items-center gap-1.5 mt-2">
+                  <button
+                    onClick={() => planEmailSignal(s)}
+                    className="flex-1 py-1.5 rounded-lg bg-blue-600 text-white text-[11px] font-semibold hover:bg-blue-700 transition-colors"
+                  >
+                    Plan it
+                  </button>
+                  <button
+                    onClick={() => taskEmailSignal(s)}
+                    className="flex-1 py-1.5 rounded-lg bg-slate-100 text-slate-600 text-[11px] font-semibold hover:bg-slate-200 transition-colors"
+                  >
+                    Save as task
+                  </button>
+                  {s.messageId && (
+                    <a
+                      href={`https://mail.google.com/mail/u/0/#all/${s.messageId}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="px-2.5 py-1.5 rounded-lg bg-slate-100 text-slate-500 text-[11px] font-semibold hover:bg-slate-200 transition-colors"
+                    >
+                      Open
+                    </a>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
       {/* FAMILY RADAR — who's doing what today, one row per person. */}
       <section className="rounded-2xl bg-white shadow-card p-4">
         <div className="flex items-center gap-2 mb-3">
@@ -1822,104 +1823,156 @@ export function CommandCenter() {
           having to think about "what should I tell it". */}
       <KnowMeCard />
 
-      {/* ON YOUR RADAR (AI) — the one box where the model speaks: blind spots
-          only, each with a concrete next move. Clearly marked, easy to ignore. */}
+      {/* CONNECTIONS (AI) — the one box where the model genuinely reasons.
+          Every card joins 2+ independent sources, shows which ones it used,
+          and carries moves small enough to start without deciding anything. */}
       <section className="rounded-2xl p-4 bg-violet-50/60 border border-violet-100">
-        <div className="flex items-center gap-2 mb-3">
+        <div className="flex items-center gap-2 mb-1">
           <Sparkles size={15} className="text-violet-500" />
-          <h2 className="text-sm font-bold text-slate-800">On your radar</h2>
+          <h2 className="text-sm font-bold text-slate-800">Connections</h2>
           <span className="text-[10px] font-bold uppercase tracking-wider text-violet-400 bg-violet-100 px-1.5 py-0.5 rounded-full">AI</span>
-          {report?.generatedAt && !loading && (
-            <span className="ml-auto text-[10px] text-slate-400">
-              {new Date(report.generatedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
-            </span>
-          )}
+          <div className="ml-auto flex items-center gap-2">
+            {connectAt && !connectLoading && (
+              <span className="text-[10px] text-slate-400">
+                {new Date(connectAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
+              </span>
+            )}
+            {connections.length > 0 && !connectLoading && (
+              <button
+                onClick={runConnect}
+                aria-label="Find new connections"
+                className="text-[11px] font-semibold text-violet-600 hover:text-violet-800 transition-colors"
+              >
+                Refresh
+              </button>
+            )}
+          </div>
         </div>
-        <p className="text-[11px] text-slate-400 -mt-2 mb-3">Things you&apos;re probably not thinking about — each with a way forward.</p>
+        <p className="text-[11px] text-slate-400 mb-3">
+          Dots I joined across your email, calendar, goals and what I know about you — that you&apos;d have to hold in your head otherwise.
+        </p>
 
-        {engineError && !loading ? (
+        {connectError && !connectLoading ? (
           <div className="flex items-start gap-3">
             <AlertTriangle size={15} className="text-red-500 mt-0.5 shrink-0" />
-            <div className="flex-1 min-w-0">
-              <p className="text-xs text-red-600">{engineError}</p>
-            </div>
+            <p className="flex-1 min-w-0 text-xs text-red-600">{connectError}</p>
             <button
-              onClick={() => { setEngineError(null); runEngine(undefined, false) }}
+              onClick={() => { setConnectError(null); runConnect() }}
               className="shrink-0 text-xs font-semibold text-red-600 hover:text-red-800 px-2.5 py-1 rounded-lg hover:bg-red-100 transition-colors"
             >
               Retry
             </button>
           </div>
-        ) : loading ? (
-          <div className="space-y-2">
-            {streamingItems.slice(0, 5).map((it) => (
-              <div key={it.id} className="rounded-xl bg-white/80 p-3">
-                <p className="text-sm font-medium text-slate-800">{it.title}</p>
-                {it.reason && <p className="text-xs text-slate-400 mt-0.5">{it.reason}</p>}
-                {it.nextMove && <p className="text-xs text-violet-600 mt-1"><span className="font-semibold">Next:</span> {it.nextMove}</p>}
-              </div>
-            ))}
-            <div className="flex items-center gap-2 text-xs text-slate-400 py-1">
-              <span className="w-3.5 h-3.5 border-2 border-violet-300 border-t-transparent rounded-full animate-spin" />
-              Sweeping for blind spots…
-            </div>
+        ) : connectLoading ? (
+          <div className="flex items-center gap-2 text-xs text-slate-500 py-2">
+            <span className="w-3.5 h-3.5 border-2 border-violet-300 border-t-transparent rounded-full animate-spin" />
+            Reading everything together — email, calendar, goals, what I know about you…
           </div>
-        ) : !report ? (
+        ) : visibleConnections.length === 0 ? (
           <div className="flex items-center justify-between gap-3">
-            <p className="text-xs text-slate-500">I&apos;ll sweep everything — calendar, tasks, goals, email signals — for what&apos;s slipping through.</p>
+            <p className="text-xs text-slate-500">
+              {connections.length === 0
+                ? 'Let me read everything at once and find what only shows up when the pieces are put together.'
+                : 'Nothing new since the last sweep.'}
+            </p>
             <button
-              onClick={() => { forceDirectRef.current = true; runEngine(undefined, false) }}
+              onClick={runConnect}
               className="shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-violet-600 text-white text-xs font-semibold hover:bg-violet-700 transition-colors"
             >
-              <Sparkles size={12} /> Sweep
+              <Sparkles size={12} /> Connect the dots
             </button>
           </div>
-        ) : radarItems.length === 0 ? (
-          <p className="text-xs text-slate-400">Radar&apos;s clear — nothing slipping through that your plan doesn&apos;t already cover.</p>
         ) : (
-          <div className="space-y-2 stagger-children">
-            {radarItems.map((item) => (
-              teachPrompt?.title === item.title ? (
+          <div className="space-y-2.5 stagger-children">
+            {visibleConnections.map((conn) => (
+              teachPrompt?.title === conn.title ? (
                 <TeachPrompt
-                  key={item.id}
-                  title={item.title}
-                  onTeach={(feedback) => teachAssistant(item.title, feedback)}
+                  key={conn.id}
+                  title={conn.title}
+                  onTeach={(feedback) => teachAssistant(conn.title, feedback)}
                   onDismiss={() => setTeachPrompt(null)}
-                  onUndo={() => undoDismiss(item.title)}
+                  onUndo={() => undoDismiss(conn.title)}
                 />
               ) : (
-                <div key={item.id} className="rounded-xl bg-white p-3.5 shadow-card">
+                <div key={conn.id} className="rounded-xl bg-white p-3.5 shadow-card">
                   <div className="flex items-start gap-2">
                     <div className="flex-1 min-w-0">
-                      <p className="text-sm font-semibold text-slate-900 leading-snug">{item.title}</p>
-                      {item.reason && <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">{item.reason}</p>}
+                      <p className="text-sm font-semibold text-slate-900 leading-snug">{conn.title}</p>
+                      <p className="text-xs text-slate-600 mt-1 leading-relaxed">{conn.insight}</p>
                     </div>
                     <button
-                      onClick={() => dismissItem(item.title)}
+                      onClick={() => dismissItem(conn.title)}
                       aria-label="Dismiss"
                       className="p-1 -m-1 text-slate-300 hover:text-slate-500 transition-colors shrink-0"
                     >
                       <X size={14} />
                     </button>
                   </div>
-                  {item.nextMove && (
-                    <div className="mt-2 rounded-lg bg-violet-50 border border-violet-100 px-2.5 py-1.5">
-                      <p className="text-xs text-violet-800"><span className="font-bold text-violet-500 uppercase text-[10px] mr-1">Next</span>{item.nextMove}</p>
-                    </div>
+
+                  {/* The evidence. This is what makes an insight checkable
+                      instead of something the AI just asserted. */}
+                  <div className="flex flex-wrap gap-1 mt-2.5">
+                    {conn.dots.map((d, i) => (
+                      <span
+                        key={i}
+                        className="inline-flex items-center text-[10px] leading-tight text-slate-500 bg-slate-100 rounded-md px-1.5 py-1"
+                      >
+                        {d}
+                      </span>
+                    ))}
+                  </div>
+
+                  {conn.why && (
+                    <p className="text-[11px] text-violet-600/90 mt-2 italic">{conn.why}</p>
                   )}
-                  <div className="flex items-center gap-2 mt-2.5">
-                    <button
-                      onClick={() => planRadarItem(item)}
-                      className="flex-1 py-1.5 rounded-lg bg-violet-600 text-white text-xs font-semibold hover:bg-violet-700 transition-colors"
-                    >
-                      Add to today&apos;s plan
-                    </button>
-                    <button
-                      onClick={() => taskRadarItem(item)}
-                      className="flex-1 py-1.5 rounded-lg bg-slate-100 text-slate-600 text-xs font-semibold hover:bg-slate-200 transition-colors"
-                    >
-                      Save as task
-                    </button>
+
+                  {/* Moves — the easiest one first. */}
+                  <div className="mt-2.5 space-y-1.5">
+                    {conn.moves.map((m, i) => {
+                      const done = doneMoves.has(`${conn.id}::${m.label}`)
+                      return (
+                        <div
+                          key={i}
+                          className={cn(
+                            'flex items-center gap-2 rounded-lg px-2.5 py-2 border transition-colors',
+                            done ? 'bg-green-50 border-green-100' : 'bg-violet-50 border-violet-100',
+                          )}
+                        >
+                          <div className="flex-1 min-w-0">
+                            <p className={cn('text-xs leading-snug', done ? 'text-green-700 line-through' : 'text-violet-900 font-medium')}>
+                              {m.label}
+                            </p>
+                            {(m.detail || m.minutes) && !done && (
+                              <p className="text-[10px] text-violet-500 mt-0.5">
+                                {m.minutes ? `~${m.minutes} min` : ''}{m.minutes && m.detail ? ' · ' : ''}{m.detail ?? ''}
+                              </p>
+                            )}
+                          </div>
+                          {done ? (
+                            <Check size={14} className="text-green-600 shrink-0" />
+                          ) : (
+                            <div className="flex items-center gap-1 shrink-0">
+                              <button
+                                onClick={() => planMove(conn, m)}
+                                className="px-2 py-1 rounded-md bg-violet-600 text-white text-[11px] font-semibold hover:bg-violet-700 transition-colors"
+                              >
+                                {m.kind === 'task' ? 'Add task' : 'Plan it'}
+                              </button>
+                              {m.kind !== 'task' && (
+                                <button
+                                  onClick={() => taskMove(conn, m)}
+                                  aria-label="Save as task instead"
+                                  title="Save as task instead"
+                                  className="px-2 py-1 rounded-md bg-slate-100 text-slate-500 text-[11px] font-semibold hover:bg-slate-200 transition-colors"
+                                >
+                                  Later
+                                </button>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })}
                   </div>
                 </div>
               )
@@ -1983,7 +2036,7 @@ export function CommandCenter() {
 
       {/* POTENTIAL PROBLEMS — lazy on-demand section. Off the briefing's critical
           path: only generated (and only paid for) when the user taps Check/Refresh. */}
-      {!loading && report && (() => {
+      {!loading && (() => {
         const visible = (problems ?? []).filter((p) => showInList(p.title))
         return (
           <section>
@@ -2036,7 +2089,7 @@ export function CommandCenter() {
       })()}
 
       {/* COPILOT RECOMMENDATIONS — lazy on-demand section (same pattern). */}
-      {!loading && report && (() => {
+      {!loading && (() => {
         const visible = (recommendations ?? []).filter((r) => showInList(r.title))
         return (
           <section>
@@ -2334,810 +2387,6 @@ type ResolvedItemForGroup = {
   forMembers: FamilyMember[]
   backedByRealItem: boolean
   isRecurring: boolean
-}
-
-function GroupedAttentionCard({
-  groupTitle, resolvedItems, accent, allMembers,
-  onCompleteItem, onDismissItem, onSaveTaskItem, onAssignItem, debugMode, onTraceItem,
-  currentGreeting, allGroupItems, cardMembers, onPatch,
-}: {
-  groupTitle: string
-  resolvedItems: ResolvedItemForGroup[]
-  accent: string
-  allMembers: FamilyMember[]
-  onCompleteItem: (item: AttentionItem) => void
-  onDismissItem: (title: string) => void
-  onSaveTaskItem: (title: string, reason: string) => void
-  onAssignItem: (item: AttentionItem, forIds: string[], responsibleId?: string) => void
-  debugMode?: boolean
-  onTraceItem?: (item: AttentionItem) => void
-  currentGreeting?: string
-  allGroupItems?: AttentionItem[]
-  cardMembers?: FamilyMember[]
-  onPatch?: (updated: AttentionItem[], removed: string[], greeting?: string) => void
-}) {
-  const [expanded, setExpanded] = useState(false)
-
-  // Unique members across all items for the header avatars
-  const headerMembers = (() => {
-    const seen = new Set<string>()
-    const result: FamilyMember[] = []
-    for (const { forMembers, responsible } of resolvedItems) {
-      for (const m of [...forMembers, ...(responsible ? [responsible] : [])]) {
-        if (!seen.has(m.id)) { seen.add(m.id); result.push(m) }
-      }
-    }
-    return result
-  })()
-
-  return (
-    <div className="rounded-2xl bg-white shadow-card animate-slide-up" style={{ borderLeft: `3px solid ${accent}` }}>
-      {/* Header row — tap to expand/collapse */}
-      <button
-        onClick={() => setExpanded((v) => !v)}
-        className="w-full flex items-center gap-3 px-4 pt-4 pb-3 text-left"
-      >
-        {headerMembers.length > 0 && (
-          <div className="flex -space-x-1 shrink-0">
-            {headerMembers.slice(0, 4).map((m) => (
-              <div
-                key={m.id}
-                className="w-5 h-5 rounded-full flex items-center justify-center text-[10px] ring-1 ring-white"
-                style={{ background: `${m.colorHex}35` }}
-              >
-                {m.emoji}
-              </div>
-            ))}
-          </div>
-        )}
-        <div className="flex-1 min-w-0">
-          <p className="text-sm font-semibold text-slate-900 leading-snug">{groupTitle}</p>
-          <p className="text-[11px] text-slate-400 mt-0.5">{resolvedItems.length} items · tap to {expanded ? 'collapse' : 'expand'}</p>
-        </div>
-        <ChevronDown
-          size={15}
-          className="text-slate-300 shrink-0 transition-transform duration-200"
-          style={{ transform: expanded ? 'rotate(180deg)' : 'rotate(0deg)' }}
-        />
-      </button>
-
-      {/* Collapsed: compact rows */}
-      {!expanded && (
-        <div className="px-4 pb-3 space-y-2 border-t border-slate-50 pt-2">
-          {resolvedItems.map(({ item, backedByRealItem }) => (
-            <CompactItemRow
-              key={item.id}
-              item={item}
-              accent={accent}
-              backedByRealItem={backedByRealItem}
-              onComplete={() => onCompleteItem(item)}
-            />
-          ))}
-        </div>
-      )}
-
-      {/* Expanded: full individual AttentionCards */}
-      {expanded && (
-        <div className="border-t border-slate-100 divide-y divide-slate-50">
-          {resolvedItems.map(({ item, responsible, forMembers, backedByRealItem, isRecurring }) => (
-            <AttentionCard
-              key={item.id}
-              item={item}
-              accent={accent}
-              allMembers={allMembers}
-              responsible={responsible}
-              forMembers={forMembers}
-              backedByRealItem={backedByRealItem}
-              isRecurring={isRecurring}
-              onComplete={() => onCompleteItem(item)}
-              onDismiss={() => onDismissItem(item.title)}
-              onSaveTask={() => onSaveTaskItem(item.title, item.reason)}
-              onAssign={(f, r) => onAssignItem(item, f, r)}
-              debugMode={debugMode}
-              onTrace={onTraceItem ? () => onTraceItem(item) : undefined}
-              currentGreeting={currentGreeting}
-              cardMembers={cardMembers}
-              onPatch={onPatch}
-              groupItems={allGroupItems}
-            />
-          ))}
-        </div>
-      )}
-    </div>
-  )
-}
-
-function CompactItemRow({
-  item, accent, backedByRealItem, onComplete,
-}: {
-  item: AttentionItem
-  accent: string
-  backedByRealItem: boolean
-  onComplete: () => void
-}) {
-  const [done, setDone] = useState(false)
-  const isTask = backedByRealItem && (item.sourceType === 'task' || item.sourceType === 'reminder')
-  const startStr = item.startBy
-    ? new Date(item.startBy).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
-    : null
-
-  return (
-    <div className="flex items-center gap-2 min-w-0">
-      {/* Always a dot — tasks get a tappable one, events a static one. Same visual width either way. */}
-      {isTask ? (
-        <button
-          onClick={(e) => { e.stopPropagation(); setDone(true); onComplete() }}
-          className="w-4 h-4 rounded-full shrink-0 flex items-center justify-center transition-colors"
-          title="Mark done"
-        >
-          <span className="w-1.5 h-1.5 rounded-full transition-colors" style={{ background: done ? '#22c55e' : accent }} />
-        </button>
-      ) : (
-        <span className="w-1.5 h-1.5 rounded-full shrink-0 mt-px" style={{ background: accent }} />
-      )}
-      <p className={`text-xs flex-1 min-w-0 leading-snug ${done ? 'line-through text-slate-400' : 'text-slate-700'}`}>
-        {item.title}
-      </p>
-      {startStr && (
-        <span
-          className="text-[10px] font-medium shrink-0 px-1.5 py-0.5 rounded-full"
-          style={{ background: `${accent}15`, color: accent }}
-        >
-          {startStr}
-        </span>
-      )}
-    </div>
-  )
-}
-
-// ── Inline card chat ─────────────────────────────────────────
-// A self-contained mini-Copilot that renders inside any card. It reads family
-// context from hooks directly so no prop-drilling is needed from CommandCenter.
-
-function CardChat({
-  cardContext,
-  quickPrompts,
-  patchCards,
-  currentGreeting,
-  patchMembers,
-  onPatch,
-}: {
-  cardContext: string
-  quickPrompts: string[]
-  patchCards?: AttentionItem[]
-  currentGreeting?: string
-  patchMembers?: FamilyMember[]
-  onPatch?: (updated: AttentionItem[], removed: string[], greeting?: string) => void
-}) {
-  const { user } = useAuth()
-  const { familyId } = useFamily()
-  const { data: members } = useFirestore<FamilyMember>('members')
-  const { getFreshTokens } = useGoogleTokens()
-
-  type ChatMsg = { role: 'user' | 'assistant'; content: string; isStreaming?: boolean }
-  const [msgs, setMsgs] = useState<ChatMsg[]>([])
-  const [input, setInput] = useState('')
-  const [loading, setLoading] = useState(false)
-  const [pendingActions, setPendingActions] = useState<PendingAction[]>([])
-  const inputRef = useRef<HTMLInputElement>(null)
-  const scrollRef = useRef<HTMLDivElement>(null)
-  const router = useRouter()
-
-  useEffect(() => { setTimeout(() => inputRef.current?.focus(), 50) }, [])
-  // Scroll ONLY inside the message container, never the whole page.
-  useEffect(() => {
-    const el = scrollRef.current
-    if (el) el.scrollTop = el.scrollHeight
-  }, [msgs, loading])
-
-  async function send(text?: string) {
-    const content = (text ?? input).trim()
-    if (!content || loading || !familyId || !user?.email) return
-
-    const userMsg: ChatMsg = { role: 'user', content }
-    setMsgs((prev) => [...prev, userMsg])
-    setInput('')
-    setLoading(true)
-
-    try {
-      const freshTokens = await getFreshTokens()
-      const googleTokens = freshTokens
-        ? { accessToken: freshTokens.accessToken, refreshToken: freshTokens.refreshToken }
-        : null
-
-      // Prepend card context to only the first user message so the AI knows
-      // what card is being discussed, without repeating it on every follow-up.
-      const history = [...msgs, userMsg].map((m, i) =>
-        i === 0
-          ? { role: m.role, content: `[Card context]\n${cardContext}\n\n${m.content}` }
-          : { role: m.role, content: m.content }
-      )
-
-      const res = await fetch('/api/agent', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          messages: history,
-          familyId,
-          userEmail: user.email,
-          googleTokens,
-          context: {
-            members,
-            today: new Date().toISOString(),
-            timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-          },
-        }),
-      })
-      if (!res.ok || !res.body) throw new Error('Request failed')
-
-      const reader = res.body.getReader()
-      const dec = new TextDecoder()
-      let buf = ''
-      let started = false
-
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        buf += dec.decode(value, { stream: true })
-        const lines = buf.split('\n')
-        buf = lines.pop() ?? ''
-
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) continue
-          let ev: { type: string; token?: string; reply?: string; pendingActions?: unknown[] }
-          try { ev = JSON.parse(line.slice(6)) } catch { continue }
-
-          if (ev.type === 'token') {
-            if (!started) {
-              started = true
-              setLoading(false)
-              setMsgs((prev) => [...prev, { role: 'assistant', content: ev.token!, isStreaming: true }])
-            } else {
-              setMsgs((prev) => {
-                const a = [...prev]
-                const last = a[a.length - 1]
-                if (last?.isStreaming) a[a.length - 1] = { ...last, content: last.content + ev.token! }
-                return a
-              })
-            }
-          } else if (ev.type === 'done') {
-            const queued = (ev.pendingActions ?? []) as PendingAction[]
-            if (queued.length) setPendingActions((prev) => [...prev, ...queued])
-            setMsgs((prev) => {
-              const a = [...prev]
-              const last = a[a.length - 1]
-              const reply = ev.reply || (last?.isStreaming ? last.content : '') || (queued.length ? "I've queued some actions." : 'Done.')
-              if (last?.role === 'assistant') return [...a.slice(0, -1), { ...last, isStreaming: false, content: reply }]
-              return [...a, { role: 'assistant', content: reply }]
-            })
-            // Background patch: update just the affected card(s) based on this
-            // conversation. Fire-and-forget — never blocks the chat UI.
-            if (onPatch && patchCards?.length) {
-              const fullConv = [...msgs, userMsg, { role: 'assistant' as const, content: ev.reply ?? '' }]
-              fetch('/api/ai/attention/patch', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  cards: patchCards,
-                  conversation: fullConv,
-                  greeting: currentGreeting ?? '',
-                  members: patchMembers ?? [],
-                  now: new Date().toISOString(),
-                  timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-                }),
-              })
-                .then((r) => r.json())
-                .then((d) => {
-                  if (d.updatedCards?.length || d.removedIds?.length) {
-                    onPatch(d.updatedCards ?? [], d.removedIds ?? [], d.greeting)
-                  }
-                })
-                .catch(() => { /* non-fatal — patch is best-effort */ })
-            }
-          } else if (ev.type === 'error') {
-            throw new Error(String((ev as { error?: unknown }).error ?? 'Error'))
-          }
-        }
-      }
-    } catch {
-      setMsgs((prev) => {
-        const a = [...prev]
-        if (a[a.length - 1]?.isStreaming) a.pop()
-        return [...a, { role: 'assistant', content: 'Something went wrong. Try again.' }]
-      })
-    } finally {
-      setLoading(false)
-      setTimeout(() => inputRef.current?.focus(), 50)
-    }
-  }
-
-  return (
-    <div className="border-t border-slate-100 pt-3 pb-4 px-4 space-y-2.5">
-      {/* Quick-prompt chips — visible before any messages are sent */}
-      {msgs.length === 0 && !loading && (
-        <div className="flex flex-wrap gap-1.5">
-          {quickPrompts.map((p) => (
-            <button
-              key={p}
-              onClick={() => send(p)}
-              className="text-[11px] px-2.5 py-1 rounded-full bg-blue-50 text-blue-600 border border-blue-100 hover:bg-blue-100 active:scale-95 transition-all font-medium"
-            >
-              {p}
-            </button>
-          ))}
-        </div>
-      )}
-
-      {/* Message thread */}
-      {msgs.length > 0 && (
-        <div ref={scrollRef} className="space-y-2 max-h-64 overflow-y-auto pr-0.5">
-          {msgs.map((m, i) =>
-            m.role === 'user' ? (
-              <div key={i} className="flex justify-end">
-                <span className="text-[13px] bg-blue-600 text-white rounded-2xl rounded-tr-sm px-3 py-1.5 max-w-[85%] leading-relaxed">
-                  {m.content}
-                </span>
-              </div>
-            ) : (
-              <div key={i} className="flex items-start gap-1.5">
-                <div className="w-5 h-5 rounded-full bg-gradient-to-br from-blue-600 to-purple-600 flex items-center justify-center shrink-0 mt-0.5">
-                  <Sparkles size={9} className="text-white" />
-                </div>
-                <div className="text-[13px] text-slate-700 leading-relaxed flex-1 min-w-0 pt-0.5">
-                  <Markdown content={m.content} />
-                  {m.isStreaming && (
-                    <span className="inline-block w-0.5 h-3 bg-blue-400 ml-0.5 animate-pulse align-middle" />
-                  )}
-                </div>
-              </div>
-            )
-          )}
-          {loading && !msgs.some((m) => m.isStreaming) && (
-            <div className="flex items-center gap-1.5">
-              <div className="w-5 h-5 rounded-full bg-gradient-to-br from-blue-600 to-purple-600 flex items-center justify-center shrink-0">
-                <Sparkles size={9} className="text-white" />
-              </div>
-              <div className="flex gap-1">
-                {[0, 150, 300].map((d) => (
-                  <span key={d} className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-bounce" style={{ animationDelay: `${d}ms` }} />
-                ))}
-              </div>
-            </div>
-          )}
-          {pendingActions.length > 0 && (
-            <div className="pl-6 flex items-center gap-2">
-              <p className="text-[11px] text-amber-700">
-                {pendingActions.length} action{pendingActions.length > 1 ? 's' : ''} ready to apply.
-              </p>
-              <button
-                onClick={() => {
-                  // Serialize the conversation + pending actions into sessionStorage so
-                  // CopilotChat can restore them as a live message with a confirm card.
-                  try {
-                    const restore = {
-                      messages: msgs
-                        .filter((m) => !m.isStreaming)
-                        .map((m) => ({ role: m.role, content: m.content })),
-                      pendingActions,
-                    }
-                    sessionStorage.setItem('copilot-restore', JSON.stringify(restore))
-                  } catch { /* non-fatal */ }
-                  router.push('/copilot')
-                }}
-                className="text-[11px] font-semibold text-blue-600 hover:text-blue-800 underline underline-offset-2 shrink-0"
-              >
-                Review in Copilot →
-              </button>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Input row */}
-      <div className="flex items-center gap-2">
-        <input
-          ref={inputRef}
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); send() } }}
-          placeholder="Ask about this…"
-          disabled={loading}
-          className="flex-1 text-[13px] rounded-full border border-slate-200 bg-white px-3 py-1.5 focus:outline-none focus:border-blue-300 focus:ring-1 focus:ring-blue-100 disabled:opacity-50 transition-all"
-        />
-        {input.trim() && (
-          <button
-            onClick={() => send()}
-            disabled={loading}
-            className="shrink-0 w-7 h-7 rounded-full bg-blue-600 text-white flex items-center justify-center hover:bg-blue-700 disabled:opacity-40 active:scale-95 transition-all"
-          >
-            <Send size={12} />
-          </button>
-        )}
-      </div>
-    </div>
-  )
-}
-
-// ── Individual attention card ────────────────────────────────
-// Tapping a card opens a bottom sheet with all actions.
-
-function AttentionCard({
-  item, accent, allMembers, responsible, forMembers, backedByRealItem, isRecurring, onComplete, onDismiss, onSaveTask, onAssign, debugMode, onTrace,
-  currentGreeting, cardMembers, onPatch, groupItems,
-}: {
-  item: AttentionItem
-  accent: string
-  allMembers: FamilyMember[]
-  responsible?: FamilyMember
-  forMembers: FamilyMember[]
-  backedByRealItem: boolean
-  isRecurring?: boolean
-  onComplete: () => void
-  onDismiss: () => void
-  onSaveTask: () => void
-  onAssign: (forIds: string[], responsibleId?: string) => void
-  debugMode?: boolean
-  onTrace?: () => void
-  currentGreeting?: string
-  cardMembers?: FamilyMember[]
-  onPatch?: (updated: AttentionItem[], removed: string[], greeting?: string) => void
-  groupItems?: AttentionItem[]
-}) {
-  const [sheetOpen, setSheetOpen] = useState(false)
-  const [done, setDone] = useState(false)
-  const startStr = item.startBy
-    ? new Date(item.startBy).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
-    : null
-
-  return (
-    <>
-      <button
-        onClick={() => setSheetOpen(true)}
-        className="w-full rounded-2xl bg-white shadow-card animate-slide-up text-left active:scale-[0.99] transition-all"
-        style={{ borderLeft: `3px solid ${accent}`, opacity: done ? 0.4 : 1 }}
-      >
-        <div className="flex items-start gap-3 p-4">
-          <div className="flex-1 min-w-0">
-            <p className="text-sm font-semibold text-slate-900">{item.title}</p>
-            <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">{item.reason}</p>
-            <div className="flex items-center gap-2 mt-1.5 flex-wrap">
-              {startStr && (
-                <span
-                  className="inline-flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-full"
-                  style={{ background: `${accent}15`, color: accent }}
-                >
-                  <Clock size={10} /> {startStr}
-                </span>
-              )}
-              {forMembers.map((m) => (
-                <span key={m.id} className="inline-flex items-center gap-1 text-[11px] text-slate-500">
-                  <span
-                    className="w-4 h-4 rounded-full flex items-center justify-center text-[9px]"
-                    style={{ background: `${m.colorHex}25` }}
-                  >{m.emoji}</span>
-                  {m.name}
-                </span>
-              ))}
-              {responsible && (
-                <span className="inline-flex items-center gap-1 text-[11px] text-slate-400">
-                  <span>·</span>
-                  <span
-                    className="w-4 h-4 rounded-full flex items-center justify-center text-[9px]"
-                    style={{ background: `${responsible.colorHex}25` }}
-                  >{responsible.emoji}</span>
-                  {responsible.name}
-                </span>
-              )}
-            </div>
-          </div>
-          <ChevronRight size={16} className="text-slate-200 shrink-0 mt-0.5" />
-        </div>
-      </button>
-
-      {sheetOpen && (
-        <CardActionSheet
-          item={item}
-          accent={accent}
-          allMembers={allMembers}
-          responsible={responsible}
-          forMembers={forMembers}
-          backedByRealItem={backedByRealItem}
-          isRecurring={isRecurring}
-          onClose={() => setSheetOpen(false)}
-          onComplete={() => { setDone(true); setSheetOpen(false); onComplete() }}
-          onDismiss={() => { setSheetOpen(false); onDismiss() }}
-          onSaveTask={() => { setSheetOpen(false); onSaveTask() }}
-          onAssign={(f, r) => { setSheetOpen(false); onAssign(f, r) }}
-          debugMode={debugMode}
-          onTrace={onTrace}
-          currentGreeting={currentGreeting}
-          cardMembers={cardMembers}
-          onPatch={onPatch}
-          groupItems={groupItems}
-        />
-      )}
-    </>
-  )
-}
-
-// Two-sided assignment: pick who it's FOR (often the kids — multi-select) and
-// optionally who's RESPONSIBLE for handling it (one parent). Keeping these
-// separate captures the real nuance: a kid's appointment is "for" the kid but a
-// parent does the driving.
-function AssignPanel({
-  allMembers, initialFor, initialResponsible, isRecurring, onCancel, onSave,
-}: {
-  allMembers: FamilyMember[]
-  initialFor: string[]
-  initialResponsible?: string
-  isRecurring?: boolean
-  onCancel: () => void
-  onSave: (forIds: string[], responsibleId?: string) => void
-}) {
-  const [forIds, setForIds] = useState<string[]>(initialFor)
-  const [responsible, setResponsible] = useState<string | undefined>(initialResponsible)
-
-  const toggleFor = (id: string) =>
-    setForIds((prev) => (prev.includes(id) ? prev.filter((e) => e !== id) : [...prev, id]))
-
-  const Chip = ({ m, selected, onClick }: { m: FamilyMember; selected: boolean; onClick: () => void }) => (
-    <button
-      onClick={onClick}
-      className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-xs transition-all border"
-      style={{
-        background: selected ? `${m.colorHex}20` : 'white',
-        borderColor: selected ? m.colorHex : '#e2e8f0',
-        color: selected ? '#0f172a' : '#64748b',
-        fontWeight: selected ? 600 : 400,
-      }}
-    >
-      <span className="w-4 h-4 rounded-full flex items-center justify-center text-[9px]" style={{ background: `${m.colorHex}25` }}>
-        {m.emoji}
-      </span>
-      {m.name}
-      {selected && <Check size={11} />}
-    </button>
-  )
-
-  return (
-    <div className="px-4 pb-4 border-t border-slate-50 pt-3 space-y-3">
-      <div>
-        <p className="text-xs font-medium text-slate-600 mb-1.5">Who&apos;s this for?</p>
-        <div className="flex flex-wrap gap-1.5">
-          {allMembers.map((m) => (
-            <Chip key={m.id} m={m} selected={forIds.includes(m.id)} onClick={() => toggleFor(m.id)} />
-          ))}
-        </div>
-      </div>
-      <div>
-        <p className="text-xs font-medium text-slate-600 mb-1.5">
-          {isRecurring ? 'Who\'s handling this occurrence?' : 'Who\'s responsible?'}
-          {' '}<span className="text-slate-400 font-normal">{isRecurring ? '(this week only — "for" applies to all)' : '(optional)'}</span>
-        </p>
-        <div className="flex flex-wrap gap-1.5">
-          {allMembers
-            .filter((m) => m.role !== 'pet')
-            .map((m) => (
-              <Chip
-                key={m.id}
-                m={m}
-                selected={responsible === m.id}
-                onClick={() => setResponsible((prev) => (prev === m.id ? undefined : m.id))}
-              />
-            ))}
-        </div>
-      </div>
-      <div className="flex justify-end gap-2 pt-1">
-        <button
-          onClick={onCancel}
-          className="px-3 py-1.5 rounded-lg text-xs font-medium text-slate-500 hover:bg-slate-100 transition-colors"
-        >
-          Cancel
-        </button>
-        <button
-          onClick={() => onSave(forIds, responsible)}
-          disabled={forIds.length === 0 && !responsible}
-          className="px-3 py-1.5 rounded-lg text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-40 transition-colors"
-        >
-          Save assignment
-        </button>
-      </div>
-    </div>
-  )
-}
-
-// ── Card action modal ────────────────────────────────────────
-// Opens as a centered dialog when the user taps an AttentionCard.
-// Contains card summary + all per-card actions + inline assign / chat sub-views.
-
-function CardActionSheet({
-  item, accent, allMembers, responsible, forMembers, backedByRealItem, isRecurring,
-  onClose, onComplete, onDismiss, onSaveTask, onAssign, debugMode, onTrace,
-  currentGreeting, cardMembers, onPatch, groupItems,
-}: {
-  item: AttentionItem
-  accent: string
-  allMembers: FamilyMember[]
-  responsible?: FamilyMember
-  forMembers: FamilyMember[]
-  backedByRealItem: boolean
-  isRecurring?: boolean
-  onClose: () => void
-  onComplete: () => void
-  onDismiss: () => void
-  onSaveTask: () => void
-  onAssign: (forIds: string[], responsibleId?: string) => void
-  debugMode?: boolean
-  onTrace?: () => void
-  currentGreeting?: string
-  cardMembers?: FamilyMember[]
-  onPatch?: (updated: AttentionItem[], removed: string[], greeting?: string) => void
-  groupItems?: AttentionItem[]
-}) {
-  const [view, setView] = useState<'actions' | 'assign' | 'chat'>('actions')
-  const isTask = backedByRealItem && (item.sourceType === 'task' || item.sourceType === 'reminder')
-  const startStr = item.startBy
-    ? new Date(item.startBy).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
-    : null
-
-  useEffect(() => {
-    document.body.style.overflow = 'hidden'
-    return () => { document.body.style.overflow = '' }
-  }, [])
-
-  return (
-    <div
-      className="fixed inset-0 z-40 flex items-center justify-center p-5 animate-fade-in"
-      style={{ background: 'rgba(0,0,0,0.45)' }}
-      onClick={(e) => { if (e.target === e.currentTarget) onClose() }}
-    >
-      <div
-        className="bg-white rounded-2xl shadow-elevated w-full max-w-sm flex flex-col animate-scale-in overflow-hidden"
-        style={{ maxHeight: '80vh' }}
-      >
-        {/* Back nav for sub-views */}
-        {view !== 'actions' && (
-          <button
-            onClick={() => setView('actions')}
-            className="flex items-center gap-1.5 px-4 py-3 text-sm text-blue-600 font-medium border-b border-slate-100 shrink-0"
-          >
-            ← Back
-          </button>
-        )}
-
-        {/* Card summary (actions view only) */}
-        {view === 'actions' && (
-          <div className="p-4 border-b border-slate-100 shrink-0">
-            <div className="flex items-start gap-3">
-              <div className="w-1 self-stretch rounded-full shrink-0 mt-0.5" style={{ background: accent }} />
-              <div className="flex-1 min-w-0">
-                <p className="text-[15px] font-semibold text-slate-900 leading-snug">{item.title}</p>
-                <p className="text-sm text-slate-500 mt-1 leading-relaxed">{item.reason}</p>
-                {item.detail && (
-                  <p className="text-xs text-slate-400 mt-1 leading-relaxed">{item.detail}</p>
-                )}
-                <div className="flex items-center gap-2 mt-2 flex-wrap">
-                  {startStr && (
-                    <span
-                      className="inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full"
-                      style={{ background: `${accent}15`, color: accent }}
-                    >
-                      <Clock size={11} /> Start by {startStr}
-                    </span>
-                  )}
-                  {forMembers.map((m) => (
-                    <span key={m.id} className="inline-flex items-center gap-1 text-xs text-slate-500">
-                      <span
-                        className="w-4 h-4 rounded-full flex items-center justify-center text-[9px]"
-                        style={{ background: `${m.colorHex}25` }}
-                      >{m.emoji}</span>
-                      {m.name}
-                    </span>
-                  ))}
-                  {responsible && (
-                    <span className="inline-flex items-center gap-1 text-xs text-slate-400">
-                      <span>·</span>
-                      <span
-                        className="w-4 h-4 rounded-full flex items-center justify-center text-[9px]"
-                        style={{ background: `${responsible.colorHex}25` }}
-                      >{responsible.emoji}</span>
-                      {responsible.name} handling it
-                    </span>
-                  )}
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Scrollable content */}
-        <div className="flex-1 overflow-y-auto">
-          {view === 'actions' && (
-            <div className="py-1.5">
-              {isTask && (
-                <SheetAction
-                  icon={<Check size={18} className="text-green-600" />}
-                  label="Mark as done"
-                  onClick={onComplete}
-                />
-              )}
-              <SheetAction
-                icon={<Users size={18} className="text-slate-600" />}
-                label="Change assignment"
-                sub="Who's handling this and who it's for"
-                onClick={() => setView('assign')}
-                showChevron
-              />
-              <SheetAction
-                icon={<MessageCircle size={18} className="text-blue-500" />}
-                label="Ask about this…"
-                sub="Chat with your assistant about this card"
-                onClick={() => setView('chat')}
-                showChevron
-              />
-              <div className="mx-4 my-1 border-t border-slate-100" />
-              <SheetAction
-                icon={<X size={18} className="text-slate-400" />}
-                label="Hide from briefing"
-                sub="Removes this card — you can teach the assistant why"
-                onClick={onDismiss}
-              />
-              {debugMode && onTrace && (
-                <SheetAction
-                  icon={<Bug size={18} className="text-blue-400" />}
-                  label="Trace sources (debug)"
-                  onClick={() => { onClose(); onTrace() }}
-                />
-              )}
-            </div>
-          )}
-
-          {view === 'assign' && (
-            <AssignPanel
-              allMembers={allMembers}
-              initialFor={forMembers.map((m) => m.id)}
-              initialResponsible={responsible?.id}
-              isRecurring={isRecurring}
-              onCancel={() => setView('actions')}
-              onSave={(f, r) => { onAssign(f, r) }}
-            />
-          )}
-
-          {view === 'chat' && (
-            <div className="min-h-[300px]">
-              <CardChat
-                cardContext={[
-                  `Title: "${item.title}"`,
-                  `Reason: "${item.reason}"`,
-                  `Source type: ${item.sourceType}`,
-                  item.dueAt ? `Due/scheduled: ${item.dueAt}` : '',
-                  item.startBy ? `Start by: ${item.startBy}` : '',
-                  item.sourceId ? `Source id: ${item.sourceId}` : '',
-                ].filter(Boolean).join('\n')}
-                quickPrompts={['Why is this showing up?', 'What should I do?', 'Where does this come from?']}
-                patchCards={groupItems ?? [item]}
-                currentGreeting={currentGreeting}
-                patchMembers={cardMembers}
-                onPatch={onPatch}
-              />
-            </div>
-          )}
-        </div>
-
-        {/* Close button */}
-        {view === 'actions' && (
-          <div className="px-4 pb-4 pt-2 shrink-0 border-t border-slate-50">
-            <button
-              onClick={onClose}
-              className="w-full py-2.5 rounded-xl bg-slate-100 text-sm font-medium text-slate-600 hover:bg-slate-200 active:bg-slate-300 transition-colors"
-            >
-              Close
-            </button>
-          </div>
-        )}
-      </div>
-    </div>
-  )
 }
 
 function SheetAction({
